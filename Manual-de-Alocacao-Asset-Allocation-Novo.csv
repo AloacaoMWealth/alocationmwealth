@@ -1,0 +1,93 @@
+ULTRACONSERVADOR,Mín,Neutro,Máx ,,,,,,,,,,,,
+RF Pós ,100%,100%,100%,,,,,,,,,,,,
+Fundos de Invest.,100%,100%,100%,,,,,,,,,,,,
+Imediato,20%,30%,40%,,,,,,,,,,,,
+1 a 30 dias,20%,30%,40%,,,,,,,,,,,,
+31 a 180 dias,15%,20%,30%,,,,,,,,,,,,
+181 a 360 dias,5%,10%,20%,,,,,,,,,,,,
+361+ dias,5%,10%,20%,,,,,,,,,,,,
+FiInfra e Cetipados,0%,0%,0%,,,,,,,,,,,,
+RF Pré,0%,0%,0%,,,,,,,,,,,,
+RF Inflação,0.0%,0.0%,0.0%,,,,,,,,,,,,
+Multimercados,0%,0%,0%,,,,,,,,,,,,
+RV Brasil,0%,0%,0%,,,,,,,,,,,,
+Internacional ,0%,0%,0%,,,,,,,,,,,,
+Alternativos,0%,0%,0%,,,,,,,,,,,,
+,,,,,40% de Renda ,,,,,60% a 80% de Renda,,,,,
+"CONSERVADOR,Mín,Neutro,Máx ,,CONSERVADOR RENDA CONSTRUÇÃO,Mín,Neutro,Máx ,,CONSERVADOR RENDA USUFRUTO,Mín,Neutro,Máx ,""*Caso o cliente deseje alocação internacional, reduzir RF Pré ou RF Inflação, respeitando os limites inferiores de geração de renda (40% para Construção e 60% para Usufruto)."","
+RF Pós ,70%,80%,90%,,RF Pós ,70%,80%,90%,,RF Pós ,70%,80%,90%,,
+Fundos de Invest.,70%,80%,80%,,Fundos de Invest.,40%,45%,50%,,Fundos de Invest.,30%,40%,50%,,
+Imediato,15%,20%,30%,,Imediato,15%,20%,30%,,Imediato,15%,20%,30%,,
+1 a 30 dias,15%,20%,30%,,1 a 30 dias,15%,15%,30%,,1 a 30 dias,5%,10%,15%,,
+31 a 180 dias,10%,20%,25%,,31 a 180 dias,5%,10%,15%,,31 a 180 dias,0%,5%,10%,,
+181 a 360 dias,10%,20%,25%,,181 a 360 dias,0%,5%,10%,,181 a 360 dias,0%,5%,10%,,
+361+ dias,0%,0%,0%,,361+ dias,0%,0%,0%,,361+ dias,0%,0%,0%,,
+FiInfra e Cetipados,0%,0%,0%,,FiInfra e Cetipados,30%,30%,40%,,FiInfra e Cetipados,40%,40%,50%,,
+RF Pré,3%,5%,8%,,RF Pré,3%,5%,8%,,RF Pré,0%,0%,0%,,
+"Bancário,""1,5%"",""2,5%"",4%,,Bancário,""1,5%"",""2,5%"",4%,,Bancário,0%,0%,0%,,"
+"Tesouro,""1,5%"",""2,5%"",4%,,Tesouro,""1,5%"",""2,5%"",4%,,Tesouro,0%,0%,0%,,"
+RF Inflação,8.0%,15.0%,20.0%,,RF Inflação,10.0%,15.0%,20.0%,,RF Inflação,20.0%,20.0%,25.0%,,
+"Bancário,4.0%,""7,5%"",10.0%,,Bancário,0.0%,""2,5%"",5.0%,,Bancário,0.0%,0.0%,0.0%,,"
+"Tesouro,4.0%,""7,5%"",10.0%,,Tesouro,0.0%,""2,5%"",5.0%,,Tesouro,0.0%,0.0%,0.0%,,"
+"FiInfra e Cetipado,0.0%,0.0%,""2,5%"",,FiInfra e Cetipado,10.0%,10.0%,20.0%,,FiInfra e Cetipado,20.0%,20.0%,25.0%,,"
+"Crédito Privado,0.0%,0.0%,""2,5%"",,Crédito Privado,0.0%,0.0%,""2,5%"",,Crédito Privado,0.0%,0.0%,0.0%,,"
+Multimercados,0%,0%,0%,,Multimercados,0%,0%,0%,,Multimercados,0%,0%,0%,,
+RV Brasil,0%,0%,0%,,RV Brasil,0%,0%,0%,,RV Brasil,0%,0%,0%,,
+Ações,,0%,,,Ações,,0%,,,Ações,,0%,,,
+FIIs,,0%,,,FIIs,,0%,,,FIIs,,0%,,,
+Internacional ,0%,0%,0%,,Internacional ,0%,0%,0%,,Internacional ,0%,0%,0%,,
+Renda Fixa,,0%,,,Renda Fixa,,0%,,,Renda Fixa,,0%,,,
+Renda Variável,,0%,,,Renda Variável,,0%,,,Renda Variável,,0%,,,
+Alternativos,0%,0%,0%,,Alternativos,0%,0%,0%,,Alternativos,0%,0%,0%,,
+,,,,,,,,,,,,,,,
+MODERADO,Mín,Neutro,Máx , ,MODERADO RENDA CONSTRUÇÃO,Mín,Neutro,Máx ,,MODERADO RENDA USUFRUTO,Mín,Neutro,Máx ,,
+RF Pós ,30%,40%,50%,,RF Pós ,40%,55%,60%,,RF Pós ,40%,55%,60%,,
+Fundos de Invest.,30%,40%,50%,,Fundos de Invest.,30%,40%,50%,,Fundos de Invest.,20%,30%,40%,,
+Imediato,20%,20%,30%,,Imediato,20%,20%,30%,,Imediato,20%,20%,20%,,
+1 a 30 dias,10%,10%,20%,,1 a 30 dias,10%,10%,20%,,1 a 30 dias,10%,10%,10%,,
+31 a 180 dias,0%,5%,5%,,31 a 180 dias,0%,5%,5%,,31 a 180 dias,0%,0%,0%,,
+181 a 360 dias,0%,5%,5%,,181 a 360 dias,0%,5%,5%,,181 a 360 dias,0%,0%,0%,,
+361+ dias,0%,0%,0%,,361+ dias,0%,0%,0%,,361+ dias,0%,0%,0%,,
+FiInfra e Cetipados,0%,0%,0%,,FiInfra e Cetipados,15%,15%,20%,,FiInfra e Cetipados,25%,25%,30%,,
+"RF Pré,0%,10%,""12,5%"",,RF Pré,0%,5%,10%,,RF Pré,0%,0%,10%,,"
+"Bancário,0%,5%,7.5%,,Bancário,0%,""2,5%"",5%,,Bancário,0%,0%,5%,,"
+"Tesouro,0%,5%,7.5%,,Tesouro,0%,""2,5%"",5%,,Tesouro,0%,0%,5%,,"
+RF Inflação,10.0%,20.0%,30.0%,,RF Inflação,15.0%,15.0%,30.0%,,RF Inflação,20.0%,20.0%,30.0%,,
+"Bancário,5.0%,""7,5%"",15.0%,,Bancário,0.0%,0.0%,0.0%,,Bancário,0.0%,0.0%,0.0%,,"
+"Tesouro,5.0%,""7,5%"",15.0%,,Tesouro,0.0%,0.0%,0.0%,,Tesouro,0.0%,0.0%,0.0%,,"
+FiInfra e Cetipado,0.0%,0.0%,0.0%,,FiInfra e Cetipado,15.0%,15.0%,30.0%,,FiInfra e Cetipado,20.0%,20.0%,30.0%,,
+Crédito Privado,0.0%,5.0%,10.0%,,Crédito Privado,0.0%,0.0%,0.0%,,Crédito Privado,0.0%,0.0%,0.0%,,
+"Multimercados,0%,5%,10%,,Multimercados,0%,""2,5%"",5%,,Multimercados,0%,0%,5%,,"
+RV Brasil,5%,10%,15%,,RV Brasil,10%,10%,15%,,RV Brasil,15%,15%,25%,,
+Ações,5%,10%,15%,,Ações,0%,5%,10%,,Ações,0%,5%,10%,,
+FIIs,0%,0%,5%,,FIIs,5%,5%,15%,,FIIs,5%,10%,25%,,
+Internacional ,5%,10%,15%,,Internacional ,5%,10%,15%,,Internacional ,5%,10%,15%,,
+Renda Fixa,0%,5%,15%,,Renda Fixa,0%,5%,15%,,Renda Fixa,0%,5%,15%,,
+Renda Variável,0%,5%,15%,,Renda Variável,0%,5%,15%,,Renda Variável,0%,5%,15%,,
+"Alternativos,""2,5%"",5%,""7,5%"",,Alternativos,0%,""2,5%"",5%,,Alternativos,0%,0%,5%,,"
+,,,,,,,,,,,,,,,
+ARROJADO,Mín,Neutro,Máx ,,ARROJADO RENDA CONSTRUÇÃO,Mín,Neutro,Máx ,,ARROJADO RENDA USUFRUTO,Mín,Neutro,Máx ,,
+"RF Pós ,""2,5%"",20%,25%,,RF Pós ,""2,5%"",20%,25%,,RF Pós ,10%,30%,25%,,"
+"Fundos de Invest.,""2,5%"",20%,25%,,Fundos de Invest.,""2,5%"",20%,25%,,Fundos de Invest.,0%,20%,20%,,"
+Imediato,10%,10%,20%,,Imediato,10%,10%,20%,,Imediato,10%,10%,20%,,
+1 a 30 dias,0%,10%,10%,,1 a 30 dias,0%,10%,10%,,1 a 30 dias,0%,10%,10%,,
+31 a 180 dias,0%,0%,0%,,31 a 180 dias,0%,0%,0%,,31 a 180 dias,0%,0%,0%,,
+181 a 360 dias,0%,0%,0%,,181 a 360 dias,0%,0%,0%,,181 a 360 dias,0%,0%,0%,,
+361+ dias,0%,0%,0%,,361+ dias,0%,0%,0%,,361+ dias,0%,0%,0%,,
+FiInfra e Cetipados,0%,0%,0%,,FiInfra e Cetipados,0%,0%,0%,,FiInfra e Cetipados,0%,10%,20%,,
+"RF Pré,""2,5%"",5%,""7,5%"",,RF Pré,""2,5%"",5%,""7,5%"",,RF Pré,0%,0%,5%,,"
+"Bancário,0%,""2,5%"",5%,,Bancário,0%,""2,5%"",5%,,Bancário,0%,0%,5%,,"
+"Tesouro,0%,""2,5%"",5%,,Tesouro,0%,""2,5%"",5%,,Tesouro,0%,0%,5%,,"
+RF Inflação,5.0%,15.0%,20.0%,,RF Inflação,15.0%,15.0%,20.0%,,RF Inflação,20.0%,20.0%,30.0%,,
+Bancário,0.0%,5.0%,10.0%,,Bancário,0.0%,0.0%,0.0%,,Bancário,0.0%,0.0%,0.0%,,
+Tesouro,0.0%,5.0%,10.0%,,Tesouro,0.0%,0.0%,0.0%,,Tesouro,0.0%,0.0%,0.0%,,
+FiInfra e Cetipado,0.0%,0.0%,0.0%,,FiInfra e Cetipado,5.0%,15.0%,20.0%,,FiInfra e Cetipado,5.0%,25.0%,30.0%,,
+Crédito Privado,0.0%,5.0%,10.0%,,Crédito Privado,0.0%,0.0%,0.0%,,Crédito Privado,0.0%,0.0%,0.0%,,
+Multimercados,0%,5%,10%,,Multimercados,0%,5%,10%,,Multimercados,0%,0%,5%,,
+RV Brasil,25%,25%,45%,,RV Brasil,25%,25%,45%,,RV Brasil,30%,30%,45%,,
+Ações,25%,25%,45%,,Ações,0%,5%,15%,,Ações,5%,10%,15%,,
+FIIs,0%,0%,0%,,FIIs,15%,20%,45%,,FIIs,15%,20%,45%,,
+Internacional ,25%,25%,45%,,Internacional ,25%,25%,45%,,Internacional ,20%,20%,45%,,
+Renda Fixa,5%,10%,20%,,Renda Fixa,5%,10%,20%,,Renda Fixa,5%,10%,20%,,
+Renda Variável,5%,15%,40%,,Renda Variável,5%,15%,40%,,Renda Variável,5%,10%,40%,,
+"Alternativos,""2,5%"",5%,""7,5%"",,Alternativos,""2,5%"",5%,""7,5%"",,Alternativos,0%,0%,5%,,"
