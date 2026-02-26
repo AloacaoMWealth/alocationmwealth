@@ -5,7 +5,7 @@ from io import BytesIO
 from datetime import datetime, timedelta
 import requests
 
-# Import defensivo do yfinance
+# yfinance defensivo
 try:
     import yfinance as yf
     HAS_YF = True
@@ -65,7 +65,7 @@ def highlight_dif(val):
 def get_ptax_usdbrl_last():
     """
     Busca PTAX USD/BRL (cotacaoVenda) na API Olinda do BCB.
-    Tenta últimos 10 dias para pegar o último dia útil.
+    Tenta últimos 10 dias para pegar o último dia útil. [web:67]
     """
     base = "https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarPeriodo"
     hoje = datetime.now().date()
@@ -90,16 +90,24 @@ def get_ptax_usdbrl_last():
 
 
 # =========================
-# Leitura do Excel (Neutro empilhado)
-# Arquivo esperado: Pesos-alocacao.xlsx (Planilha1)
-# Formato:
+# Leitura do Excel (empilhado, 2 colunas)
+# Formato esperado (como seu arquivo):
 #   <CARTEIRA> | Neutro
-#   <Bucket>   | <peso decimal>   (ex.: 0.3, 1, 0)
+#   <Bucket>   | <peso decimal>
 # =========================
 @st.cache_data
-def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx", sheet_name=None):
-    df = pd.read_excel(path_xlsx, sheet_name=sheet_name, header=None, engine="openpyxl")
-    df = df.fillna("")
+def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx"):
+    # Descobre a primeira aba para não depender do nome (Planilha1 etc.) [file:81]
+    xls = pd.ExcelFile(path_xlsx, engine="openpyxl")
+    sheet0 = xls.sheet_names[0]
+
+    x = pd.read_excel(xls, sheet_name=sheet0, header=None)
+
+    # Em alguns cenários, read_excel pode retornar dict; blinda aqui
+    if isinstance(x, dict):
+        x = next(iter(x.values()))
+
+    df = x.fillna("")
 
     pesos = {}
     carteira_atual = None
@@ -111,7 +119,7 @@ def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx", sheet_name=None):
         if a == "" and b == "":
             continue
 
-        # header carteira
+        # Header: "<CARTEIRA> | Neutro" [file:81]
         if b.lower() == "neutro" and a != "":
             carteira_atual = a
             pesos.setdefault(carteira_atual, {})
@@ -136,7 +144,7 @@ def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx", sheet_name=None):
 
 
 # =========================
-# Regras do app (buckets RF Brasil)
+# Regras RF Brasil (buckets finais)
 # =========================
 RF_BR_BUCKETS = [
     ("RF Pós", "Fundos de Invest."),
@@ -156,8 +164,8 @@ RF_BR_BUCKETS = [
 
 def rf_buckets_ideal(valor_total_brl: float, pesos_neutro: dict):
     """
-    No Excel, os sub-buckets (Imediato, Bancário...) já estão em % do total.
-    Então pegamos diretamente pelo nome do 'filho'.
+    No seu Excel, subitens (Imediato, Bancário...) já estão como % do total. [file:81]
+    Então usamos diretamente o nome do item (filho).
     """
     out = {}
     for pai, filho in RF_BR_BUCKETS:
@@ -166,6 +174,12 @@ def rf_buckets_ideal(valor_total_brl: float, pesos_neutro: dict):
     return out
 
 def macro_weights_from_neutro(pesos_neutro: dict):
+    """
+    Espera encontrar no Excel as chaves:
+    - 'RV Brasil'
+    - 'Internacional' (ou 'Internacional ')
+    - 'Renda Fixa' e 'Renda Variável' (para split dentro do internacional) [file:81]
+    """
     rv_br = float(pesos_neutro.get("RV Brasil", 0.0))
     intl_total = float(pesos_neutro.get("Internacional", pesos_neutro.get("Internacional ", 0.0)))
 
@@ -225,7 +239,7 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
             yf_ticker = f"{t}.SA" if add_sa_suffix else t
             ticker = yf.Ticker(yf_ticker)
             hist = ticker.history(period="1d")
-            preco = hist["Close"].iloc[-1] if not hist.empty else None
+            preco = hist["Close"].iloc[-1] if (hist is not None and not hist.empty) else None
             if preco is None or pd.isna(preco) or float(preco) <= 0:
                 continue
             precos.append(float(preco))
@@ -295,7 +309,6 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
 # =========================
 st.markdown("## Asset Allocation (Novo)")
 
-# Carrega pesos do Excel (sem caminho manual)
 try:
     pesos_manual = load_pesos_xlsx("Pesos-alocacao.xlsx")
 except Exception as e:
@@ -306,11 +319,13 @@ if not pesos_manual:
     st.error("O arquivo Pesos-alocacao.xlsx foi lido, mas não encontrei carteiras/pesos.")
     st.stop()
 
-carteira = st.sidebar.selectbox("Carteira", list(pesos_manual.keys()))
+# Ordena carteiras para ficar mais agradável
+carteiras = sorted(pesos_manual.keys())
+carteira = st.sidebar.selectbox("Carteira", carteiras)
 
 patrimonio_brl = parse_input_money(st.sidebar.text_input("Patrimônio total (R$)", value="5000000"))
 
-# PTAX automático + fallback manual
+# PTAX automática + fallback manual
 try:
     ptax, data_ptax = get_ptax_usdbrl_last()
     usdbrl = ptax
@@ -342,7 +357,6 @@ valor_rf_br_brl = max(0.0, alocavel_brl - valor_rv_br_brl - valor_int_total_brl)
 st.markdown(f"**Patrimônio (R$):** {format_brl(alocavel_brl)}")
 
 
-# 1) RF Brasil
 with st.expander("1) Renda Fixa (Brasil) — R$", expanded=True):
     st.markdown(f"**Macro RF Brasil (estimado):** {format_brl(valor_rf_br_brl)}")
 
@@ -372,7 +386,6 @@ with st.expander("1) Renda Fixa (Brasil) — R$", expanded=True):
         st.dataframe(df_rf.style.applymap(highlight_dif, subset=["Comprar/Vender"]), use_container_width=True, height=520)
 
 
-# 2) RV Brasil
 with st.expander("2) Renda Variável (Brasil) — R$", expanded=True):
     st.markdown(f"**Macro RV Brasil:** {format_brl(valor_rv_br_brl)}")
 
@@ -387,7 +400,6 @@ with st.expander("2) Renda Variável (Brasil) — R$", expanded=True):
         calcular_rv_yfinance("rvbr_fiis", valor_rv_br_brl, pesos_fiis, moeda="BRL", add_sa_suffix=True)
 
 
-# 3) Internacional
 with st.expander("3) Internacional — US$", expanded=True):
     st.markdown(f"**Macro Internacional:** {format_usd(valor_int_total_usd)}  (≈ {format_brl(valor_int_total_brl)})")
 
