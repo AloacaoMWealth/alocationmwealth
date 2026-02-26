@@ -11,8 +11,23 @@ try:
 except Exception:
     HAS_YF = False
 
-st.set_page_config(page_title="Asset Allocation (Novo)", layout="wide")
+st.set_page_config(page_title="M Wealth | Asset Allocation", layout="wide")
 
+# =========================
+# CSS (layout)
+# =========================
+st.markdown(
+    """
+    <style>
+      .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+      [data-testid="stMetricValue"] { font-size: 1.4rem; }
+      [data-testid="stMetricDelta"] { font-size: 0.9rem; }
+      .mw-subtle { color: rgba(250,250,250,0.65); font-size: 0.9rem; }
+      .mw-divider { border-top: 1px solid rgba(255,255,255,0.08); margin: 0.75rem 0 1rem 0; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # =========================
 # Utils
@@ -55,17 +70,15 @@ def parse_input_money(s):
         return 0.0
 
 def style_compra_venda(val):
-    # verde para comprar (positivo), vermelho para vender (negativo)
     try:
         num = float(str(val).replace("R$", "").replace("US$", "").replace(".", "").replace(",", ".").strip())
     except:
         return ""
     if num > 0:
-        return "color: #2e7d32; font-weight: 600;"  # green
+        return "color: #2e7d32; font-weight: 650;"  # buy
     if num < 0:
-        return "color: #c62828; font-weight: 600;"  # red
-    return "color: #9e9e9e;"
-
+        return "color: #c62828; font-weight: 650;"  # sell
+    return "color: rgba(255,255,255,0.55);"
 
 # =========================
 # PTAX (BCB)
@@ -93,9 +106,8 @@ def get_ptax_usdbrl_last():
         raise ValueError("Sem dados PTAX no período.")
     return float(val[0]["cotacaoVenda"]), val[0]["dataHoraCotacao"]
 
-
 # =========================
-# Excel (Pesos-alocacao.xlsx)
+# Excel pesos
 # =========================
 @st.cache_data
 def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx"):
@@ -134,10 +146,8 @@ def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx"):
 
     return {k: v for k, v in pesos.items() if len(v) > 0}
 
-
 # =========================
-# Buckets RF Brasil (finais)
-# Observação: não usamos "RF Pós" e "Fundos de Invest." como inputs para evitar dupla contagem.
+# Regras
 # =========================
 RF_BR_BUCKETS = [
     ("RF Pós", "Imediato"),
@@ -169,9 +179,8 @@ def rf_buckets_ideal(valor_total_brl: float, pesos_neutro: dict):
         out[f"{pai} > {filho}"] = valor_total_brl * w
     return out
 
-
 # =========================
-# Tickers (iniciais)
+# Tickers
 # =========================
 RV_BR_ACOES = ["CPLE3", "EGIE3", "AXIA3", "ITUB4", "VALE3", "ALOS3", "FLRY3", "ABEV3", "PRIO3", "WEGE3"]
 RV_BR_FIIS  = ["KNRI11", "XPML11", "HGLG11", "PVBI11", "HGRU11", "KNCR11", "KNIP11", "KNCA11"]
@@ -183,9 +192,8 @@ def equal_weights(tickers):
     w = 1.0 / len(tickers)
     return {t: w for t in tickers}
 
-
 # =========================
-# Motor RV (yfinance)
+# RV engine (yfinance)
 # =========================
 def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict, moeda: str, add_sa_suffix: bool):
     if valor_total <= 0 or not pesos_ticker:
@@ -203,7 +211,7 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
     qtd_input = {}
 
     with col1:
-        st.markdown("Preencha a **quantidade atual** de cada ativo:")
+        st.markdown("Quantidade atual (provisório):")
         for t in pesos_ticker.keys():
             qtd_input[t] = st.text_input(
                 t,
@@ -217,8 +225,7 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
     for t in ativos:
         try:
             yf_ticker = f"{t}.SA" if add_sa_suffix else t
-            ticker = yf.Ticker(yf_ticker)
-            hist = ticker.history(period="1d")
+            hist = yf.Ticker(yf_ticker).history(period="1d")
             preco = hist["Close"].iloc[-1] if (hist is not None and not hist.empty) else None
             if preco is None or pd.isna(preco) or float(preco) <= 0:
                 continue
@@ -242,16 +249,14 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
     qt_atual = np.array(qt_atual_ok, dtype=int)
 
     delta = qt_ideal - qt_atual
-    oper = np.where(delta > 0, "Comprar", np.where(delta < 0, "Vender", "-"))
-    qtop = np.abs(delta)
-
+    acao = np.where(delta > 0, "Comprar", np.where(delta < 0, "Vender", "-"))
     df = pd.DataFrame({
         "Ativo": ativos_ok,
         "Preço": [format_brl(p) if moeda == "BRL" else f"{p:.2f}" for p in precos],
         "Peso": [fmt_pct(w) for w in pesos_ok],
         "Qtd ideal": qt_ideal,
         "Qtd atual": qt_atual,
-        "Ação": oper,
+        "Ação": acao,
         "Diferença": delta,
         "Valor ideal": [fmt_money(v) for v in valor_ideal],
         "Valor atual": [fmt_money(p*q) for p, q in zip(precos, qt_atual)],
@@ -261,81 +266,90 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
         st.dataframe(
             df.style.applymap(style_compra_venda, subset=["Diferença"]),
             use_container_width=True,
-            height=550,
+            height=540,
+            hide_index=True
         )
 
-        valor_ideal_total = float(np.sum(precos * qt_ideal))
-        valor_atual_total = float(np.sum(precos * qt_atual))
-        impacto = valor_ideal_total - valor_atual_total
-
+        impacto = float(np.sum(precos * qt_ideal) - np.sum(precos * qt_atual))
         st.markdown(f"**Impacto financeiro estimado:** {fmt_money(impacto)}")
 
         df_export = pd.DataFrame({
             "Ativo": ativos_ok,
             "C/V": np.where(delta > 0, "C", np.where(delta < 0, "V", "-")),
-            "Quantidade": qtop,
+            "Quantidade": np.abs(delta),
             "Preço": precos,
         })
 
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        out = BytesIO()
+        with pd.ExcelWriter(out, engine="openpyxl") as writer:
             df_export.to_excel(writer, sheet_name="Basket", index=False)
 
         st.download_button(
             label=f"Baixar Basket ({nome_bloco}).xlsx",
-            data=output.getvalue(),
+            data=out.getvalue(),
             file_name=f"basket_{nome_bloco}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
+# =========================
+# Header (logo + título)
+# =========================
+h1, h2 = st.columns([0.14, 0.86], vertical_alignment="center")
+with h1:
+    try:
+        st.image("Logo-M-Wealth.jpg", use_container_width=True)
+    except Exception:
+        pass
+with h2:
+    st.markdown("## Asset Allocation")
+    st.markdown('<div class="mw-subtle">Protótipo (inputs atuais serão substituídos por posição do cliente)</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="mw-divider"></div>', unsafe_allow_html=True)
 
 # =========================
-# UI
+# Load data
 # =========================
-st.markdown("## Asset Allocation (Novo)")
-
 try:
     pesos_manual = load_pesos_xlsx("Pesos-alocacao.xlsx")
 except Exception as e:
     st.error(f"Erro ao ler Pesos-alocacao.xlsx: {type(e).__name__}: {e}")
     st.stop()
 
-if not pesos_manual:
-    st.error("Arquivo lido, mas não encontrei carteiras/pesos.")
-    st.stop()
-
 carteiras = sorted(pesos_manual.keys())
-carteira = st.sidebar.selectbox("Carteira", carteiras)
 
-patrimonio_brl = parse_input_money(st.sidebar.text_input("Patrimônio total (R$)", value="5000000"))
+with st.sidebar:
+    st.markdown("### Parâmetros")
+    carteira = st.selectbox("Carteira", carteiras)
+    patrimonio_brl = parse_input_money(st.text_input("Patrimônio total (R$)", value="5000000"))
 
-try:
-    ptax, data_ptax = get_ptax_usdbrl_last()
-    usdbrl = ptax
-    st.sidebar.caption(f"PTAX (venda): {usdbrl:.4f} ({data_ptax})")
-    usar_manual = st.sidebar.checkbox("Editar USD/BRL manualmente", value=False)
-except Exception:
-    usdbrl = 5.00
-    usar_manual = True
-    st.sidebar.warning("Não consegui buscar PTAX automática. Usando USD/BRL manual.")
+    try:
+        ptax, data_ptax = get_ptax_usdbrl_last()
+        usdbrl = ptax
+        st.caption(f"PTAX (venda): {usdbrl:.4f} ({data_ptax})")
+        usar_manual = st.checkbox("Editar USD/BRL manualmente", value=False)
+    except Exception:
+        usdbrl = 5.00
+        usar_manual = True
+        st.warning("Falha ao buscar PTAX. Usando USD/BRL manual.")
 
-if usar_manual:
-    usdbrl = parse_input_money(st.sidebar.text_input("USD/BRL", value=str(usdbrl).replace(".", ",")))
+    if usar_manual:
+        usdbrl = parse_input_money(st.text_input("USD/BRL", value=str(usdbrl).replace(".", ",")))
 
+# =========================
+# Compute
+# =========================
 alocavel_brl = max(0.0, patrimonio_brl)
-
 p = pesos_manual[carteira]
+
 rf_br_w, rv_br_w, intl_w, intl_rf_w, intl_rv_w = macro_weights_from_neutro(p)
 
-# Split RV Brasil em Ações / FIIs usando o Excel (não duplica mais)
+# Split RV BR (corrige duplicação)
 w_acoes = float(p.get("Ações", 0.0))
 w_fiis = float(p.get("FIIs", 0.0))
 den_rv = w_acoes + w_fiis
 if den_rv > 0:
-    w_acoes = w_acoes / den_rv
-    w_fiis = w_fiis / den_rv
+    w_acoes, w_fiis = w_acoes / den_rv, w_fiis / den_rv
 else:
-    # fallback: tudo em ações se não tiver subdivisão
     w_acoes, w_fiis = 1.0, 0.0
 
 valor_rv_total_brl = alocavel_brl * rv_br_w
@@ -351,22 +365,30 @@ valor_int_rv_usd = max(0.0, valor_int_total_usd - valor_int_rf_usd)
 
 valor_rf_br_brl = max(0.0, alocavel_brl - valor_rv_total_brl - valor_int_total_brl)
 
-st.markdown(
-    f"**Patrimônio (R$):** {format_brl(alocavel_brl)}  \n"
-    f"RF BR: {fmt_pct(rf_br_w)} | RV BR: {fmt_pct(rv_br_w)} | Internacional: {fmt_pct(intl_w)}"
-)
+# =========================
+# Cards topo
+# =========================
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Patrimônio (R$)", format_brl(alocavel_brl))
+c2.metric("RF Brasil", format_brl(valor_rf_br_brl), delta=fmt_pct(rf_br_w))
+c3.metric("RV Brasil", format_brl(valor_rv_total_brl), delta=f"Ações {fmt_pct(w_acoes)} | FIIs {fmt_pct(w_fiis)}")
+c4.metric("Internacional", format_brl(valor_int_total_brl), delta=f"{fmt_pct(intl_w)} | PTAX {usdbrl:.4f}")
 
-# 1) RF Brasil
+st.markdown('<div class="mw-divider"></div>', unsafe_allow_html=True)
+
+# =========================
+# 1) RF
+# =========================
 with st.expander("1) Renda Fixa (Brasil) — R$", expanded=True):
-    st.markdown(f"**Macro RF Brasil (estimado):** {format_brl(valor_rf_br_brl)}")
+    st.markdown(f"**Macro RF Brasil:** {format_brl(valor_rf_br_brl)}")
 
     ideal = rf_buckets_ideal(alocavel_brl, p)
 
-    col_in, col_out = st.columns([1.2, 2.0], gap="large")
+    col_in, col_out = st.columns([1.05, 1.95], gap="large")
     rf_atual = {}
 
     with col_in:
-        st.markdown("Preencha o **valor atual** por bucket (R$):")
+        st.markdown("Valores atuais (provisório):")
         for bucket in ideal.keys():
             rf_atual[bucket] = parse_input_money(
                 st.text_input(bucket, value=st.session_state.get(f"rf_{bucket}", ""), key=f"rf_{bucket}")
@@ -387,37 +409,34 @@ with st.expander("1) Renda Fixa (Brasil) — R$", expanded=True):
         st.dataframe(
             df_rf.style.applymap(style_compra_venda, subset=["Comprar/Vender"]),
             use_container_width=True,
-            height=520
+            height=520,
+            hide_index=True
         )
 
-# 2) RV Brasil
+# =========================
+# 2) RV BR
+# =========================
 with st.expander("2) Renda Variável (Brasil) — R$", expanded=True):
     st.markdown(
         f"**Macro RV Brasil:** {format_brl(valor_rv_total_brl)} "
-        f"(Ações: {format_brl(valor_rv_acoes_brl)}, FIIs: {format_brl(valor_rv_fiis_brl)})"
+        f"(Ações: {format_brl(valor_rv_acoes_brl)} | FIIs: {format_brl(valor_rv_fiis_brl)})"
     )
-
     tab1, tab2 = st.tabs(["Ações", "FIIs"])
-
     with tab1:
-        pesos_acoes = equal_weights(RV_BR_ACOES)
-        calcular_rv_yfinance("rvbr_acoes", valor_rv_acoes_brl, pesos_acoes, moeda="BRL", add_sa_suffix=True)
-
+        calcular_rv_yfinance("rvbr_acoes", valor_rv_acoes_brl, equal_weights(RV_BR_ACOES), moeda="BRL", add_sa_suffix=True)
     with tab2:
-        pesos_fiis = equal_weights(RV_BR_FIIS)
-        calcular_rv_yfinance("rvbr_fiis", valor_rv_fiis_brl, pesos_fiis, moeda="BRL", add_sa_suffix=True)
+        calcular_rv_yfinance("rvbr_fiis", valor_rv_fiis_brl, equal_weights(RV_BR_FIIS), moeda="BRL", add_sa_suffix=True)
 
-# 3) Internacional
+# =========================
+# 3) INT
+# =========================
 with st.expander("3) Internacional — US$", expanded=True):
-    st.markdown(f"**Macro Internacional:** {format_usd(valor_int_total_usd)}  (≈ {format_brl(valor_int_total_brl)})")
+    st.markdown(f"**Macro Internacional:** {format_usd(valor_int_total_usd)} (≈ {format_brl(valor_int_total_brl)})")
 
     colA, colB = st.columns([1, 1], gap="large")
-
     with colA:
         st.markdown(f"**Internacional RF:** {format_usd(valor_int_rf_usd)}")
-        st.info("RF Internacional está consolidada. Se você definir buckets (ex.: Treasuries, IG, HY etc.), eu abro igual RF Brasil.")
-
+        st.info("RF Internacional está consolidada (por enquanto).")
     with colB:
         st.markdown(f"**Internacional RV:** {format_usd(valor_int_rv_usd)}")
-        pesos_int = equal_weights(RV_INT)
-        calcular_rv_yfinance("int_rv", valor_int_rv_usd, pesos_int, moeda="USD", add_sa_suffix=False)
+        calcular_rv_yfinance("int_rv", valor_int_rv_usd, equal_weights(RV_INT), moeda="USD", add_sa_suffix=False)
