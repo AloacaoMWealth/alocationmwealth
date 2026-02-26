@@ -299,7 +299,7 @@ st.markdown("## Asset Allocation (Novo)")
 try:
     pesos_manual = load_pesos_xlsx("Pesos-alocacao.xlsx")
 except Exception as e:
-    st.error("Não consegui ler o arquivo Pesos-alocacao.xlsx. Verifique se ele está na raiz do repositório.")
+    st.error(f"Erro ao ler Pesos-alocacao.xlsx: {type(e).__name__}: {e}")
     st.stop()
 
 if not pesos_manual:
