@@ -297,7 +297,7 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
 h1, h2 = st.columns([0.14, 0.86], vertical_alignment="center")
 with h1:
     try:
-        st.image("Logo-M-Wealth.jpg", use_container_width=True)
+        st.image("Logo-M-Wealth.png", use_container_width=True)
     except Exception:
         pass
 with h2:
@@ -440,3 +440,4 @@ with st.expander("3) Internacional — US$", expanded=True):
     with colB:
         st.markdown(f"**Internacional RV:** {format_usd(valor_int_rv_usd)}")
         calcular_rv_yfinance("int_rv", valor_int_rv_usd, equal_weights(RV_INT), moeda="USD", add_sa_suffix=False)
+
