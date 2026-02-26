@@ -14,9 +14,10 @@ except Exception:
 
 st.set_page_config(page_title="Asset Allocation (Novo)", layout="wide")
 
-# -------------------------
+
+# =========================
 # Utils
-# -------------------------
+# =========================
 def safe_int(val):
     try:
         return int(float(str(val).strip().replace(",", ".")))
@@ -56,120 +57,10 @@ def highlight_dif(val):
         color = "black"
     return f"color: {color};"
 
-# -------------------------
-# Manual CSV (robusto)
-# -------------------------
-IGNORAR_NOS = {"Multimercados", "Alternativos"}
 
-def _pct_to_float(x: str) -> float:
-    s = str(x).strip().replace('"', '')
-    if s == "" or s.lower() == "nan":
-        return 0.0
-    s = s.replace("%", "").replace(".", "").replace(",", ".")
-    try:
-        return float(s) / 100.0
-    except:
-        return 0.0
-
-def _read_csv_robusto(file_or_path):
-    # file_or_path pode ser path (str) ou arquivo do uploader (BytesIO)
-    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin1"):
-        try:
-            return pd.read_csv(
-                file_or_path,
-                header=None,
-                dtype=str,
-                keep_default_na=False,
-                encoding=enc,
-            )
-        except UnicodeDecodeError:
-            continue
-    return pd.read_csv(
-        file_or_path,
-        header=None,
-        dtype=str,
-        keep_default_na=False,
-        engine="python",
-        encoding="latin1",
-    )
-
-@st.cache_data
-def parse_manual_csv_from_df(df: pd.DataFrame):
-    """
-    Retorna: pesos[carteira]["Neutro"][no] = peso (0-1)
-    Só Neutro.
-    """
-    pesos = {}
-    ncols = df.shape[1]
-
-    def is_min(s): 
-        s = str(s).strip().lower()
-        return ("mín" in s) or ("min" in s)
-
-    def is_neutro(s): 
-        s = str(s).strip().lower()
-        return "neut" in s
-
-    def is_max(s):
-        s = str(s).strip().lower()
-        return ("máx" in s) or ("max" in s)
-
-    # varre coluna a coluna e identifica blocos [Carteira, Min, Neutro, Max]
-    for col in range(0, ncols - 3):
-        header = str(df.iloc[0, col]).strip().replace('"', '')
-        if header == "":
-            continue
-
-        h1 = df.iloc[0, col + 1]
-        h2 = df.iloc[0, col + 2]
-        h3 = df.iloc[0, col + 3]
-
-        if not (is_min(h1) and is_neutro(h2) and is_max(h3)):
-            continue
-
-        nome = header
-        pesos.setdefault(nome, {"Neutro": {}})
-
-        for r in range(1, len(df)):
-            no = str(df.iloc[r, col]).strip().replace('"', '')
-            if no == "" or no in IGNORAR_NOS:
-                continue
-
-            pesos[nome]["Neutro"][no] = _pct_to_float(df.iloc[r, col + 2])  # só Neutro
-
-    # remove vazias
-    pesos = {k: v for k, v in pesos.items() if len(v["Neutro"]) > 0}
-    return pesos
-
-def load_manual_weights():
-    """
-    Tenta:
-      1) arquivo na raiz do projeto
-      2) upload pelo usuário
-    """
-    default_name = "Manual-de-Alocacao-Asset-Allocation-Novo.csv"
-
-    # tenta ler do repo (raiz)
-    try:
-        df = _read_csv_robusto(default_name)
-        pesos = parse_manual_csv_from_df(df)
-        if pesos:
-            return pesos, default_name, None
-    except Exception:
-        pass
-
-    # fallback: uploader
-    up = st.sidebar.file_uploader("Subir Manual (CSV)", type=["csv"])
-    if up is None:
-        return {}, default_name, "Envie o CSV do Manual no uploader (ou deixe o arquivo na raiz do repo)."
-
-    df = _read_csv_robusto(up)
-    pesos = parse_manual_csv_from_df(df)
-    return pesos, up.name, None
-
-# -------------------------
+# =========================
 # PTAX (BCB) - última cotação disponível (venda)
-# -------------------------
+# =========================
 @st.cache_data(ttl=3600)
 def get_ptax_usdbrl_last():
     """
@@ -197,9 +88,56 @@ def get_ptax_usdbrl_last():
         raise ValueError("Sem dados PTAX no período.")
     return float(val[0]["cotacaoVenda"]), val[0]["dataHoraCotacao"]
 
-# -------------------------
-# Buckets RF Brasil
-# -------------------------
+
+# =========================
+# Leitura do Excel (Neutro empilhado)
+# Arquivo esperado: Pesos-alocacao.xlsx (Planilha1)
+# Formato:
+#   <CARTEIRA> | Neutro
+#   <Bucket>   | <peso decimal>   (ex.: 0.3, 1, 0)
+# =========================
+@st.cache_data
+def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx", sheet_name=None):
+    df = pd.read_excel(path_xlsx, sheet_name=sheet_name, header=None, engine="openpyxl")
+    df = df.fillna("")
+
+    pesos = {}
+    carteira_atual = None
+
+    for _, row in df.iterrows():
+        a = str(row.iloc[0]).strip()
+        b = str(row.iloc[1]).strip()
+
+        if a == "" and b == "":
+            continue
+
+        # header carteira
+        if b.lower() == "neutro" and a != "":
+            carteira_atual = a
+            pesos.setdefault(carteira_atual, {})
+            continue
+
+        if carteira_atual is None:
+            continue
+
+        bucket = a
+        if bucket == "":
+            continue
+
+        try:
+            w = float(str(row.iloc[1]).replace(",", ".").strip())
+        except:
+            w = 0.0
+
+        pesos[carteira_atual][bucket] = w
+
+    pesos = {k: v for k, v in pesos.items() if len(v) > 0}
+    return pesos
+
+
+# =========================
+# Regras do app (buckets RF Brasil)
+# =========================
 RF_BR_BUCKETS = [
     ("RF Pós", "Fundos de Invest."),
     ("RF Pós", "Imediato"),
@@ -217,23 +155,30 @@ RF_BR_BUCKETS = [
 ]
 
 def rf_buckets_ideal(valor_total_brl: float, pesos_neutro: dict):
+    """
+    No Excel, os sub-buckets (Imediato, Bancário...) já estão em % do total.
+    Então pegamos diretamente pelo nome do 'filho'.
+    """
     out = {}
     for pai, filho in RF_BR_BUCKETS:
         w = float(pesos_neutro.get(filho, 0.0))
         out[f"{pai} > {filho}"] = valor_total_brl * w
     return out
 
-def macro_weights_from_manual_neutro(pesos_neutro: dict):
+def macro_weights_from_neutro(pesos_neutro: dict):
     rv_br = float(pesos_neutro.get("RV Brasil", 0.0))
-    intl_total = float(pesos_neutro.get("Internacional ", 0.0))  # tem espaço no CSV
+    intl_total = float(pesos_neutro.get("Internacional", pesos_neutro.get("Internacional ", 0.0)))
+
     intl_rf = float(pesos_neutro.get("Renda Fixa", 0.0))
     intl_rv = float(pesos_neutro.get("Renda Variável", 0.0))
+
     rf_br = max(0.0, 1.0 - rv_br - intl_total)
     return rf_br, rv_br, intl_total, intl_rf, intl_rv
 
-# -------------------------
-# Tickers iniciais (teste)
-# -------------------------
+
+# =========================
+# Tickers (iniciais)
+# =========================
 RV_BR_ACOES = ["CPLE3", "EGIE3", "AXIA3", "ITUB4", "VALE3", "ALOS3", "FLRY3", "ABEV3", "PRIO3", "WEGE3"]
 RV_BR_FIIS  = ["KNRI11", "XPML11", "HGLG11", "PVBI11", "HGRU11", "KNCR11", "KNIP11", "KNCA11"]
 RV_INT = ["VOO", "VOOG", "VIOV"]
@@ -244,9 +189,10 @@ def equal_weights(tickers):
     w = 1.0 / len(tickers)
     return {t: w for t in tickers}
 
-# -------------------------
-# RV engine
-# -------------------------
+
+# =========================
+# RV engine (yfinance)
+# =========================
 def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict, moeda: str, add_sa_suffix: bool):
     if valor_total <= 0 or not pesos_ticker:
         st.info(f"{nome_bloco}: sem alocação ou sem tickers cadastrados.")
@@ -343,21 +289,24 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-# -------------------------
+
+# =========================
 # UI
-# -------------------------
+# =========================
 st.markdown("## Asset Allocation (Novo)")
 
-pesos_manual, manual_fonte, manual_erro = load_manual_weights()
-if manual_erro:
-    st.sidebar.warning(manual_erro)
-
-if not pesos_manual:
-    st.error("Não foi possível carregar o Manual. Suba o CSV no uploader ou deixe o arquivo na raiz do repositório.")
+# Carrega pesos do Excel (sem caminho manual)
+try:
+    pesos_manual = load_pesos_xlsx("Pesos-alocacao.xlsx")
+except Exception as e:
+    st.error("Não consegui ler o arquivo Pesos-alocacao.xlsx. Verifique se ele está na raiz do repositório.")
     st.stop()
 
-st.sidebar.caption(f"Manual carregado: {manual_fonte}")
-carteira = st.sidebar.selectbox("Carteira (manual)", list(pesos_manual.keys()))
+if not pesos_manual:
+    st.error("O arquivo Pesos-alocacao.xlsx foi lido, mas não encontrei carteiras/pesos.")
+    st.stop()
+
+carteira = st.sidebar.selectbox("Carteira", list(pesos_manual.keys()))
 
 patrimonio_brl = parse_input_money(st.sidebar.text_input("Patrimônio total (R$)", value="5000000"))
 
@@ -377,8 +326,8 @@ if usar_manual:
 
 alocavel_brl = max(0.0, patrimonio_brl)
 
-pesos_neutro = pesos_manual[carteira]["Neutro"]
-rf_br_w, rv_br_w, intl_total_w, intl_rf_w, intl_rv_w = macro_weights_from_manual_neutro(pesos_neutro)
+pesos_neutro = pesos_manual[carteira]
+rf_br_w, rv_br_w, intl_total_w, intl_rf_w, intl_rv_w = macro_weights_from_neutro(pesos_neutro)
 
 valor_rv_br_brl = alocavel_brl * rv_br_w
 valor_int_total_brl = alocavel_brl * intl_total_w
@@ -392,9 +341,8 @@ valor_rf_br_brl = max(0.0, alocavel_brl - valor_rv_br_brl - valor_int_total_brl)
 
 st.markdown(f"**Patrimônio (R$):** {format_brl(alocavel_brl)}")
 
-# -------------------------
+
 # 1) RF Brasil
-# -------------------------
 with st.expander("1) Renda Fixa (Brasil) — R$", expanded=True):
     st.markdown(f"**Macro RF Brasil (estimado):** {format_brl(valor_rf_br_brl)}")
 
@@ -423,11 +371,10 @@ with st.expander("1) Renda Fixa (Brasil) — R$", expanded=True):
     with col_out:
         st.dataframe(df_rf.style.applymap(highlight_dif, subset=["Comprar/Vender"]), use_container_width=True, height=520)
 
-# -------------------------
+
 # 2) RV Brasil
-# -------------------------
 with st.expander("2) Renda Variável (Brasil) — R$", expanded=True):
-    st.markdown(f"**Macro RV Brasil (manual):** {format_brl(valor_rv_br_brl)}")
+    st.markdown(f"**Macro RV Brasil:** {format_brl(valor_rv_br_brl)}")
 
     tab1, tab2 = st.tabs(["Ações", "FIIs"])
 
@@ -439,19 +386,18 @@ with st.expander("2) Renda Variável (Brasil) — R$", expanded=True):
         pesos_fiis = equal_weights(RV_BR_FIIS)
         calcular_rv_yfinance("rvbr_fiis", valor_rv_br_brl, pesos_fiis, moeda="BRL", add_sa_suffix=True)
 
-# -------------------------
+
 # 3) Internacional
-# -------------------------
 with st.expander("3) Internacional — US$", expanded=True):
-    st.markdown(f"**Macro Internacional (manual):** {format_usd(valor_int_total_usd)}  (≈ {format_brl(valor_int_total_brl)})")
+    st.markdown(f"**Macro Internacional:** {format_usd(valor_int_total_usd)}  (≈ {format_brl(valor_int_total_brl)})")
 
     colA, colB = st.columns([1, 1], gap="large")
 
     with colA:
-        st.markdown(f"**Internacional RF (manual):** {format_usd(valor_int_rf_usd)}")
-        st.info("RF Internacional está consolidada como 'Renda Fixa' no manual. Se você definir buckets (ex.: Treasuries, IG, HY, etc.), eu abro igual RF Brasil.")
+        st.markdown(f"**Internacional RF:** {format_usd(valor_int_rf_usd)}")
+        st.info("RF Internacional está consolidada. Se você definir buckets (ex.: Treasuries, IG, HY etc.), eu abro igual RF Brasil.")
 
     with colB:
-        st.markdown(f"**Internacional RV (manual):** {format_usd(valor_int_rv_usd)}")
+        st.markdown(f"**Internacional RV:** {format_usd(valor_int_rv_usd)}")
         pesos_int = equal_weights(RV_INT)
         calcular_rv_yfinance("int_rv", valor_int_rv_usd, pesos_int, moeda="USD", add_sa_suffix=False)
