@@ -297,7 +297,7 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
 h1, h2 = st.columns([0.14, 0.86], vertical_alignment="center")
 with h1:
     try:
-        st.image("Logo-M-Wealth.png", use_container_width=True)
+        st.image("Logo-M-Wealth.jpg", use_container_width=True)
     except Exception:
         pass
 with h2:
@@ -433,11 +433,15 @@ with st.expander("2) Renda Variável (Brasil) — R$", expanded=True):
 with st.expander("3) Internacional — US$", expanded=True):
     st.markdown(f"**Macro Internacional:** {format_usd(valor_int_total_usd)} (≈ {format_brl(valor_int_total_brl)})")
 
-    colA, colB = st.columns([1, 1], gap="large")
-    with colA:
-        st.markdown(f"**Internacional RF:** {format_usd(valor_int_rf_usd)}")
-        st.info("RF Internacional está consolidada (por enquanto).")
-    with colB:
-        st.markdown(f"**Internacional RV:** {format_usd(valor_int_rv_usd)}")
-        calcular_rv_yfinance("int_rv", valor_int_rv_usd, equal_weights(RV_INT), moeda="USD", add_sa_suffix=False)
+    # Linha 1: RF
+    st.markdown(f"**Internacional RF:** {format_usd(valor_int_rf_usd)}")
+    st.info("RF Internacional está consolidada (por enquanto).")
 
+    st.markdown("---")
+
+    # Linha 2: RV (agora vem abaixo do RF, largura total)
+    st.markdown(f"**Internacional RV:** {format_usd(valor_int_rv_usd)}")
+
+    # Opcional: deixar os inputs num expander para reduzir poluição visual
+    with st.expander("Detalhar RV Internacional (VOO/VOOG/VIOV)", expanded=True):
+        calcular_rv_yfinance("int_rv", valor_int_rv_usd, equal_weights(RV_INT), moeda="USD", add_sa_suffix=False)
