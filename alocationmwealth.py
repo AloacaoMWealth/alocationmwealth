@@ -1,13 +1,20 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from io import BytesIO
+
+# Import defensivo do yfinance (evita tela vermelha se algo falhar no deploy)
+try:
+    import yfinance as yf
+    HAS_YF = True
+except Exception:
+    HAS_YF = False
+
 
 st.set_page_config(page_title="Asset Allocation (Novo)", layout="wide")
 
 # -------------------------
-# Utils (mantém estilo do seu app atual)
+# Utils
 # -------------------------
 def safe_int(val):
     try:
@@ -29,7 +36,14 @@ def format_usd(v):
 
 def parse_input_money(s):
     try:
-        return float(str(s).replace("R$", "").replace("US$", "").replace(".", "").replace(",", ".").strip())
+        return float(
+            str(s)
+            .replace("R$", "")
+            .replace("US$", "")
+            .replace(".", "")
+            .replace(",", ".")
+            .strip()
+        )
     except:
         return 0.0
 
@@ -41,10 +55,11 @@ def highlight_dif(val):
         color = "black"
     return f"color: {color};"
 
+
 # -------------------------
 # Manual (CSV) -> pesos por carteira/cenário
 # -------------------------
-IGNORAR_NOS = {"Multimercados", "Alternativos"}  # pedido por você [file:2]
+IGNORAR_NOS = {"Multimercados", "Alternativos"}
 
 def _pct_to_float(x: str) -> float:
     s = str(x).strip().replace('"', '')
@@ -56,13 +71,38 @@ def _pct_to_float(x: str) -> float:
     except:
         return 0.0
 
+def _read_csv_robusto(path_csv: str) -> pd.DataFrame:
+    # tenta UTF-8, UTF-8 com BOM e Latin1/Windows-1252
+    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin1"):
+        try:
+            return pd.read_csv(
+                path_csv,
+                header=None,
+                dtype=str,
+                keep_default_na=False,
+                encoding=enc,
+            )
+        except UnicodeDecodeError:
+            continue
+
+    # último recurso: engine python
+    return pd.read_csv(
+        path_csv,
+        header=None,
+        dtype=str,
+        keep_default_na=False,
+        engine="python",
+        encoding="latin1",
+    )
+
 @st.cache_data
 def parse_manual_csv(path_csv: str):
     """
     Retorna: pesos[carteira][cenario][no] = peso (0-1)
     Cenários: Min / Neutro / Max
     """
-    df = pd.read_csv(path_csv, header=None, dtype=str, keep_default_na=False)
+    df = _read_csv_robusto(path_csv)
+
     pesos = {}
     col = 0
     ncols = df.shape[1]
@@ -98,12 +138,12 @@ def parse_manual_csv(path_csv: str):
 
         col += 4
 
-    # Remove carteiras vazias
     pesos = {k: v for k, v in pesos.items() if len(v["Neutro"]) > 0}
     return pesos
 
+
 # -------------------------
-# Buckets finais RF (Brasil) e Internacional RF
+# Buckets finais RF (Brasil)
 # -------------------------
 RF_BR_BUCKETS = [
     ("RF Pós", "Fundos de Invest."),
@@ -124,32 +164,31 @@ RF_BR_BUCKETS = [
 def rf_buckets_ideal(valor_total_brl: float, pesos: dict):
     out = {}
     for pai, filho in RF_BR_BUCKETS:
-        w = float(pesos.get(filho, 0.0))  # no manual, subitens aparecem como % do total [file:2]
+        w = float(pesos.get(filho, 0.0))
         out[f"{pai} > {filho}"] = valor_total_brl * w
     return out
 
 def macro_weights_from_manual(pesos: dict):
     """
-    Retorna pesos macro (0-1) para:
-      RF_BR, RV_BR, INT_TOTAL, INT_RF, INT_RV
-    Usando as linhas do manual: 'RV Brasil', 'Internacional ', 'Renda Fixa', 'Renda Variável' [file:2]
+    Usando linhas do manual: 'RV Brasil', 'Internacional ', 'Renda Fixa', 'Renda Variável'
     """
     rv_br = float(pesos.get("RV Brasil", 0.0))
-    intl_total = float(pesos.get("Internacional ", 0.0))  # repare o espaço no CSV [file:2]
-    # Dentro de internacional:
+    intl_total = float(pesos.get("Internacional ", 0.0))  # note o espaço no CSV
+
     intl_rf = float(pesos.get("Renda Fixa", 0.0))
     intl_rv = float(pesos.get("Renda Variável", 0.0))
-    # RF BR é o resto (ignorando multimercados/alternativos)
+
     rf_br = max(0.0, 1.0 - rv_br - intl_total)
     return rf_br, rv_br, intl_total, intl_rf, intl_rv
 
+
 # -------------------------
-# RV: tickers iniciais (pesos iguais para teste)
+# Tickers (iniciais para teste)
 # -------------------------
 RV_BR_ACOES = ["CPLE3", "EGIE3", "AXIA3", "ITUB4", "VALE3", "ALOS3", "FLRY3", "ABEV3", "PRIO3", "WEGE3"]
-RV_BR_FIIS = ["KNRI11", "XPML11", "HGLG11", "PVBI11", "HGRU11", "KNCR11", "KNIP11", "KNCA11"]
+RV_BR_FIIS  = ["KNRI11", "XPML11", "HGLG11", "PVBI11", "HGRU11", "KNCR11", "KNIP11", "KNCA11"]
 
-RV_INT = ["VOO", "VOOG", "VIOV"]  # Schwab / EUA
+RV_INT = ["VOO", "VOOG", "VIOV"]  # US tickers (Schwab)
 
 def equal_weights(tickers):
     if not tickers:
@@ -157,21 +196,20 @@ def equal_weights(tickers):
     w = 1.0 / len(tickers)
     return {t: w for t in tickers}
 
+
 # -------------------------
-# RV engine (reuso do seu bloco atual, generalizado)
+# RV engine (Brasil e Internacional)
 # -------------------------
 def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict, moeda: str, add_sa_suffix: bool):
-    """
-    Mostra Ideal x Atual por ticker usando yfinance e exporta basket.
-    moeda: 'BRL' ou 'USD' (só muda formatação)
-    add_sa_suffix: True para Brasil (.SA), False para internacional (ticker puro)
-    """
     if valor_total <= 0 or not pesos_ticker:
         st.info(f"{nome_bloco}: sem alocação ou sem tickers cadastrados.")
         return
 
-    fmt = format_brl if moeda == "BRL" else format_usd
+    if not HAS_YF:
+        st.error("yfinance não está disponível neste ambiente. Verifique o requirements.txt e reinicie o app.")
+        return
 
+    fmt = format_brl if moeda == "BRL" else format_usd
     st.markdown(f"**Valor ideal do bloco:** {fmt(valor_total)}")
 
     col1, col2 = st.columns([1.1, 2.2], gap="large")
@@ -180,14 +218,14 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
     with col1:
         st.markdown("Preencha a **quantidade atual** de cada ativo:")
         for t in pesos_ticker.keys():
-            qtd_input[t] = st.text_input(t, value=st.session_state.get(f"qtd_{nome_bloco}_{t}", ""), key=f"qtd_{nome_bloco}_{t}")
+            qtd_input[t] = st.text_input(
+                t,
+                value=st.session_state.get(f"qtd_{nome_bloco}_{t}", ""),
+                key=f"qtd_{nome_bloco}_{t}"
+            )
 
-    # Preços
     ativos = list(pesos_ticker.keys())
-    precos = []
-    ativos_ok = []
-    pesos_ok = []
-    qt_atual_ok = []
+    precos, ativos_ok, pesos_ok, qt_atual_ok = [], [], [], []
 
     for t in ativos:
         try:
@@ -201,7 +239,7 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
             ativos_ok.append(t)
             pesos_ok.append(float(pesos_ticker[t]))
             qt_atual_ok.append(safe_int(qtd_input.get(t, 0)))
-        except:
+        except Exception:
             continue
 
     if not ativos_ok:
@@ -210,18 +248,19 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
 
     precos = np.array(precos, dtype=float)
     pesos_ok = np.array(pesos_ok, dtype=float)
-    pesos_ok = pesos_ok / pesos_ok.sum()  # normaliza por segurança
-    valor_ideal = valor_total * pesos_ok
+    pesos_ok = pesos_ok / pesos_ok.sum()
 
+    valor_ideal = valor_total * pesos_ok
     qt_ideal = np.nan_to_num(valor_ideal / precos, nan=0, posinf=0, neginf=0).astype(int)
     qt_atual = np.array(qt_atual_ok, dtype=int)
+
     delta = qt_ideal - qt_atual
     oper = np.where(delta > 0, "C", np.where(delta < 0, "V", "-"))
     qtop = np.abs(delta)
 
     df = pd.DataFrame({
         "Ativo": ativos_ok,
-        "Preço": [fmt(p) if moeda == "BRL" else f"{p:.2f}" for p in precos],
+        "Preço": [format_brl(p) if moeda == "BRL" else f"{p:.2f}" for p in precos],
         "Peso": pesos_ok,
         "Qtd Ideal": qt_ideal,
         "Qtd Atual": qt_atual,
@@ -233,32 +272,30 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
     with col2:
         st.dataframe(df.style.applymap(highlight_dif, subset=["Diferença"]), use_container_width=True, height=550)
 
-        # Custo
         valor_ideal_total = float(np.sum(precos * qt_ideal))
         valor_atual_total = float(np.sum(precos * qt_atual))
         custo = valor_ideal_total - valor_atual_total
 
-        if moeda == "BRL":
-            st.markdown(f"**Impacto financeiro estimado:** {format_brl(custo)}")
-        else:
-            st.markdown(f"**Impacto financeiro estimado:** {format_usd(custo)}")
+        st.markdown(f"**Impacto financeiro estimado:** {fmt(custo)}")
 
-        # Basket export
         df_export = pd.DataFrame({
             "Ativo": ativos_ok,
             "C/V": oper,
             "Quantidade": qtop,
             "Preço": precos,
         })
+
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df_export.to_excel(writer, sheet_name="Basket", index=False)
+
         st.download_button(
             label=f"Baixar Basket ({nome_bloco}).xlsx",
             data=output.getvalue(),
             file_name=f"basket_{nome_bloco}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
 
 # -------------------------
 # UI
@@ -284,27 +321,32 @@ liquidez = parse_input_money(st.sidebar.text_input("Liquidez (R$)", value="R$ 0,
 alocavel_brl = max(0.0, patrimonio_brl - fora_estrategia - liquidez)
 
 pesos = pesos_manual[carteira][cenario]
-
 rf_br_w, rv_br_w, intl_total_w, intl_rf_w, intl_rv_w = macro_weights_from_manual(pesos)
 
-# Valores macro (Brasil em R$; Internacional em US$ convertido)
 valor_rv_br_brl = alocavel_brl * rv_br_w
 valor_int_total_brl = alocavel_brl * intl_total_w
 valor_int_total_usd = (valor_int_total_brl / usdbrl) if usdbrl > 0 else 0.0
 
-valor_int_rf_usd = valor_int_total_usd * (intl_rf_w / max(1e-9, (intl_rf_w + intl_rv_w))) if (intl_rf_w + intl_rv_w) > 0 else 0.0
-valor_int_rv_usd = valor_int_total_usd - valor_int_rf_usd
+# Divide internacional RF/RV proporcionalmente (caso manual tenha ambos)
+den = (intl_rf_w + intl_rv_w)
+if den > 0:
+    valor_int_rf_usd = valor_int_total_usd * (intl_rf_w / den)
+else:
+    valor_int_rf_usd = 0.0
+valor_int_rv_usd = max(0.0, valor_int_total_usd - valor_int_rf_usd)
 
-valor_rf_br_brl = alocavel_brl - valor_rv_br_brl - valor_int_total_brl
+valor_rf_br_brl = max(0.0, alocavel_brl - valor_rv_br_brl - valor_int_total_brl)
 
 st.markdown(f"**Patrimônio alocável (R$):** {format_brl(alocavel_brl)}")
+
 
 # -------------------------
 # Macro 1: RF Brasil (R$)
 # -------------------------
 with st.expander("1) Renda Fixa (Brasil) — R$", expanded=True):
     st.markdown(f"**Macro RF Brasil (estimado):** {format_brl(valor_rf_br_brl)}")
-    ideal = rf_buckets_ideal(alocavel_brl, pesos)  # usa buckets do manual direto [file:2]
+
+    ideal = rf_buckets_ideal(alocavel_brl, pesos)
 
     col_in, col_out = st.columns([1.2, 2.0], gap="large")
     rf_atual = {}
@@ -312,20 +354,23 @@ with st.expander("1) Renda Fixa (Brasil) — R$", expanded=True):
     with col_in:
         st.markdown("Preencha o **valor atual** por bucket (R$):")
         for bucket in ideal.keys():
-            rf_atual[bucket] = parse_input_money(st.text_input(bucket, value=st.session_state.get(f"rf_{bucket}", ""), key=f"rf_{bucket}"))
+            rf_atual[bucket] = parse_input_money(
+                st.text_input(bucket, value=st.session_state.get(f"rf_{bucket}", ""), key=f"rf_{bucket}")
+            )
 
     rows = []
     for bucket, v_ideal in ideal.items():
         v_atual = float(rf_atual.get(bucket, 0.0))
         rows.append([bucket, v_ideal, v_atual, v_ideal - v_atual])
 
-    df_rf = pd.DataFrame(rows, columns=["Bucket", "Ideal (R$)", "Atual (R$)", "Comprar/Vender (R$)"])
-    df_rf["Ideal (R$)"] = df_rf["Ideal (R$)"].apply(format_brl)
-    df_rf["Atual (R$)"] = df_rf["Atual (R$)"].apply(format_brl)
-    df_rf["Comprar/Vender (R$)"] = df_rf["Comprar/Vender (R$)"].apply(format_brl)
+    df_rf = pd.DataFrame(rows, columns=["Bucket", "Ideal", "Atual", "Comprar/Vender"])
+    df_rf["Ideal"] = df_rf["Ideal"].apply(format_brl)
+    df_rf["Atual"] = df_rf["Atual"].apply(format_brl)
+    df_rf["Comprar/Vender"] = df_rf["Comprar/Vender"].apply(format_brl)
 
     with col_out:
-        st.dataframe(df_rf.style.applymap(highlight_dif, subset=["Comprar/Vender (R$)"]), use_container_width=True, height=520)
+        st.dataframe(df_rf.style.applymap(highlight_dif, subset=["Comprar/Vender"]), use_container_width=True, height=520)
+
 
 # -------------------------
 # Macro 2: RV Brasil (R$)
@@ -343,6 +388,7 @@ with st.expander("2) Renda Variável (Brasil) — R$", expanded=True):
         pesos_fiis = equal_weights(RV_BR_FIIS)
         calcular_rv_yfinance("rvbr_fiis", valor_rv_br_brl, pesos_fiis, moeda="BRL", add_sa_suffix=True)
 
+
 # -------------------------
 # Macro 3: Internacional (US$)
 # -------------------------
@@ -350,10 +396,10 @@ with st.expander("3) Internacional — US$", expanded=True):
     st.markdown(f"**Macro Internacional (manual):** {format_usd(valor_int_total_usd)}  (≈ {format_brl(valor_int_total_brl)})")
 
     colA, colB = st.columns([1, 1], gap="large")
+
     with colA:
         st.markdown(f"**Internacional RF (manual):** {format_usd(valor_int_rf_usd)}")
-        # Por enquanto: só consolidado, pois o manual não detalha buckets de RF internacional além do macro [file:2]
-        st.info("RF Internacional: hoje está consolidada no manual como 'Renda Fixa'. Podemos detalhar em buckets depois.")
+        st.info("RF Internacional está consolidada como 'Renda Fixa' no manual. Podemos detalhar em buckets quando você definir a árvore.")
 
     with colB:
         st.markdown(f"**Internacional RV (manual):** {format_usd(valor_int_rv_usd)}")
