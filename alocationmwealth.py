@@ -430,10 +430,10 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
         for f in filhos:
             i = float(ideal_por_filho[(pai, f)])
             a = float(rfatual.get((pai, f), 0.0))
-            rows.append([f"↳ {disp(f)}", "", i, a, i - a, (i / alocavel_brl) if alocavel_brl > 0 else 0.0])
+            rows.append([f"↳ {disp(f)}", i, a, i - a, (i / alocavel_brl) if alocavel_brl > 0 else 0.0])
             meta.append((False,))
 
-    dfrf = pd.DataFrame(rows, columns=["Bucket", "Detalhe", "Ideal", "Atual", "Comprar/Vender", "Peso"])
+    dfrf = pd.DataFrame(rows, columns=["Bucket", "Ideal", "Atual", "Comprar/Vender", "Peso"])
 
     dfrf_fmt = dfrf.copy()
     dfrf_fmt["Ideal"] = dfrf_fmt["Ideal"].apply(format_brl)
@@ -467,10 +467,8 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
             hide_index=True,
             column_config={
                 "Bucket": st.column_config.Column(width="large"),
-                "Detalhe": st.column_config.Column(width="medium"),
-            }
-        )
-
+        }
+)
 # =========================
 # 2) RV Brasil
 # =========================
