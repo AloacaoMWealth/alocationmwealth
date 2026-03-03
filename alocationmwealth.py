@@ -326,9 +326,9 @@ with h2:
 # Load pesos
 # =========================
 try:
-    pesos_manual = load_pesos_xlsx("Pesos-alocacao-2.xlsx")
+    pesos_manual = load_pesos_xlsx("Pesos-alocacao.xlsx")
 except Exception as e:
-    st.error(f"Erro ao ler Pesos-alocacao-2.xlsx: {type(e).__name__} - {e}")
+    st.error(f"Erro ao ler Pesos-alocacao.xlsx: {type(e).__name__} - {e}")
     st.stop()
 
 carteiras = sorted(pesos_manual.keys())
