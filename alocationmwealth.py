@@ -382,7 +382,7 @@ c4.metric("Internacional", format_brl(valor_int_total_brl), delta=f"{fmt_pct(int
 st.markdown('<div class="mw-divider"></div>', unsafe_allow_html=True)
 
 # =========================
-# 1) RF Brasil (AGRUPADO + CLARO)
+# 1) RF Brasil (AGRUPADO + SEM DETALHE)
 # =========================
 with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
     st.markdown(f"**Macro RF Brasil:** {format_brl(valor_rfbr_brl)}")
@@ -415,7 +415,7 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
         )
 
     rows = []
-    meta = []  # (is_group, detalhe)
+    meta = []  # is_group
 
     for pai, filhos in grupos.items():
         ideal_pai = sum(ideal_por_filho[(pai, f)] for f in filhos)
@@ -423,15 +423,14 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
         cv_pai = ideal_pai - atual_pai
         peso_pai = (ideal_pai / alocavel_brl) if alocavel_brl > 0 else 0.0
 
-        detalhe = " + ".join([disp(f) for f in filhos])
-        rows.append([pai, detalhe, ideal_pai, atual_pai, cv_pai, peso_pai])
-        meta.append((True,))
+        rows.append([pai, ideal_pai, atual_pai, cv_pai, peso_pai])
+        meta.append(True)
 
         for f in filhos:
             i = float(ideal_por_filho[(pai, f)])
             a = float(rfatual.get((pai, f), 0.0))
             rows.append([f"↳ {disp(f)}", i, a, i - a, (i / alocavel_brl) if alocavel_brl > 0 else 0.0])
-            meta.append((False,))
+            meta.append(False)
 
     dfrf = pd.DataFrame(rows, columns=["Bucket", "Ideal", "Atual", "Comprar/Vender", "Peso"])
 
@@ -442,7 +441,7 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
     dfrf_fmt["Peso"] = dfrf_fmt["Peso"].apply(fmt_pct)
 
     with colout:
-        is_group = [m[0] for m in meta]
+        is_group = meta
 
         def _style_rows(row):
             i = row.name
@@ -465,10 +464,9 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
             use_container_width=True,
             height=600,
             hide_index=True,
-            column_config={
-                "Bucket": st.column_config.Column(width="large"),
-        }
-)
+            column_config={"Bucket": st.column_config.Column(width="large")}
+        )
+
 # =========================
 # 2) RV Brasil
 # =========================
