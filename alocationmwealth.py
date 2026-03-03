@@ -128,7 +128,7 @@ def get_ptax_usdbrl_last():
 # Excel pesos
 # =========================
 @st.cache_data
-def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao-2.xlsx"):
+def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx"):
     xls = pd.ExcelFile(path_xlsx, engine="openpyxl")
     sheet0 = xls.sheet_names[0]
     df = pd.read_excel(xls, sheet_name=sheet0, header=None).fillna("")
