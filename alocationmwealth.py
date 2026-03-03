@@ -24,9 +24,6 @@ st.markdown(
       div[data-testid="stMetricDelta"] { font-size: 0.9rem; }
       .mw-subtle { color: rgba(250,250,250,0.65); font-size: 0.9rem; }
       .mw-divider { border-top: 1px solid rgba(255,255,255,0.08); margin: 0.75rem 0 1rem 0; }
-
-      .mw-group-name { font-weight: 800; }
-      .mw-group-sub { color: rgba(255,255,255,0.55); font-size: 0.85rem; margin-top: 0.1rem; }
     </style>
     """,
     unsafe_allow_html=True
@@ -97,7 +94,6 @@ DISPLAY_BUCKET = {
     "Bancário Pré": "Bancário",
     "Tesouro Pré": "Tesouro",
 }
-
 def disp(nome: str) -> str:
     return DISPLAY_BUCKET.get(nome, nome)
 
@@ -128,7 +124,7 @@ def get_ptax_usdbrl_last():
 # Excel pesos
 # =========================
 @st.cache_data
-def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx"):
+def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao-2.xlsx"):
     xls = pd.ExcelFile(path_xlsx, engine="openpyxl")
     sheet0 = xls.sheet_names[0]
     df = pd.read_excel(xls, sheet_name=sheet0, header=None).fillna("")
@@ -314,7 +310,7 @@ def calcular_rv_yfinance(nome_bloco: str, valor_total: float, pesos_ticker: dict
 h1, h2 = st.columns([0.14, 0.86], vertical_alignment="center")
 with h1:
     try:
-        st.image("Logo-M-Wealth.jpg", use_container_width=True)
+        st.image("Logo-M-Wealth.png", use_container_width=True)
     except Exception:
         pass
 with h2:
@@ -326,9 +322,9 @@ with h2:
 # Load pesos
 # =========================
 try:
-    pesos_manual = load_pesos_xlsx("Pesos-alocacao.xlsx")
+    pesos_manual = load_pesos_xlsx("Pesos-alocacao-2.xlsx")
 except Exception as e:
-    st.error(f"Erro ao ler Pesos-alocacao.xlsx: {type(e).__name__} - {e}")
+    st.error(f"Erro ao ler Pesos-alocacao-2.xlsx: {type(e).__name__} - {e}")
     st.stop()
 
 carteiras = sorted(pesos_manual.keys())
@@ -356,7 +352,6 @@ p = pesos_manual[carteira]
 
 rfbr_w, rvbr_w, intl_w, intlrf_w, intlrv_w = macro_weights_from_neutro(p)
 
-# split RV BR (ações vs FIIs)
 w_acoes = float(p.get("Ações", 0.0))
 w_fiis = float(p.get("FIIs", 0.0))
 den_rv = w_acoes + w_fiis
@@ -378,9 +373,6 @@ valor_int_rv_usd = max(0.0, valor_int_total_usd - valor_int_rf_usd)
 
 valor_rfbr_brl = max(0.0, alocavel_brl - valor_rv_total_brl - valor_int_total_brl)
 
-# =========================
-# Top metrics
-# =========================
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Patrimônio (R$)", format_brl(alocavel_brl))
 c2.metric("RF Brasil", format_brl(valor_rfbr_brl), delta=fmt_pct(rfbr_w))
@@ -390,14 +382,13 @@ c4.metric("Internacional", format_brl(valor_int_total_brl), delta=f"{fmt_pct(int
 st.markdown('<div class="mw-divider"></div>', unsafe_allow_html=True)
 
 # =========================
-# 1) RF Brasil (AGRUPADO + BONITO)
+# 1) RF Brasil (AGRUPADO + CLARO)
 # =========================
 with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
     st.markdown(f"**Macro RF Brasil:** {format_brl(valor_rfbr_brl)}")
 
     ideal_raw = rf_buckets_ideal(alocavel_brl, p)
 
-    # transforma chaves "Pai > Filho" para (pai, filho) e valores
     ideal_por_filho = {}
     grupos = {}
     for pai, filho in RF_BR_BUCKETS:
@@ -406,7 +397,6 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
 
     colin, colout = st.columns([1.05, 1.95], gap="large")
 
-    # Inputs do atual por filho
     rfatual = {}
     with colin:
         st.markdown("Valores atuais (provisório) – por bucket")
@@ -416,7 +406,6 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
                 st.text_input(disp(filho), value=st.session_state.get(key, ""), key=key)
             )
 
-    # Warning de buckets faltantes no Excel
     faltantes = [(pai, filho) for pai, filho in RF_BR_BUCKETS if filho not in p]
     if faltantes:
         st.warning(
@@ -425,9 +414,8 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
             + ("..." if len(faltantes) > 12 else "")
         )
 
-    # Monta tabela agrupada com metadata (grupo/subtítulo)
     rows = []
-    group_meta = []  # (is_group, subtitle)
+    meta = []  # (is_group, detalhe)
 
     for pai, filhos in grupos.items():
         ideal_pai = sum(ideal_por_filho[(pai, f)] for f in filhos)
@@ -435,17 +423,17 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
         cv_pai = ideal_pai - atual_pai
         peso_pai = (ideal_pai / alocavel_brl) if alocavel_brl > 0 else 0.0
 
-        subt = " + ".join([disp(f) for f in filhos])
-        rows.append([pai, ideal_pai, atual_pai, cv_pai, peso_pai])
-        group_meta.append((True, subt))
+        detalhe = " + ".join([disp(f) for f in filhos])
+        rows.append([pai, detalhe, ideal_pai, atual_pai, cv_pai, peso_pai])
+        meta.append((True,))
 
         for f in filhos:
             i = float(ideal_por_filho[(pai, f)])
             a = float(rfatual.get((pai, f), 0.0))
-            rows.append([f"↳ {disp(f)}", i, a, i - a, (i / alocavel_brl) if alocavel_brl > 0 else 0.0])
-            group_meta.append((False, ""))
+            rows.append([f"↳ {disp(f)}", "", i, a, i - a, (i / alocavel_brl) if alocavel_brl > 0 else 0.0])
+            meta.append((False,))
 
-    dfrf = pd.DataFrame(rows, columns=["Bucket", "Ideal", "Atual", "Comprar/Vender", "Peso"])
+    dfrf = pd.DataFrame(rows, columns=["Bucket", "Detalhe", "Ideal", "Atual", "Comprar/Vender", "Peso"])
 
     dfrf_fmt = dfrf.copy()
     dfrf_fmt["Ideal"] = dfrf_fmt["Ideal"].apply(format_brl)
@@ -454,30 +442,20 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
     dfrf_fmt["Peso"] = dfrf_fmt["Peso"].apply(fmt_pct)
 
     with colout:
-        is_group = [g for g, _ in group_meta]
-        subtexts = [s for _, s in group_meta]
-
-        bucket_html = []
-        for i, b in enumerate(dfrf["Bucket"].tolist()):
-            if is_group[i]:
-                bucket_html.append(
-                    f"<div class='mw-group-name'>{b}</div>"
-                    f"<div class='mw-group-sub'>{subtexts[i]}</div>"
-                )
-            else:
-                bucket_html.append(b)
-
-        show = dfrf_fmt.copy()
-        show["Bucket"] = bucket_html
+        is_group = [m[0] for m in meta]
 
         def _style_rows(row):
             i = row.name
             if is_group[i]:
-                return ["background-color: rgba(255,255,255,0.04); font-weight: 800;"] * len(row)
+                return [
+                    "background-color: rgba(255,255,255,0.04); "
+                    "font-weight: 800; "
+                    "border-top: 1px solid rgba(255,255,255,0.10);"
+                ] * len(row)
             return [""] * len(row)
 
         sty = (
-            show.style
+            dfrf_fmt.style
             .apply(_style_rows, axis=1)
             .applymap(style_compra_venda, subset=["Comprar/Vender"])
         )
@@ -487,7 +465,10 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
             use_container_width=True,
             height=600,
             hide_index=True,
-            column_config={"Bucket": st.column_config.Column(width="large")}
+            column_config={
+                "Bucket": st.column_config.Column(width="large"),
+                "Detalhe": st.column_config.Column(width="medium"),
+            }
         )
 
 # =========================
