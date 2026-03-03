@@ -24,6 +24,9 @@ st.markdown(
       div[data-testid="stMetricDelta"] { font-size: 0.9rem; }
       .mw-subtle { color: rgba(250,250,250,0.65); font-size: 0.9rem; }
       .mw-divider { border-top: 1px solid rgba(255,255,255,0.08); margin: 0.75rem 0 1rem 0; }
+
+      .mw-group-name { font-weight: 800; }
+      .mw-group-sub { color: rgba(255,255,255,0.55); font-size: 0.85rem; margin-top: 0.1rem; }
     </style>
     """,
     unsafe_allow_html=True
@@ -88,6 +91,17 @@ def style_compra_venda(val):
     return "color: rgba(255,255,255,0.55);"
 
 # =========================
+# Labels (display clean)
+# =========================
+DISPLAY_BUCKET = {
+    "Bancário Pré": "Bancário",
+    "Tesouro Pré": "Tesouro",
+}
+
+def disp(nome: str) -> str:
+    return DISPLAY_BUCKET.get(nome, nome)
+
+# =========================
 # PTAX (BCB)
 # =========================
 @st.cache_data(ttl=3600)
@@ -114,7 +128,7 @@ def get_ptax_usdbrl_last():
 # Excel pesos
 # =========================
 @st.cache_data
-def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx"):
+def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao-2.xlsx"):
     xls = pd.ExcelFile(path_xlsx, engine="openpyxl")
     sheet0 = xls.sheet_names[0]
     df = pd.read_excel(xls, sheet_name=sheet0, header=None).fillna("")
@@ -124,21 +138,27 @@ def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx"):
     for _, row in df.iterrows():
         a = str(row.iloc[0]).strip()
         b = str(row.iloc[1]).strip()
+
         if a == "" and b == "":
             continue
+
         if b.lower() == "neutro" and a != "":
             carteira_atual = a
             pesos.setdefault(carteira_atual, {})
             continue
+
         if carteira_atual is None:
             continue
+
         bucket = a
         if bucket == "":
             continue
+
         try:
             w = float(str(row.iloc[1]).replace(",", ".").strip())
         except:
             w = 0.0
+
         pesos[carteira_atual][bucket] = w
 
     return {k: v for k, v in pesos.items() if len(v) > 0}
@@ -306,9 +326,9 @@ with h2:
 # Load pesos
 # =========================
 try:
-    pesos_manual = load_pesos_xlsx("Pesos-alocacao.xlsx")
+    pesos_manual = load_pesos_xlsx("Pesos-alocacao-2.xlsx")
 except Exception as e:
-    st.error(f"Erro ao ler Pesos-alocacao.xlsx: {type(e).__name__} - {e}")
+    st.error(f"Erro ao ler Pesos-alocacao-2.xlsx: {type(e).__name__} - {e}")
     st.stop()
 
 carteiras = sorted(pesos_manual.keys())
@@ -317,6 +337,7 @@ with st.sidebar:
     st.markdown("### Parâmetros da carteira")
     carteira = st.selectbox("Carteira", carteiras)
     patrimonio_brl = parse_input_money(st.text_input("Patrimônio total (R$)", value="500000"))
+
     try:
         ptax, data_ptax = get_ptax_usdbrl_last()
         usdbrl = ptax
@@ -326,12 +347,13 @@ with st.sidebar:
         usdbrl = 5.00
         usar_manual = True
         st.warning("Falha ao buscar PTAX. Usando USDBRL manual.")
+
     if usar_manual:
         usdbrl = parse_input_money(st.text_input("USDBRL", value=str(usdbrl).replace(".", ",")))
 
 alocavel_brl = max(0.0, patrimonio_brl)
-
 p = pesos_manual[carteira]
+
 rfbr_w, rvbr_w, intl_w, intlrf_w, intlrv_w = macro_weights_from_neutro(p)
 
 # split RV BR (ações vs FIIs)
@@ -368,7 +390,7 @@ c4.metric("Internacional", format_brl(valor_int_total_brl), delta=f"{fmt_pct(int
 st.markdown('<div class="mw-divider"></div>', unsafe_allow_html=True)
 
 # =========================
-# 1) RF Brasil (AGRUPADO POR INDEXADOR)
+# 1) RF Brasil (AGRUPADO + BONITO)
 # =========================
 with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
     st.markdown(f"**Macro RF Brasil:** {format_brl(valor_rfbr_brl)}")
@@ -384,32 +406,47 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
 
     colin, colout = st.columns([1.05, 1.95], gap="large")
 
-    # Inputs de atual POR FILHO
+    # Inputs do atual por filho
     rfatual = {}
     with colin:
         st.markdown("Valores atuais (provisório) – por bucket")
         for pai, filho in RF_BR_BUCKETS:
             key = f"rf_{pai}_{filho}"
             rfatual[(pai, filho)] = parse_input_money(
-                st.text_input(filho, value=st.session_state.get(key, ""), key=key)
+                st.text_input(disp(filho), value=st.session_state.get(key, ""), key=key)
             )
 
-    # Tabela AGRUPADA: linha pai (soma) + linhas filhas
+    # Warning de buckets faltantes no Excel
+    faltantes = [(pai, filho) for pai, filho in RF_BR_BUCKETS if filho not in p]
+    if faltantes:
+        st.warning(
+            "Buckets não encontrados no Excel (serão tratados como 0%): "
+            + ", ".join([f"{pai} → {f}" for pai, f in faltantes[:12]])
+            + ("..." if len(faltantes) > 12 else "")
+        )
+
+    # Monta tabela agrupada com metadata (grupo/subtítulo)
     rows = []
+    group_meta = []  # (is_group, subtitle)
+
     for pai, filhos in grupos.items():
         ideal_pai = sum(ideal_por_filho[(pai, f)] for f in filhos)
         atual_pai = sum(float(rfatual.get((pai, f), 0.0)) for f in filhos)
         cv_pai = ideal_pai - atual_pai
         peso_pai = (ideal_pai / alocavel_brl) if alocavel_brl > 0 else 0.0
 
-        rows.append([pai, ideal_pai, atual_pai, cv_pai, peso_pai, True])
+        subt = " + ".join([disp(f) for f in filhos])
+        rows.append([pai, ideal_pai, atual_pai, cv_pai, peso_pai])
+        group_meta.append((True, subt))
 
         for f in filhos:
             i = float(ideal_por_filho[(pai, f)])
             a = float(rfatual.get((pai, f), 0.0))
-            rows.append([f"↳ {f}", i, a, i - a, (i / alocavel_brl) if alocavel_brl > 0 else 0.0, False])
+            rows.append([f"↳ {disp(f)}", i, a, i - a, (i / alocavel_brl) if alocavel_brl > 0 else 0.0])
+            group_meta.append((False, ""))
 
-    dfrf = pd.DataFrame(rows, columns=["Bucket", "Ideal", "Atual", "Comprar/Vender", "Peso", "_is_group"])
+    dfrf = pd.DataFrame(rows, columns=["Bucket", "Ideal", "Atual", "Comprar/Vender", "Peso"])
+
     dfrf_fmt = dfrf.copy()
     dfrf_fmt["Ideal"] = dfrf_fmt["Ideal"].apply(format_brl)
     dfrf_fmt["Atual"] = dfrf_fmt["Atual"].apply(format_brl)
@@ -417,31 +454,50 @@ with st.expander("1) Renda Fixa Brasil (R$)", expanded=True):
     dfrf_fmt["Peso"] = dfrf_fmt["Peso"].apply(fmt_pct)
 
     with colout:
+        is_group = [g for g, _ in group_meta]
+        subtexts = [s for _, s in group_meta]
+
+        bucket_html = []
+        for i, b in enumerate(dfrf["Bucket"].tolist()):
+            if is_group[i]:
+                bucket_html.append(
+                    f"<div class='mw-group-name'>{b}</div>"
+                    f"<div class='mw-group-sub'>{subtexts[i]}</div>"
+                )
+            else:
+                bucket_html.append(b)
+
+        show = dfrf_fmt.copy()
+        show["Bucket"] = bucket_html
+
+        def _style_rows(row):
+            i = row.name
+            if is_group[i]:
+                return ["background-color: rgba(255,255,255,0.04); font-weight: 800;"] * len(row)
+            return [""] * len(row)
+
         sty = (
-            dfrf_fmt.drop(columns=["_is_group"])
-            .style
+            show.style
+            .apply(_style_rows, axis=1)
             .applymap(style_compra_venda, subset=["Comprar/Vender"])
         )
-
-        # destaca linhas pai (grupo) com negrito
-        is_group = dfrf["_is_group"].tolist()
-        def _bold_rows(row):
-            return ["font-weight: 800;" if is_group[row.name] else "" for _ in row]
-
-        sty = sty.apply(_bold_rows, axis=1)
 
         st.dataframe(
             sty,
             use_container_width=True,
-            height=560,
-            hide_index=True
+            height=600,
+            hide_index=True,
+            column_config={"Bucket": st.column_config.Column(width="large")}
         )
 
 # =========================
 # 2) RV Brasil
 # =========================
 with st.expander("2) Renda Variável Brasil (R$)", expanded=True):
-    st.markdown(f"**Macro RV Brasil:** {format_brl(valor_rv_total_brl)} | Ações {format_brl(valor_rv_acoes_brl)} | FIIs {format_brl(valor_rv_fiis_brl)}")
+    st.markdown(
+        f"**Macro RV Brasil:** {format_brl(valor_rv_total_brl)} | "
+        f"Ações {format_brl(valor_rv_acoes_brl)} | FIIs {format_brl(valor_rv_fiis_brl)}"
+    )
     tab1, tab2 = st.tabs(["Ações", "FIIs"])
     with tab1:
         calcular_rv_yfinance("rvbr_acoes", valor_rv_acoes_brl, equal_weights(RV_BR_ACOES), moeda="BRL", add_sa_suffix=True)
