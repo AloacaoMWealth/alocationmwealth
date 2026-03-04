@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import hashlib
 
+
 DATA_DIR = Path("data")
 LATEST_PARQUET = DATA_DIR / "positions_latest.parquet"
 LATEST_META = DATA_DIR / "positions_meta.json"
@@ -22,6 +23,7 @@ REPO_CS_CSV = REPO_POS_DIR / "CSProdutos.csv"
 def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
+
 def _normalize_broker(x: str) -> str:
     s = (x or "").strip().upper()
     if "SCHWAB" in s or "CHARLES" in s or s in {"CS"}:
@@ -32,11 +34,13 @@ def _normalize_broker(x: str) -> str:
         return "BTG"
     return s
 
+
 def _normalize_account(x) -> str:
     s = "" if pd.isna(x) else str(x).strip()
     if s.endswith(".0"):
         s = s[:-2]
     return s
+
 
 def _exists_all_repo_files() -> tuple[bool, list[str]]:
     missing = []
@@ -67,7 +71,9 @@ def load_control_accounts(src=None) -> pd.DataFrame:
     df.columns = [str(c).strip() for c in df.columns]
 
     col_broker = "CORRETORA"
-    col_account = "NÚMERO DA CONTA" if "NÚMERO DA CONTA" in df.columns else ("NMERO DA CONTA" if "NMERO DA CONTA" in df.columns else None)
+    col_account = "NÚMERO DA CONTA" if "NÚMERO DA CONTA" in df.columns else (
+        "NMERO DA CONTA" if "NMERO DA CONTA" in df.columns else None
+    )
     if col_account is None:
         raise ValueError("Controle: não encontrei coluna NÚMERO DA CONTA (ou NMERO DA CONTA).")
 
@@ -99,26 +105,28 @@ def parse_cs_positions(src) -> pd.DataFrame:
 
     lines = text.splitlines()
     header_idx = None
+
     for i, ln in enumerate(lines):
         if ln.strip().startswith("Account,"):
             header_idx = i
             break
+
     if header_idx is None:
-        # fallback: tenta achar qualquer coluna com "Account" no começo
         for i, ln in enumerate(lines):
             if ln.strip().lower().startswith("account,"):
                 header_idx = i
                 break
+
     if header_idx is None:
         raise ValueError("CS: não encontrei a linha de header iniciando com 'Account,' no CSV.")
 
     csv_data = "\n".join(lines[header_idx:])
     raw = pd.read_csv(io.StringIO(csv_data), sep=",", engine="python")
-
     raw.columns = [str(c).strip() for c in raw.columns]
 
-    # Normaliza nome da coluna Symbol/CUSIP (no seu arquivo é exatamente assim)
-    sym_col = "Symbol/CUSIP" if "Symbol/CUSIP" in raw.columns else ("CUSIP" if "CUSIP" in raw.columns else ("Symbol" if "Symbol" in raw.columns else None))
+    sym_col = "Symbol/CUSIP" if "Symbol/CUSIP" in raw.columns else (
+        "CUSIP" if "CUSIP" in raw.columns else ("Symbol" if "Symbol" in raw.columns else None)
+    )
     if sym_col is None:
         sym_col = "Symbol/CUSIP"
 
@@ -133,7 +141,6 @@ def parse_cs_positions(src) -> pd.DataFrame:
         "moeda": "USD",
     })
 
-    # "Market Value" vem com $ e vírgulas
     df["valor_mercado"] = (
         df["valor_mercado"].astype(str)
         .str.replace("$", "", regex=False)
@@ -185,27 +192,42 @@ def parse_btg_positions(src) -> pd.DataFrame:
     df0 = pd.read_excel(src)
     df0.columns = [str(c).strip() for c in df0.columns]
 
-    col_account = "Conta" if "Conta" in df0.columns else ("CONTA" if "CONTA" in df0.columns else None)
-    col_prod = "Ativo/Produto" if "Ativo/Produto" in df0.columns else ("Produto" if "Produto" in df0.columns else None)
-    col_val = "Valor Bruto" if "Valor Bruto" in df0.columns else ("Valor" if "Valor" in df0.columns else None)
-    col_qty = "Quantidade" if "Quantidade" in df0.columns else None
+    def pick(*names):
+        for n in names:
+            if n in df0.columns:
+                return n
+        return None
+
+    col_account = pick("Conta", "CONTA")
+    col_prod = pick("Produto", "Ativo/Produto", "AtivoProduto")
+    col_val = pick("Valor Bruto", "ValorBruto", "Valor")
+    col_qty = pick("Quantidade", "Qtd", "Qtde")
+    col_merc = pick("Mercado")
+    col_subm = pick("Sub Mercado", "SubMercado", "Mercado/Sub Mercado")
+    col_estr = pick("Estratégia", "Estrategia", "Estratégia ")
 
     if col_account is None:
         raise ValueError("BTG: não encontrei coluna Conta/CONTA.")
     if col_prod is None or col_val is None:
-        raise ValueError("BTG: não encontrei colunas mínimas (Ativo/Produto e Valor Bruto/Valor).")
+        raise ValueError("BTG: não encontrei colunas mínimas (Produto e Valor Bruto/Valor).")
 
-    df = pd.DataFrame({
+    produto = df0[col_prod].astype(str).str.strip()
+
+    out = pd.DataFrame({
         "corretora": "BTG",
         "conta": df0[col_account].apply(_normalize_account),
-        "asset_id": df0[col_prod].astype(str).str.strip(),
-        "asset_nome": df0[col_prod].astype(str).str.strip(),
-        "asset_tipo": df0.get("Mercado", df0.get("Mercado/Sub Mercado", "BTG")).astype(str).str.strip(),
+        "asset_id": produto,
+        "asset_nome": produto,
+        "asset_tipo": (df0[col_merc].astype(str).str.strip() if col_merc else "BTG"),
+        "mercado": (df0[col_merc].astype(str).str.strip() if col_merc else ""),
+        "sub_mercado": (df0[col_subm].astype(str).str.strip() if col_subm else ""),
+        "estrategia": (df0[col_estr].astype(str).str.strip() if col_estr else ""),
         "valor_mercado": pd.to_numeric(df0[col_val], errors="coerce").fillna(0.0),
         "quantidade": pd.to_numeric(df0[col_qty], errors="coerce").fillna(0.0) if col_qty else 0.0,
         "moeda": "BRL",
     })
-    return df
+
+    return out
 
 
 def classify_bucket_estrategia(df: pd.DataFrame) -> pd.DataFrame:
@@ -215,11 +237,13 @@ def classify_bucket_estrategia(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_and_save_latest(control_df: pd.DataFrame,
-                          xp_df: pd.DataFrame,
-                          btg_df: pd.DataFrame,
-                          cs_df: pd.DataFrame,
-                          meta: dict) -> pd.DataFrame:
+def build_and_save_latest(
+    control_df: pd.DataFrame,
+    xp_df: pd.DataFrame,
+    btg_df: pd.DataFrame,
+    cs_df: pd.DataFrame,
+    meta: dict
+) -> pd.DataFrame:
     DATA_DIR.mkdir(exist_ok=True)
 
     pos = pd.concat([xp_df, btg_df, cs_df], ignore_index=True)
