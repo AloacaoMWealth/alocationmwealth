@@ -13,7 +13,7 @@ LATEST_META = DATA_DIR / "positions_meta.json"
 CONTROL_PARQUET = DATA_DIR / "control_accounts_latest.parquet"
 
 REPO_POS_DIR = Path("posicoes")
-REPO_CONTROL_XLSX = REPO_POS_DIR / "ControleDeContas.xlsx"
+REPO_CONTROL_XLSX = REPO_POS_DIR / "Contas.xlsx"
 REPO_XP_XLSX = REPO_POS_DIR / "XP.xlsx"
 REPO_BTG_XLSX = REPO_POS_DIR / "BTG.xlsx"
 REPO_CS_CSV = REPO_POS_DIR / "CSProdutos.csv"
@@ -49,7 +49,7 @@ def _exists_all_repo_files() -> tuple[bool, list[str]]:
 def load_control_accounts(src=None) -> pd.DataFrame:
     """
     src pode ser:
-      - None: tenta ler do repo (posicoes/ControleDeContas.xlsx); se não existir, usa cache parquet
+      - None: tenta ler do repo (posicoes/Contas.xlsx); se não existir, usa cache parquet
       - path/str: lê xlsx desse caminho
       - file-like (uploader): lê xlsx do objeto
     """
