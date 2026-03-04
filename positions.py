@@ -1,4 +1,3 @@
-# positions.py
 from __future__ import annotations
 
 import json
@@ -20,7 +19,6 @@ REPO_BTG_XLSX = REPO_POS_DIR / "BTG.xlsx"
 REPO_CS_CSV = REPO_POS_DIR / "CSProdutos.csv"
 
 
-# ---------- helpers ----------
 def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
@@ -37,19 +35,16 @@ def _normalize_broker(x: str) -> str:
 
 
 def _normalize_account(x) -> str:
-    """
-    Normalizador único para garantir casamento entre:
-    - Contas.xlsx (às vezes numérico, vira 12345.0)
-    - BTG (às vezes texto)
-    - XP (às vezes numérico)
-    - CS (texto)
-    """
+    # Normalizador único para garantir casamento entre:
+    # - Contas.xlsx (às vezes numérico, vira 12345.0)
+    # - BTG (às vezes texto)
+    # - XP (às vezes numérico)
+    # - CS (texto)
     if pd.isna(x):
         return ""
     s = str(x).strip()
     if s.endswith(".0"):
         s = s[:-2]
-    # remove espaços internos ocasionais
     s = s.replace(" ", "")
     return s
 
@@ -73,14 +68,7 @@ def _pick_existing(cols: list[str], *names: str) -> str | None:
     return None
 
 
-# ---------- loaders/parsers ----------
 def load_control_accounts(src=None) -> pd.DataFrame:
-    """
-    src pode ser:
-      - None: tenta ler do repo (posicoes/Contas.xlsx); se não existir, usa cache parquet
-      - path/str: lê xlsx desse caminho
-      - file-like (uploader): lê xlsx do objeto
-    """
     DATA_DIR.mkdir(exist_ok=True)
 
     if src is None:
@@ -117,11 +105,6 @@ def load_control_accounts(src=None) -> pd.DataFrame:
 
 
 def parse_cs_positions(src) -> pd.DataFrame:
-    """
-    CSProdutos.csv:
-      Account, Symbol/CUSIP, Name, Security Type, Market Value
-    Observação: vem com linhas de "relatório" antes do header.
-    """
     import io
 
     if isinstance(src, (str, Path)):
@@ -162,7 +145,7 @@ def parse_cs_positions(src) -> pd.DataFrame:
         "asset_nome": raw.get("Name", "").astype(str).str.strip(),
         "asset_tipo": raw.get("Security Type", "").astype(str).str.strip(),
         "valor_mercado": raw.get("Market Value", ""),
-        "quantidade": 0.0,  # esse layout normalmente não traz quantidade
+        "quantidade": 0.0,
         "moeda": "USD",
         "mercado": "",
         "sub_mercado": "",
@@ -176,16 +159,11 @@ def parse_cs_positions(src) -> pd.DataFrame:
         .str.strip()
     )
     df["valor_mercado"] = pd.to_numeric(df["valor_mercado"], errors="coerce").fillna(0.0)
-
     df["asset_id"] = df["asset_id"].replace({"nan": "", "None": ""})
     return df
 
 
 def parse_xp_positions(src) -> pd.DataFrame:
-    """
-    XP.xlsx: lê todas as abas e captura qualquer aba que tenha:
-      CodigoCliente + (CodigoAtivo ou Ativo) + (ValorAtual ou Valor)
-    """
     xls = pd.ExcelFile(src)
     out = []
 
@@ -226,10 +204,6 @@ def parse_xp_positions(src) -> pd.DataFrame:
 
 
 def parse_btg_positions(src) -> pd.DataFrame:
-    """
-    BTG.xlsx (esperado):
-      Conta (texto), Mercado, Sub Mercado ou Mercado/Sub Mercado, Produto, Quantidade, Valor Bruto, Estratégia
-    """
     df0 = pd.read_excel(src)
     df0.columns = [str(c).strip() for c in df0.columns]
     cols = list(df0.columns)
@@ -251,7 +225,7 @@ def parse_btg_positions(src) -> pd.DataFrame:
 
     out = pd.DataFrame({
         "corretora": "BTG",
-        "conta": df0[col_account].apply(_normalize_account),  # <-- garante casamento mesmo com texto vs número
+        "conta": df0[col_account].apply(_normalize_account),
         "asset_id": produto,
         "asset_nome": produto,
         "asset_tipo": (df0[col_merc].astype(str).str.strip() if col_merc else "BTG"),
@@ -266,7 +240,6 @@ def parse_btg_positions(src) -> pd.DataFrame:
     return out
 
 
-# ---------- diagnostics ----------
 def diagnose_positions(df: pd.DataFrame, control_df: pd.DataFrame | None = None, label: str = "") -> dict:
     d: dict = {}
     d["label"] = label
@@ -284,16 +257,14 @@ def diagnose_positions(df: pd.DataFrame, control_df: pd.DataFrame | None = None,
 
             if "conta" in sub.columns:
                 d[f"{b}_unique_accounts"] = int(sub["conta"].nunique(dropna=True))
-
             if "asset_id" in sub.columns:
                 d[f"{b}_unique_assets"] = int(sub["asset_id"].astype(str).nunique(dropna=True))
-
             if "valor_mercado" in sub.columns:
                 d[f"{b}_sum_valor_mercado"] = _safe_sum(sub["valor_mercado"])
 
             keep = [c for c in [
-                "corretora","conta","asset_id","asset_nome","asset_tipo",
-                "valor_mercado","quantidade","moeda","mercado","sub_mercado","estrategia"
+                "corretora", "conta", "asset_id", "asset_nome", "asset_tipo",
+                "valor_mercado", "quantidade", "moeda", "mercado", "sub_mercado", "estrategia"
             ] if c in sub.columns]
             d[f"{b}_sample"] = sub[keep].head(20).to_dict(orient="records")
 
@@ -308,7 +279,6 @@ def diagnose_positions(df: pd.DataFrame, control_df: pd.DataFrame | None = None,
         d["unmatched_rows"] = int((check["_merge"] == "left_only").sum())
         d["unmatched_by_broker"] = check.loc[check["_merge"] == "left_only", "corretora"].value_counts(dropna=False).to_dict()
 
-        # exemplos de chaves não casadas (pra você corrigir conta/corretora)
         examples = (
             check.loc[check["_merge"] == "left_only", ["corretora", "conta"]]
             .drop_duplicates()
@@ -319,7 +289,6 @@ def diagnose_positions(df: pd.DataFrame, control_df: pd.DataFrame | None = None,
     return d
 
 
-# ---------- pipeline ----------
 def classify_bucket_estrategia(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["bucket_estrategia"] = "HOLD_MONITOR"
@@ -337,7 +306,6 @@ def build_and_save_latest(
     DATA_DIR.mkdir(exist_ok=True)
 
     pos = pd.concat([xp_df, btg_df, cs_df], ignore_index=True)
-
     pos["corretora"] = pos["corretora"].apply(_normalize_broker)
     pos["conta"] = pos["conta"].apply(_normalize_account)
     pos["asset_id"] = pos["asset_id"].astype(str).str.strip()

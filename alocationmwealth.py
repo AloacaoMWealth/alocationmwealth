@@ -321,8 +321,8 @@ with h2:
 # =========================
 tab_up, tab_aa = st.tabs(["Atualizar posições", "Asset Allocation"])
 
-with tab_up:
-    st.subheader("Posições (lidas do GitHub)")
+with tabup:
+    st.subheader("Posições lidas do GitHub")
     st.caption("O app lê os arquivos na pasta ./posicoes. Para atualizar, faça commit de novos arquivos com o mesmo nome.")
 
     st.write("Arquivos esperados:")
@@ -333,7 +333,6 @@ with tab_up:
         "posicoes/CSProdutos.csv"
     )
 
-    from pathlib import Path
     base = Path("posicoes")
     paths = {
         "Contas.xlsx": base / "Contas.xlsx",
@@ -343,74 +342,76 @@ with tab_up:
     }
     for name, p in paths.items():
         st.write(f"{'OK' if p.exists() else 'FALTA'} - {name}")
-                 
+
     col1, col2 = st.columns([1, 1])
     with col1:
-        dt_pos = st.date_input("Data da posição", value=datetime.now().date())
+        dtpos = st.date_input("Data da posição", value=datetime.now().date())
     with col2:
         rebuild = st.button("Rebuild latest agora", type="primary")
 
+    def show_diagnostics_from_meta():
+        meta_path = Path("data") / "positions_meta.json"
+        if not meta_path.exists():
+            st.info("Ainda não existe data/positions_meta.json (faça Rebuild).")
+            return
+
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            st.error(f"Não consegui ler positions_meta.json: {type(e).__name__} - {e}")
+            return
+
+        diag = meta.get("diagnostics", {})
+        if not diag:
+            st.warning("positions_meta.json existe, mas não tem campo diagnostics.")
+            st.json(meta)
+            return
+
+        st.markdown("### Diagnóstico por corretora (parser)")
+        st.json(diag)
+
+        def pick_unmatched(d):
+            return {
+                "unmatched_rows": d.get("unmatched_rows"),
+                "unmatched_by_broker": d.get("unmatched_by_broker"),
+                "unmatched_examples": d.get("unmatched_examples"),
+            }
+
+        st.markdown("### Contas que não casaram (resumo)")
+        st.json({
+            "xp_df": pick_unmatched(diag.get("xp_df", {})),
+            "btg_df": pick_unmatched(diag.get("btg_df", {})),
+            "cs_df": pick_unmatched(diag.get("cs_df", {})),
+        })
+
+    def show_quick_counts(df_latest: pd.DataFrame):
+        st.markdown("### Resumo rápido (latest)")
+        if "corretora" in df_latest.columns:
+            st.write("Linhas por corretora:")
+            st.dataframe(df_latest["corretora"].value_counts().rename("linhas"))
+
+        if "CLIENTE" in df_latest.columns:
+            miss = df_latest["CLIENTE"].isna() | (df_latest["CLIENTE"].astype(str).str.strip() == "")
+            st.write(f"Linhas sem match no Contas.xlsx (CLIENTE vazio): {int(miss.sum())}")
+            if "corretora" in df_latest.columns:
+                st.write("Sem match por corretora:")
+                st.dataframe(df_latest.loc[miss, "corretora"].value_counts().rename("linhas"))
+
     if rebuild:
         try:
-            df_latest = posmod.build_latest_from_repo(dt_posicao=dt_pos.isoformat())
-            st.success(f"Rebuild OK! Linhas: {len(df_latest):,}")
-            def show_diagnostics_from_meta():
-                meta_path = Path("data") / "positions_meta.json"
-                if meta_path.exists():
-                    try:
-                        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                    except Exception as e:
-                        st.error(f"Não consegui ler positions_meta.json: {type(e).__name__} - {e}")
-                        return
-            
-                    diag = meta.get("diagnostics", {})
-                    if not diag:
-                        st.warning("positions_meta.json existe, mas não tem campo diagnostics.")
-                        st.json(meta)
-                        return
-            
-                    st.markdown("### Diagnóstico por corretora (parser)")
-                    st.json(diag)
-            
-                    # Mostra só a parte mais útil (unmatched)
-                    def pick_unmatched(d):
-                        return {
-                            "unmatched_rows": d.get("unmatched_rows"),
-                            "unmatched_by_broker": d.get("unmatched_by_broker"),
-                            "unmatched_examples": d.get("unmatched_examples"),
-                        }
-            
-                    st.markdown("### Contas que não casaram (resumo)")
-                    st.json({
-                        "xp_df": pick_unmatched(diag.get("xp_df", {})),
-                        "btg_df": pick_unmatched(diag.get("btg_df", {})),
-                        "cs_df": pick_unmatched(diag.get("cs_df", {})),
-                    })
-                else:
-                    st.info("Ainda não existe data/positions_meta.json (faça Rebuild).")
-            
-            def show_quick_counts(df_latest):
-                st.markdown("### Resumo rápido (latest)")
-                if "corretora" in df_latest.columns:
-                    st.write("Linhas por corretora:")
-                    st.dataframe(df_latest["corretora"].value_counts().rename("linhas"))
-                if {"corretora","conta"}.issubset(df_latest.columns):
-                    # linhas sem match no controle (CLIENTE vazio)
-                    if "CLIENTE" in df_latest.columns:
-                        miss = df_latest["CLIENTE"].isna() | (df_latest["CLIENTE"].astype(str).str.strip() == "")
-                        st.write(f"Linhas sem match no Contas.xlsx (CLIENTE vazio): {int(miss.sum())}")
-                        if "corretora" in df_latest.columns:
-                            st.write("Sem match por corretora:")
-                            st.dataframe(df_latest.loc[miss, "corretora"].value_counts().rename("linhas"))
-
+            df_latest = posmod.build_latest_from_repo(dt_posicao=dtpos.isoformat())
+            st.success(f"Rebuild OK! Linhas: {len(df_latest)}")
+            show_quick_counts(df_latest)
             st.dataframe(df_latest.head(50), use_container_width=True, height=420)
         except Exception as e:
             st.error(f"Erro no rebuild: {type(e).__name__} - {e}")
 
-    # opcional: mostrar o que já está salvo
+    # sempre mostrar o diagnóstico do último rebuild
+    show_diagnostics_from_meta()
+
     df_cached = posmod.load_latest_positions()
     if df_cached is not None:
-        st.markdown("Último latest salvo (cache parquet):")
+        st.markdown("### Último latest salvo (cache parquet)")
         st.dataframe(df_cached.head(30), use_container_width=True, height=360)
 
 with tab_aa:
