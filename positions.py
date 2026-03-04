@@ -18,7 +18,10 @@ REPO_XP_XLSX = REPO_POS_DIR / "XP.xlsx"
 REPO_BTG_XLSX = REPO_POS_DIR / "BTG.xlsx"
 REPO_CS_CSV = REPO_POS_DIR / "CSProdutos.csv"
 
+BTG_ACCOUNT_WIDTH = 8
 
+
+# ---------- helpers ----------
 def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
@@ -35,11 +38,12 @@ def _normalize_broker(x: str) -> str:
 
 
 def _normalize_account(x) -> str:
-    # Normalizador único para garantir casamento entre:
-    # - Contas.xlsx (às vezes numérico, vira 12345.0)
-    # - BTG (às vezes texto)
-    # - XP (às vezes numérico)
-    # - CS (texto)
+    """
+    Normalização base (comum a todas as corretoras):
+    - converte para string
+    - remove '.0' de números vindos do Excel
+    - tira espaços
+    """
     if pd.isna(x):
         return ""
     s = str(x).strip()
@@ -47,6 +51,20 @@ def _normalize_account(x) -> str:
         s = s[:-2]
     s = s.replace(" ", "")
     return s
+
+
+def _only_digits(s: str) -> str:
+    return "".join(ch for ch in (s or "") if ch.isdigit())
+
+
+def _normalize_btg_account_8(x) -> str:
+    """
+    BTG: padroniza conta para 8 dígitos (zeros à esquerda).
+    Mantém apenas dígitos.
+    """
+    s = _normalize_account(x)
+    d = _only_digits(s)
+    return d.zfill(BTG_ACCOUNT_WIDTH) if d != "" else ""
 
 
 def _exists_all_repo_files() -> tuple[bool, list[str]]:
@@ -68,7 +86,14 @@ def _pick_existing(cols: list[str], *names: str) -> str | None:
     return None
 
 
+# ---------- loaders/parsers ----------
 def load_control_accounts(src=None) -> pd.DataFrame:
+    """
+    src pode ser:
+    - None: tenta ler do repo (posicoes/Contas.xlsx); se não existir, usa cache parquet
+    - path/str: lê xlsx desse caminho
+    - file-like (uploader): lê xlsx do objeto
+    """
     DATA_DIR.mkdir(exist_ok=True)
 
     if src is None:
@@ -91,7 +116,13 @@ def load_control_accounts(src=None) -> pd.DataFrame:
 
     df = df.rename(columns={col_account: "conta", col_broker: "corretora"})
     df["corretora"] = df["corretora"].apply(_normalize_broker)
+
+    # normalização base
     df["conta"] = df["conta"].apply(_normalize_account)
+
+    # regra especial: BTG com 8 dígitos
+    m = df["corretora"].eq("BTG")
+    df.loc[m, "conta"] = df.loc[m, "conta"].apply(_normalize_btg_account_8)
 
     keep = [
         "GRUPO GERAL", "corretora", "conta", "CLIENTE", "TIPO DE MARCAÇÃO ",
@@ -164,6 +195,10 @@ def parse_cs_positions(src) -> pd.DataFrame:
 
 
 def parse_xp_positions(src) -> pd.DataFrame:
+    """
+    XP.xlsx: lê todas as abas e captura qualquer aba que tenha:
+    CodigoCliente + (CodigoAtivo ou Ativo) + (ValorAtual ou Valor)
+    """
     xls = pd.ExcelFile(src)
     out = []
 
@@ -204,6 +239,10 @@ def parse_xp_positions(src) -> pd.DataFrame:
 
 
 def parse_btg_positions(src) -> pd.DataFrame:
+    """
+    BTG.xlsx (esperado):
+    Conta, Mercado, Sub Mercado/Mercado/Sub Mercado, Produto, Quantidade, Valor Bruto, Estratégia
+    """
     df0 = pd.read_excel(src)
     df0.columns = [str(c).strip() for c in df0.columns]
     cols = list(df0.columns)
@@ -225,7 +264,7 @@ def parse_btg_positions(src) -> pd.DataFrame:
 
     out = pd.DataFrame({
         "corretora": "BTG",
-        "conta": df0[col_account].apply(_normalize_account),
+        "conta": df0[col_account].apply(_normalize_btg_account_8),  # <-- AQUI a regra do BTG
         "asset_id": produto,
         "asset_nome": produto,
         "asset_tipo": (df0[col_merc].astype(str).str.strip() if col_merc else "BTG"),
@@ -240,6 +279,7 @@ def parse_btg_positions(src) -> pd.DataFrame:
     return out
 
 
+# ---------- diagnostics ----------
 def diagnose_positions(df: pd.DataFrame, control_df: pd.DataFrame | None = None, label: str = "") -> dict:
     d: dict = {}
     d["label"] = label
@@ -263,8 +303,8 @@ def diagnose_positions(df: pd.DataFrame, control_df: pd.DataFrame | None = None,
                 d[f"{b}_sum_valor_mercado"] = _safe_sum(sub["valor_mercado"])
 
             keep = [c for c in [
-                "corretora", "conta", "asset_id", "asset_nome", "asset_tipo",
-                "valor_mercado", "quantidade", "moeda", "mercado", "sub_mercado", "estrategia"
+                "corretora","conta","asset_id","asset_nome","asset_tipo",
+                "valor_mercado","quantidade","moeda","mercado","sub_mercado","estrategia"
             ] if c in sub.columns]
             d[f"{b}_sample"] = sub[keep].head(20).to_dict(orient="records")
 
@@ -289,6 +329,7 @@ def diagnose_positions(df: pd.DataFrame, control_df: pd.DataFrame | None = None,
     return d
 
 
+# ---------- pipeline ----------
 def classify_bucket_estrategia(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["bucket_estrategia"] = "HOLD_MONITOR"
@@ -306,6 +347,7 @@ def build_and_save_latest(
     DATA_DIR.mkdir(exist_ok=True)
 
     pos = pd.concat([xp_df, btg_df, cs_df], ignore_index=True)
+
     pos["corretora"] = pos["corretora"].apply(_normalize_broker)
     pos["conta"] = pos["conta"].apply(_normalize_account)
     pos["asset_id"] = pos["asset_id"].astype(str).str.strip()
@@ -348,6 +390,7 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
     meta = {
         "dt_posicao": dt_posicao or datetime.now().date().isoformat(),
         "source": "repo",
+        "btg_account_width": BTG_ACCOUNT_WIDTH,
     }
     meta["diagnostics"] = {
         "xp_df": diagnose_positions(xp_df, control_df, label="xp_df"),
