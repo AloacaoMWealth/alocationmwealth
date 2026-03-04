@@ -4,6 +4,7 @@ import numpy as np
 from io import BytesIO
 from datetime import datetime, timedelta
 import requests
+import positions as posmod
 
 try:
     import yfinance as yf
@@ -28,6 +29,52 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
+# =========================
+# Header (logo + título)
+# =========================
+h1, h2 = st.columns([0.14, 0.86], vertical_alignment="center")
+with h1:
+    ...
+with h2:
+    st.markdown("## Asset Allocation")
+    st.markdown(...)
+
+# =========================
+# Atualizar posições (latest)
+# =========================
+tab_up, tab_aa = st.tabs(["Atualizar posições", "Asset Allocation"])
+
+with tab_up:
+    st.subheader("Upload relatórios (latest)")
+
+    up_control = st.file_uploader("Controle de Contas (xlsx)", type=["xlsx"])
+    up_xp = st.file_uploader("XP (xlsx)", type=["xlsx"])
+    up_btg = st.file_uploader("BTG (xlsx)", type=["xlsx"])
+    up_cs = st.file_uploader("Charles Schwab - Positions (csv)", type=["csv"])
+
+    colA, colB = st.columns([1, 1])
+    with colA:
+        dt_pos = st.date_input("Data da posição", value=datetime.now().date())
+    with colB:
+        st.caption("A posição fica salva e só muda quando você clicar em Processar.")
+
+    if st.button("Processar e salvar latest", type="primary", disabled=not (up_xp and up_btg and up_cs)):
+        control_df = posmod.load_control_accounts(up_control) if up_control else posmod.load_control_accounts(None)
+        xp_df = posmod.parse_xp_positions(up_xp)
+        btg_df = posmod.parse_btg_positions(up_btg)
+        cs_df = posmod.parse_cs_positions(up_cs)
+
+        meta = {"dt_posicao": dt_pos.isoformat()}
+        df_latest = posmod.build_and_save_latest(control_df, xp_df, btg_df, cs_df, meta)
+
+        st.success(f"Salvo! Linhas: {len(df_latest):,}")
+        st.dataframe(df_latest.head(50), use_container_width=True, height=420)
+
+with tab_aa:
+    # DAQUI PRA BAIXO fica o seu código atual de Asset Allocation
+    pass
+
 
 # =========================
 # Utils
