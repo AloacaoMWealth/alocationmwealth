@@ -325,24 +325,23 @@ with tab_up:
 
     st.write("Arquivos esperados:")
     st.code(
-        "posicoes/ControleDeContas.xlsx\n"
+        "posicoes/Contas.xlsx\n"
         "posicoes/XP.xlsx\n"
         "posicoes/BTG.xlsx\n"
         "posicoes/CSProdutos.csv"
     )
 
-    # Mostra status dos arquivos
     from pathlib import Path
     base = Path("posicoes")
     paths = {
-        "ControleDeContas.xlsx": base / "ControleDeContas.xlsx",
+        "Contas.xlsx": base / "Contas.xlsx",
         "XP.xlsx": base / "XP.xlsx",
         "BTG.xlsx": base / "BTG.xlsx",
         "CSProdutos.csv": base / "CSProdutos.csv",
     }
     for name, p in paths.items():
         st.write(f"{'OK' if p.exists() else 'FALTA'} - {name}")
-
+                 
     col1, col2 = st.columns([1, 1])
     with col1:
         dt_pos = st.date_input("Data da posição", value=datetime.now().date())

@@ -84,27 +84,63 @@ def load_control_accounts(src=None) -> pd.DataFrame:
 
 
 def parse_cs_positions(src) -> pd.DataFrame:
-    # Leitura robusta contra separador/linhas quebradas
-    try:
-        raw = pd.read_csv(src, sep=None, engine="python", encoding="utf-8", on_bad_lines="skip")
-    except Exception:
-        raw = pd.read_csv(src, sep=None, engine="python", encoding="latin-1", on_bad_lines="skip")
+    # O CSV do Schwab vem com linhas de relatório antes do header real.
+    # Vamos achar a linha que começa com "Account," e ler a partir dali.
+    import io
+
+    if isinstance(src, (str, Path)):
+        text = Path(src).read_text(encoding="utf-8", errors="ignore")
+    else:
+        b = src.read()
+        if isinstance(b, str):
+            text = b
+        else:
+            text = b.decode("utf-8", errors="ignore")
+
+    lines = text.splitlines()
+    header_idx = None
+    for i, ln in enumerate(lines):
+        if ln.strip().startswith("Account,"):
+            header_idx = i
+            break
+    if header_idx is None:
+        # fallback: tenta achar qualquer coluna com "Account" no começo
+        for i, ln in enumerate(lines):
+            if ln.strip().lower().startswith("account,"):
+                header_idx = i
+                break
+    if header_idx is None:
+        raise ValueError("CS: não encontrei a linha de header iniciando com 'Account,' no CSV.")
+
+    csv_data = "\n".join(lines[header_idx:])
+    raw = pd.read_csv(io.StringIO(csv_data), sep=",", engine="python")
 
     raw.columns = [str(c).strip() for c in raw.columns]
 
-    if "Account" not in raw.columns:
-        raise ValueError("CS: não encontrei coluna 'Account' no CSV.")
+    # Normaliza nome da coluna Symbol/CUSIP (no seu arquivo é exatamente assim)
+    sym_col = "Symbol/CUSIP" if "Symbol/CUSIP" in raw.columns else ("CUSIP" if "CUSIP" in raw.columns else ("Symbol" if "Symbol" in raw.columns else None))
+    if sym_col is None:
+        sym_col = "Symbol/CUSIP"
 
     df = pd.DataFrame({
         "corretora": "CS",
         "conta": raw["Account"].apply(_normalize_account),
-        "asset_id": raw.get("CUSIP", raw.get("Symbol", "")).astype(str).str.strip(),
+        "asset_id": raw.get(sym_col, "").astype(str).str.strip(),
         "asset_nome": raw.get("Name", "").astype(str).str.strip(),
         "asset_tipo": raw.get("Security Type", "").astype(str).str.strip(),
-        "valor_mercado": pd.to_numeric(raw.get("Market Value", 0), errors="coerce").fillna(0.0),
-        "quantidade": pd.to_numeric(raw.get("Quantity", 0), errors="coerce").fillna(0.0),
+        "valor_mercado": raw.get("Market Value", ""),
+        "quantidade": 0.0,   # seu CSProdutos não tem Quantity nesse layout
         "moeda": "USD",
     })
+
+    # "Market Value" vem com $ e vírgulas
+    df["valor_mercado"] = (
+        df["valor_mercado"].astype(str)
+        .str.replace("$", "", regex=False)
+        .str.replace(",", "", regex=False)
+        .str.strip()
+    )
+    df["valor_mercado"] = pd.to_numeric(df["valor_mercado"], errors="coerce").fillna(0.0)
 
     df["asset_id"] = df["asset_id"].replace({"nan": "", "None": ""})
     return df
