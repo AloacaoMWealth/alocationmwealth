@@ -320,33 +320,48 @@ with h2:
 tab_up, tab_aa = st.tabs(["Atualizar posições", "Asset Allocation"])
 
 with tab_up:
-    st.subheader("Upload relatórios (latest)")
+    st.subheader("Posições (lidas do GitHub)")
+    st.caption("O app lê os arquivos na pasta ./posicoes. Para atualizar, faça commit de novos arquivos com o mesmo nome.")
 
-    up_control = st.file_uploader("Controle de Contas (xlsx)", type=["xlsx"])
-    up_xp = st.file_uploader("XP (xlsx)", type=["xlsx"])
-    up_btg = st.file_uploader("BTG (xlsx)", type=["xlsx"])
-    up_cs = st.file_uploader("Charles Schwab - Positions (csv)", type=["csv"])
+    st.write("Arquivos esperados:")
+    st.code(
+        "posicoes/ControleDeContas.xlsx\n"
+        "posicoes/XP.xlsx\n"
+        "posicoes/BTG.xlsx\n"
+        "posicoes/CSProdutos.csv"
+    )
 
-    colA, colB = st.columns([1, 1])
-    with colA:
+    # Mostra status dos arquivos
+    from pathlib import Path
+    base = Path("posicoes")
+    paths = {
+        "ControleDeContas.xlsx": base / "ControleDeContas.xlsx",
+        "XP.xlsx": base / "XP.xlsx",
+        "BTG.xlsx": base / "BTG.xlsx",
+        "CSProdutos.csv": base / "CSProdutos.csv",
+    }
+    for name, p in paths.items():
+        st.write(f"{'OK' if p.exists() else 'FALTA'} - {name}")
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
         dt_pos = st.date_input("Data da posição", value=datetime.now().date())
-    with colB:
-        st.caption("A posição fica salva e só muda quando você clicar em Processar.")
+    with col2:
+        rebuild = st.button("Rebuild latest agora", type="primary")
 
-    if st.button("Processar e salvar latest", type="primary", disabled=not (up_xp and up_btg and up_cs)):
+    if rebuild:
         try:
-            control_df = posmod.load_control_accounts(up_control) if up_control else posmod.load_control_accounts(None)
-            xp_df = posmod.parse_xp_positions(up_xp)
-            btg_df = posmod.parse_btg_positions(up_btg)
-            cs_df = posmod.parse_cs_positions(up_cs)
-
-            meta = {"dt_posicao": dt_pos.isoformat()}
-            df_latest = posmod.build_and_save_latest(control_df, xp_df, btg_df, cs_df, meta)
-
-            st.success(f"Salvo! Linhas: {len(df_latest):,}")
+            df_latest = posmod.build_latest_from_repo(dt_posicao=dt_pos.isoformat())
+            st.success(f"Rebuild OK! Linhas: {len(df_latest):,}")
             st.dataframe(df_latest.head(50), use_container_width=True, height=420)
         except Exception as e:
-            st.error(f"Erro ao processar: {type(e).__name__} - {e}")
+            st.error(f"Erro no rebuild: {type(e).__name__} - {e}")
+
+    # opcional: mostrar o que já está salvo
+    df_cached = posmod.load_latest_positions()
+    if df_cached is not None:
+        st.markdown("Último latest salvo (cache parquet):")
+        st.dataframe(df_cached.head(30), use_container_width=True, height=360)
 
 with tab_aa:
     # =========================
