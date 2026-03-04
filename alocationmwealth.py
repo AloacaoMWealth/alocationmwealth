@@ -321,7 +321,7 @@ with h2:
 # =========================
 tab_up, tab_aa = st.tabs(["Atualizar posições", "Asset Allocation"])
 
-with tabup:
+with tab_up:
     st.subheader("Posições lidas do GitHub")
     st.caption("O app lê os arquivos na pasta ./posicoes. Para atualizar, faça commit de novos arquivos com o mesmo nome.")
 
