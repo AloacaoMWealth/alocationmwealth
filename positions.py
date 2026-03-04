@@ -87,6 +87,7 @@ def _pick_existing(cols: list[str], *names: str) -> str | None:
 
 
 # ---------- loaders/parsers ----------
+
 def load_control_accounts(src=None) -> pd.DataFrame:
     """
     src pode ser:
@@ -114,11 +115,11 @@ def load_control_accounts(src=None) -> pd.DataFrame:
     if col_account is None:
         raise ValueError("Controle: não encontrei coluna NÚMERO DA CONTA (ou NMERO DA CONTA).")
 
-    df = df.rename(columns={col_account: "conta", col_broker: "corretora"})
     df["corretora"] = df["corretora"].apply(_normalize_broker)
-
-    # normalização base
     df["conta"] = df["conta"].apply(_normalize_account)
+    
+    m = df["corretora"].eq("BTG")
+    df.loc[m, "conta"] = df.loc[m, "conta"].apply(_normalize_btg_account_8)
 
     # regra especial: BTG com 8 dígitos
     m = df["corretora"].eq("BTG")
@@ -350,7 +351,13 @@ def build_and_save_latest(
 
     pos["corretora"] = pos["corretora"].apply(_normalize_broker)
     pos["conta"] = pos["conta"].apply(_normalize_account)
-    pos["asset_id"] = pos["asset_id"].astype(str).str.strip()
+    
+    mpos = pos["corretora"].eq("BTG")
+    pos.loc[mpos, "conta"] = pos.loc[mpos, "conta"].apply(_normalize_btg_account_8)
+    
+    mctrl = control_df["corretora"].eq("BTG")
+    control_df = control_df.copy()
+    control_df.loc[mctrl, "conta"] = control_df.loc[mctrl, "conta"].apply(_normalize_btg_account_8)
 
     merged = pos.merge(
         control_df,
