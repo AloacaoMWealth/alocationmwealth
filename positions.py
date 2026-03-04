@@ -249,6 +249,18 @@ def build_and_save_latest(
     pos = pd.concat([xp_df, btg_df, cs_df], ignore_index=True)
     pos["corretora"] = pos["corretora"].apply(_normalize_broker)
     pos["conta"] = pos["conta"].apply(_normalize_account)
+    
+    # Consolidar posições: 1 linha por (corretora, conta, asset_id)
+    pos["asset_id"] = pos["asset_id"].astype(str).str.strip()
+    pos = pos[pos["asset_id"].ne("")].copy()
+         
+    pos = pos.groupby(["corretora", "conta", "asset_id"], as_index=False).agg({
+        "asset_nome": "first",
+        "asset_tipo": "first",
+        "moeda": "first",
+        "valor_mercado": "sum",
+        "quantidade": "sum",
+         })
 
     merged = pos.merge(
         control_df,
@@ -256,8 +268,7 @@ def build_and_save_latest(
         left_on=["corretora", "conta"],
         right_on=["corretora", "conta"],
         suffixes=("", "_ctrl"),
-    )
-
+)
     merged["dt_posicao"] = meta.get("dt_posicao", datetime.now().date().isoformat())
     merged = classify_bucket_estrategia(merged)
 
