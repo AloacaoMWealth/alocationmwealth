@@ -266,7 +266,7 @@ def parse_btg_positions(src) -> pd.DataFrame:
 
     out = pd.DataFrame({
         "corretora": "BTG",
-        "conta": df0[col_account].apply(_normalize_btg_account_8),  # <-- AQUI a regra do BTG
+        "conta": df0[col_account].apply(_normalize_account),
         "asset_id": produto,
         "asset_nome": produto,
         "asset_tipo": (df0[col_merc].astype(str).str.strip() if col_merc else "BTG"),
