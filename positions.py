@@ -107,21 +107,22 @@ def load_control_accounts(src=None) -> pd.DataFrame:
 
     df = pd.read_excel(src)
     df.columns = [str(c).strip() for c in df.columns]
-
-    col_broker = "CORRETORA"
-    col_account = "NÚMERO DA CONTA" if "NÚMERO DA CONTA" in df.columns else (
-        "NMERO DA CONTA" if "NMERO DA CONTA" in df.columns else None
-    )
+    
+    # Descobrir nomes reais das colunas no Excel
+    col_broker = _pick_existing(df.columns, "CORRETORA", "Corretora", "corretora", "Broker", "BROKER")
+    col_account = _pick_existing(df.columns, "NÚMERO DA CONTA", "NMERO DA CONTA", "Numero da Conta", "Número da Conta")
+    
+    if col_broker is None:
+        raise ValueError(f"Controle: não encontrei coluna de corretora. Colunas: {list(df.columns)}")
     if col_account is None:
-        raise ValueError("Controle: não encontrei coluna NÚMERO DA CONTA (ou NMERO DA CONTA).")
-
+        raise ValueError("Controle: não encontrei coluna NÚMERO DA CONTA (ou variações).")
+    
+    # Renomeia para nomes internos padronizados
+    df = df.rename(columns={col_broker: "corretora", col_account: "conta"})
+    
     df["corretora"] = df["corretora"].apply(_normalize_broker)
     df["conta"] = df["conta"].apply(_normalize_account)
     
-    m = df["corretora"].eq("BTG")
-    df.loc[m, "conta"] = df.loc[m, "conta"].apply(_normalize_btg_account_8)
-
-    # regra especial: BTG com 8 dígitos
     m = df["corretora"].eq("BTG")
     df.loc[m, "conta"] = df.loc[m, "conta"].apply(_normalize_btg_account_8)
 
