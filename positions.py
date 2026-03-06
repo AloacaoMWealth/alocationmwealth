@@ -424,7 +424,6 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
     print("BTG - só em posições (amostra):", list(pos_set - ctrl_set)[:20])
     print("BTG - só no controle (amostra):", list(ctrl_set - pos_set)[:20])
 
-
     meta = {
         "dt_posicao": dt_posicao or datetime.now().date().isoformat(),
         "source": "repo",
@@ -435,5 +434,27 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
         "btg_df": diagnose_positions(btg_df, control_df, label="btg_df"),
         "cs_df": diagnose_positions(cs_df, control_df, label="cs_df"),
     }
+    btg_pos_accounts = (
+        btg_df[["corretora", "conta"]]
+        .drop_duplicates()
+        .sort_values(["corretora", "conta"])
+    )
+    btg_ctrl_accounts = (
+        control_df[control_df["corretora"] == "BTG"][["corretora", "conta"]]
+        .drop_duplicates()
+        .sort_values(["corretora", "conta"])
+    )
 
+    pos_set = set(btg_pos_accounts["conta"])
+    ctrl_set = set(btg_ctrl_accounts["conta"])
+
+    meta["diagnostics"]["btg_match_debug"] = {
+        "pos_accounts": list(sorted(pos_set))[:50],
+        "ctrl_accounts": list(sorted(ctrl_set))[:50],
+        "pos_count": len(pos_set),
+        "ctrl_count": len(ctrl_set),
+        "intersection_count": len(pos_set & ctrl_set),
+        "only_in_pos_sample": list(pos_set - ctrl_set)[:20],
+        "only_in_ctrl_sample": list(ctrl_set - pos_set)[:20],
+    }
     return build_and_save_latest(control_df, xp_df, btg_df, cs_df, meta)
