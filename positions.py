@@ -401,35 +401,6 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
     xp_df = parse_xp_positions(REPO_XP_XLSX)
     btg_df = parse_btg_positions(REPO_BTG_XLSX)
     cs_df = parse_cs_positions(REPO_CS_CSV)
-    
-    # DEBUG BTG: contas em posições e no controle
-    btg_pos_accounts = (
-        btg_df[["corretora", "conta"]]
-        .drop_duplicates()
-        .sort_values(["corretora", "conta"])
-    )
-    btg_ctrl_accounts = (
-        control_df[control_df["corretora"] == "BTG"][["corretora", "conta"]]
-        .drop_duplicates()
-        .sort_values(["corretora", "conta"])
-    )
-    
-    print("=== BTG contas (posições) ===")
-    print(btg_pos_accounts.head(50).to_string(index=False))
-    
-    print("=== BTG contas (controle) ===")
-    print(btg_ctrl_accounts.head(50).to_string(index=False))
-    
-    # interseção e diferenças
-    pos_set = set(btg_pos_accounts["conta"])
-    ctrl_set = set(btg_ctrl_accounts["conta"])
-    
-    print("BTG - contas em posições:", len(pos_set))
-    print("BTG - contas no controle:", len(ctrl_set))
-    print("BTG - interseção:", len(pos_set & ctrl_set))
-    
-    print("BTG - só em posições (amostra):", list(pos_set - ctrl_set)[:20])
-    print("BTG - só no controle (amostra):", list(ctrl_set - pos_set)[:20])
 
     meta = {
         "dt_posicao": dt_posicao or datetime.now().date().isoformat(),
