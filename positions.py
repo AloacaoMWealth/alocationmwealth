@@ -66,6 +66,12 @@ def _normalize_btg_account_8(x) -> str:
     d = _only_digits(s)
     return d.zfill(BTG_ACCOUNT_WIDTH) if d != "" else ""
 
+def _pad_btg_to_8(conta: str) -> str:
+    """Força BTG para exatamente 8 dígitos (zeros à esquerda)."""
+    d = _only_digits(conta)
+    return d[-8:].zfill(8) if len(d) >= 8 else d.zfill(8)
+
+
 
 def _exists_all_repo_files() -> tuple[bool, list[str]]:
     missing = []
@@ -351,14 +357,15 @@ def build_and_save_latest(
     pos = pd.concat([xp_df, btg_df, cs_df], ignore_index=True)
 
     pos["corretora"] = pos["corretora"].apply(_normalize_broker)
-    pos["conta"] = pos["conta"].apply(_normalize_account)
+    # Padronização final: conta BTG sempre 8 dígitos (ambos os lados)
+    def _pad_btg_to_8(conta: str) -> str:
+        """Força BTG para 8 dígitos (zeros à esquerda), mesmo se tiver 9."""
+        d = _only_digits(conta)
+        return d[-8:].zfill(8) if len(d) >= 8 else d.zfill(8)
     
-    mpos = pos["corretora"].eq("BTG")
-    pos.loc[mpos, "conta"] = pos.loc[mpos, "conta"].apply(_normalize_btg_account_8)
-    
-    mctrl = control_df["corretora"].eq("BTG")
-    control_df = control_df.copy()
-    control_df.loc[mctrl, "conta"] = control_df.loc[mctrl, "conta"].apply(_normalize_btg_account_8)
+ 
+    pos["conta"] = pos["conta"].apply(_pad_btg_to_8)
+    control_df["conta"] = control_df["conta"].apply(_pad_btg_to_8)
 
     merged = pos.merge(
         control_df,
