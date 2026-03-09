@@ -347,7 +347,7 @@ with tab_up:
     with col1:
         dtpos = st.date_input("Data da posição", value=datetime.now().date())
     with col2:
-        rebuild = st.button("Rebuild latest agora", type="primary")
+        rebuild = st.button("🔄 Rebuild positions", type="primary", use_container_width=True)
 
     def show_diagnostics_from_meta():
         meta_path = Path("data") / "positions_meta.json"
@@ -397,17 +397,92 @@ with tab_up:
                 st.write("Sem match por corretora:")
                 st.dataframe(df_latest.loc[miss, "corretora"].value_counts().rename("linhas"))
 
-    if rebuild:
-        try:
-            df_latest = posmod.build_latest_from_repo(dt_posicao=dtpos.isoformat())
-            st.success(f"Rebuild OK! Linhas: {len(df_latest)}")
-            show_quick_counts(df_latest)
-            st.dataframe(df_latest.head(50), use_container_width=True, height=420)
-        except Exception as e:
-            st.error(f"Erro no rebuild: {type(e).__name__} - {e}")
+    # =========================
+# Posições consolidadas (rebuild + seletor)
+# =========================
 
-    # sempre mostrar o diagnóstico do último rebuild
-    show_diagnostics_from_meta()
+    st.markdown("## 🔄 Posições consolidadas")
+    
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        dtpos = datetime.now().date()
+        st.write(f"Data de posição padrão: {dtpos.isoformat()}")
+    
+    with col2:
+        rebuild = st.button("Rebuild latest agora", type="primary")
+    
+    if rebuild:
+        with st.spinner("Lendo arquivos → normalizando → merge controle → salvando..."):
+            try:
+                df_latest = posmod.build_latest_from_repo(dt_posicao=dtpos.isoformat())
+                st.success(f"Rebuild OK! Linhas: {len(df_latest)}")
+    
+                # guarda para uso abaixo
+                st.session_state.df_latest = df_latest
+    
+                # visão rápida
+                st.markdown("### Visão rápida do latest")
+                cols_show = [
+                    "corretora", "conta",
+                    "GRUPO GERAL", "CLIENTE", "CLIENTE - CORRETORA", "Perfil Carteira",
+                    "asset_tipo", "asset_id", "asset_nome",
+                    "valor_mercado", "bucket_estrategia",
+                ]
+                cols_show = [c for c in cols_show if c in df_latest.columns]
+                df_show = df_latest[cols_show].copy()
+                df_show["valor_mercado"] = df_show["valor_mercado"].round(2)
+    
+                st.dataframe(df_show.head(200), use_container_width=True, height=420)
+    
+            except Exception as e:
+                st.error(f"Erro no rebuild: {type(e).__name__} - {e}")
+                st.exception(e)
+    
+    # Seletor de carteira/conta baseado no último rebuild
+    if "df_latest" in st.session_state:
+        df_latest = st.session_state.df_latest
+    
+        st.markdown("### 🎯 Filtro por carteira / conta")
+    
+        col_a, col_b = st.columns(2)
+    
+        with col_a:
+            carteiras = ["Todas"] + sorted(df_latest["GRUPO GERAL"].dropna().unique().tolist())
+            carteira_sel = st.selectbox("Carteira (GRUPO GERAL)", carteiras, key="sel_carteira")
+    
+        with col_b:
+            if carteira_sel != "Todas":
+                df_filt = df_latest[df_latest["GRUPO GERAL"] == carteira_sel]
+            else:
+                df_filt = df_latest.copy()
+    
+            contas = ["Todas"] + sorted(df_filt["CLIENTE - CORRETORA"].dropna().unique().tolist())
+            conta_sel = st.selectbox("Conta (CLIENTE - CORRETORA)", contas, key="sel_conta")
+    
+        if carteira_sel != "Todas":
+            df_filt = df_latest[df_latest["GRUPO GERAL"] == carteira_sel]
+        else:
+            df_filt = df_latest.copy()
+    
+        if conta_sel != "Todas":
+            df_filt = df_filt[df_filt["CLIENTE - CORRETORA"] == conta_sel]
+    
+        if len(df_filt) > 0:
+            total_sel = float(df_filt["valor_mercado"].sum())
+            st.metric("Total selecionado", f"R$ {total_sel:,.2f}")
+    
+            st.markdown("#### Ativos da seleção")
+            cols_sel = [
+                "asset_tipo", "asset_id", "asset_nome",
+                "valor_mercado", "corretora", "conta"
+            ]
+            cols_sel = [c for c in cols_sel if c in df_filt.columns]
+            st.dataframe(
+                df_filt[cols_sel].sort_values("valor_mercado", ascending=False),
+                use_container_width=True,
+                height=420,
+            )
 
     df_cached = posmod.load_latest_positions()
     if df_cached is not None:
