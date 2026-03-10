@@ -325,12 +325,6 @@ with tab_up:
     st.subheader("Posições lidas do GitHub")
     st.caption("O app lê os arquivos na pasta ./posicoes. Para atualizar, faça commit de novos arquivos com o mesmo nome.")
 
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        dtpos = st.date_input("Data da posição", value=datetime.now().date())
-    with col2:
-        rebuild = st.button("🔄 Rebuild positions", type="primary", use_container_width=True)
-
     st.markdown("## Posições consolidadas")
     
     col1, col2 = st.columns([1, 1])
@@ -350,20 +344,6 @@ with tab_up:
     
                 # guarda para uso abaixo
                 st.session_state.df_latest = df_latest
-    
-                # visão rápida
-                st.markdown("### Visão rápida do latest")
-                cols_show = [
-                    "corretora", "conta",
-                    "GRUPO GERAL", "CLIENTE", "CLIENTE - CORRETORA", "Perfil Carteira",
-                    "asset_tipo", "asset_id", "asset_nome",
-                    "valor_mercado", "bucket_estrategia",
-                ]
-                cols_show = [c for c in cols_show if c in df_latest.columns]
-                df_show = df_latest[cols_show].copy()
-                df_show["valor_mercado"] = df_show["valor_mercado"].round(2)
-    
-                st.dataframe(df_show.head(200), use_container_width=True, height=420)
     
             except Exception as e:
                 st.error(f"Erro no rebuild: {type(e).__name__} - {e}")
