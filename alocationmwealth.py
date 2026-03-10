@@ -325,83 +325,13 @@ with tab_up:
     st.subheader("Posições lidas do GitHub")
     st.caption("O app lê os arquivos na pasta ./posicoes. Para atualizar, faça commit de novos arquivos com o mesmo nome.")
 
-    st.write("Arquivos esperados:")
-    st.code(
-        "posicoes/Contas.xlsx\n"
-        "posicoes/XP.xlsx\n"
-        "posicoes/BTG.xlsx\n"
-        "posicoes/CSProdutos.csv"
-    )
-
-    base = Path("posicoes")
-    paths = {
-        "Contas.xlsx": base / "Contas.xlsx",
-        "XP.xlsx": base / "XP.xlsx",
-        "BTG.xlsx": base / "BTG.xlsx",
-        "CSProdutos.csv": base / "CSProdutos.csv",
-    }
-    for name, p in paths.items():
-        st.write(f"{'OK' if p.exists() else 'FALTA'} - {name}")
-
     col1, col2 = st.columns([1, 1])
     with col1:
         dtpos = st.date_input("Data da posição", value=datetime.now().date())
     with col2:
         rebuild = st.button("🔄 Rebuild positions", type="primary", use_container_width=True)
 
-    def show_diagnostics_from_meta():
-        meta_path = Path("data") / "positions_meta.json"
-        if not meta_path.exists():
-            st.info("Ainda não existe data/positions_meta.json (faça Rebuild).")
-            return
-
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            st.error(f"Não consegui ler positions_meta.json: {type(e).__name__} - {e}")
-            return
-
-        diag = meta.get("diagnostics", {})
-        if not diag:
-            st.warning("positions_meta.json existe, mas não tem campo diagnostics.")
-            st.json(meta)
-            return
-
-        st.markdown("### Diagnóstico por corretora (parser)")
-        st.json(diag)
-
-        def pick_unmatched(d):
-            return {
-                "unmatched_rows": d.get("unmatched_rows"),
-                "unmatched_by_broker": d.get("unmatched_by_broker"),
-                "unmatched_examples": d.get("unmatched_examples"),
-            }
-
-        st.markdown("### Contas que não casaram (resumo)")
-        st.json({
-            "xp_df": pick_unmatched(diag.get("xp_df", {})),
-            "btg_df": pick_unmatched(diag.get("btg_df", {})),
-            "cs_df": pick_unmatched(diag.get("cs_df", {})),
-        })
-
-    def show_quick_counts(df_latest: pd.DataFrame):
-        st.markdown("### Resumo rápido (latest)")
-        if "corretora" in df_latest.columns:
-            st.write("Linhas por corretora:")
-            st.dataframe(df_latest["corretora"].value_counts().rename("linhas"))
-
-        if "CLIENTE" in df_latest.columns:
-            miss = df_latest["CLIENTE"].isna() | (df_latest["CLIENTE"].astype(str).str.strip() == "")
-            st.write(f"Linhas sem match no Contas.xlsx (CLIENTE vazio): {int(miss.sum())}")
-            if "corretora" in df_latest.columns:
-                st.write("Sem match por corretora:")
-                st.dataframe(df_latest.loc[miss, "corretora"].value_counts().rename("linhas"))
-
-    # =========================
-# Posições consolidadas (rebuild + seletor)
-# =========================
-
-    st.markdown("## 🔄 Posições consolidadas")
+    st.markdown("## Posições consolidadas")
     
     col1, col2 = st.columns([1, 1])
     
@@ -443,7 +373,7 @@ with tab_up:
     if "df_latest" in st.session_state:
         df_latest = st.session_state.df_latest
     
-        st.markdown("### 🎯 Filtro por carteira / conta")
+        st.markdown("### Filtro por carteira / conta")
     
         col_a, col_b = st.columns(2)
     
