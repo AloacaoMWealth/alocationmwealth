@@ -395,9 +395,12 @@ with tab_up:
             )
 
 with tab_aa:
-    # =========================
-    # TODO: aqui ainda está seu AA original (mantenha/cole sua lógica)
-    # =========================
+    
+    # Auto-fill com posições reais
+    if "dflatest" in st.session_state:
+        carteiras = sorted(st.session_state["dflatest"]["GRUPO GERAL"].dropna().unique())
+        carteira_pos = st.selectbox("Carregar posições de:", carteiras)
+        pos_carteira = st.session_state["dflatest"][st.session_state["dflatest"]["GRUPO GERAL"]]
 
     # 1) Carregar pesos
     try:
