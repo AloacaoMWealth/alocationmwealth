@@ -394,11 +394,6 @@ with tab_up:
                 height=420,
             )
 
-    df_cached = posmod.load_latest_positions()
-    if df_cached is not None:
-        st.markdown("### Último latest salvo (cache parquet)")
-        st.dataframe(df_cached.head(30), use_container_width=True, height=360)
-
 with tab_aa:
     # =========================
     # TODO: aqui ainda está seu AA original (mantenha/cole sua lógica)
