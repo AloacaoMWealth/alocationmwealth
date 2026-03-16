@@ -297,6 +297,7 @@ with tab2:
     )
 
     # ===================== 2) RF BRASIL - SUB-BUCKETS =====================
+    
     with st.expander("2) RF Brasil - Detalhamento Completo por Sub-Bucket", expanded=True):
         pos_rf = pos_cliente[pos_cliente["macro"] == "RF Brasil"].copy()
         
@@ -359,24 +360,67 @@ with tab2:
             )
             
     # ===================== 3) RV BRASIL - ATUAL + SUGERIDO =====================
-    with st.expander("3) RV Brasil - Atual vs Sugerido", expanded=True):
-        # ... (mesma lógica de antes)
-        rv_df = pd.DataFrame(...)  # mantenha como estava
     
-        # NOVA FUNÇÃO DE COR (invertida para Diferença)
+    with st.expander("3) RV Brasil - Atual vs Sugerido", expanded=True):
+        rv_real = pos_cliente[pos_cliente["macro"] == "RV Brasil"].copy()
+        
+        if rv_real.empty:
+            st.info("Cliente sem posições em RV Brasil no momento.")
+            # Sugestão completa mesmo sem posição atual
+            tickers_rv = RV_BR_ACOES + RV_BR_FIIS
+            if not tickers_rv:
+                st.warning("Nenhum ticker definido para RV Brasil.")
+            else:
+                peso_por_ativo = alvo_rv / len(tickers_rv)
+                sugestao = []
+                for t in tickers_rv:
+                    sugestao.append([t, "R$ 0,00", format_brl(peso_por_ativo), format_brl(-peso_por_ativo)])
+                
+                rv_df = pd.DataFrame(sugestao, columns=["Ativo", "Atual (R$)", "Sugerido (R$)", "Diferença (R$)"])
+        else:
+            # Agrupar posições reais por ticker
+            rv_real_group = rv_real.groupby("asset_id").agg({
+                "valor_mercado": "sum",
+                "asset_nome": "first"  # ou outro campo com nome amigável
+            }).reset_index()
+            
+            # Sugestão: peso igual entre todos os tickers da lista (pode mudar depois)
+            tickers_rv = RV_BR_ACOES + RV_BR_FIIS
+            if not tickers_rv:
+                st.warning("Lista de tickers RV Brasil vazia.")
+                st.stop()
+            
+            peso_por_ativo = alvo_rv / len(tickers_rv)
+            
+            sugestao = []
+            for t in tickers_rv:
+                atual = rv_real_group[rv_real_group["asset_id"] == t]["valor_mercado"].sum() if t in rv_real_group["asset_id"].values else 0.0
+                diff = atual - peso_por_ativo
+                sugestao.append([
+                    t,
+                    format_brl(atual),
+                    format_brl(peso_por_ativo),
+                    format_brl(diff)
+                ])
+            
+            rv_df = pd.DataFrame(sugestao, columns=["Ativo", "Atual (R$)", "Sugerido (R$)", "Diferença (R$)"])
+        
+        # Função de estilo corrigida (verde = comprar/faltando, vermelho = vender/excesso)
         def style_diff_rv(val):
             try:
-                num = float(str(val).replace("R$", "").replace(".", "").replace(",", "."))
-                if num < 0:  # faltando = comprar
-                    return "color: #2e7d32; font-weight: 650;"   # verde
-                if num > 0:  # excesso = vender
-                    return "color: #c62828; font-weight: 650;"   # vermelho
+                # Remove formatação e converte para float
+                num_str = str(val).replace("R$", "").replace(".", "").replace(",", ".").strip()
+                num = float(num_str)
+                if num < 0:   # faltando → comprar → verde
+                    return "color: #2e7d32; font-weight: 650;"
+                if num > 0:   # excesso → vender → vermelho
+                    return "color: #c62828; font-weight: 650;"
             except:
                 pass
-            return ""
+            return "color: #757575;"
     
         st.dataframe(
-            rv_df.style.applymap(style_diff_rv, subset=["Diferença"]),
+            rv_df.style.applymap(style_diff_rv, subset=["Diferença (R$)"]),
             use_container_width=True,
             hide_index=True
         )
