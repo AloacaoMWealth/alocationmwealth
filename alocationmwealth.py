@@ -400,48 +400,25 @@ with tab_up:
             )
 
 with tab_aa:
-    st.markdown("### 🎯 Asset Allocation - Cliente Real")
+    if "dflatest" in st.session_state:
+        dflatest = st.session_state["dflatest"]
+    col1, col2 = st.columns(2)
+    with col1:
+        carteiras = sorted(dflatest["GRUPO GERAL"].dropna().unique())
+        carteira_sel = st.selectbox("Carteira:", carteiras)
+    with col2:
+        pos_carteira = dflatest[dflatest["GRUPO GERAL"] == carteira_sel]
+        contas = sorted(pos_carteira["CLIENTE - CORRETORA"].dropna().unique())
+        conta_sel = st.selectbox("Conta:", contas)
     
-    # Sidebar com seleção cliente + auto-preenchimento
-    with st.sidebar:
-        st.markdown("### 👥 Selecione Cliente")
-        if "dflatest" in st.session_state:
-            dflatest = st.session_state["dflatest"]
-            carteiras = ["Todas"] + sorted(dflatest["GRUPO GERAL"].dropna().unique().tolist())
-            carteira_sel = st.selectbox("Carteira:", carteiras)
-            
-            if carteira_sel != "Todas":
-                pos_carteira = dflatest[dflatest["GRUPO GERAL"] == carteira_sel]
-                contas = sorted(pos_carteira["CLIENTE - CORRETORA"].dropna().unique())
-                conta_sel = st.selectbox("Conta:", contas)
-                pos_real = pos_carteira[pos_carteira["CLIENTE - CORRETORA"] == conta_sel]
-            else:
-                pos_real = dflatest
-                conta_sel = "Todas"
-            
-            total_real = pos_real["valor_mercado"].sum()
-            st.metric("💰 Total Real", f"R$ {total_real:,.0f}")
-            
-            # Posições atuais por bucket
-            if "bucket_estrategia" in pos_real.columns:
-                buckets = pos_real.groupby("bucket_estrategia")["valor_mercado"].sum()
-                for b, v in buckets.items():
-                    st.caption(f"📊 {b}: R$ {v:,.0f}")
-            
-            st.success("✅ Posições carregadas!")
-            st.session_state.patrimonio_brl = total_real
-            st.session_state.carteira_sel = carteira_sel
-            st.session_state.conta_sel = conta_sel
-        else:
-            st.warning("⚠️ Faça 'Rebuild' na aba Atualizar Posições primeiro")
-            st.session_state.patrimonio_brl = 500000
+    # CARREGA PL REAL
+    pos_real = pos_carteira[pos_carteira["CLIENTE - CORRETORA"] == conta_sel]
+    total_real = pos_real["valor_mercado"].sum()
+    st.metric("💰 Total Real", f"R$ {total_real:,.0f}")
     
-    # Usa o valor carregado
-    patrimonio_brl = st.session_state.get("patrimonio_brl", 500000)
-    
-    # Resto do código de cálculo (mantém igual)...
-    # [load_pesos_xlsx, métricas, expanders RF/RV/INT]
-
+    # PREENCHE NO SESSION STATE (para o resto do código usar)
+    st.session_state.patrimonio_brl = total_real    
+  
     # Sidebar COMPLETA
     with st.sidebar:
         st.markdown("### 📊 Cliente & Parâmetros")
@@ -557,39 +534,19 @@ with tab_aa:
         calcular_rv_yfinance("int_rv", valor_int_total_usd, equal_weights(RV_INT), moeda="USD", add_sa_suffix=False)
         
 with tab_teorica:
-        st.markdown("###Simulação Carteira Teórica")
+    st.header("💡 Carteira Teórica")
+    col1, col2 = st.columns(2)
+    with col1:
+        pesos = load_pesos_xlsx()
+        carteira = st.selectbox("Modelo:", list(pesos.keys()))
+        valor = st.number_input("Valor R$", value=1000000)
     
-col1, col2 = st.columns([1, 3])
-with col1:
-        try:
-            pesos = load_pesos_xlsx()
-            carteiras = list(pesos.keys())
-            carteira_sel = st.selectbox("Modelo:", carteiras)
-            valor_simul = st.number_input("Valor R$", value=1000000, step=50000)
-        except:
-            st.error("Pesos-alocacao.xlsx não encontrado")
-            st.stop()
-    
-with col2:
-        # Macro alocação
-        p = pesos[carteira_sel]
-        rf_br, rv_br, intl = macro_weights_from_neutro(p)[:3]
-        
+    with col2:
+        p = pesos[carteira]
+        rf, rv, intl = macro_weights_from_neutro(p)[:3]
         c1, c2, c3 = st.columns(3)
-        c1.metric("RF Brasil", f"{rf_br:.1%}", f"R$ {rf_br*valor_simul:,.0f}")
-        c2.metric("RV Brasil", f"{rv_br:.1%}", f"R$ {rv_br*valor_simul:,.0f}")
-        c3.metric("Internacional", f"{intl:.1%}", f"R$ {intl*valor_simul:,.0f}")
-        
-        # Detalhe RF
-        rf_buckets = rf_buckets_ideal(valor_simul * rf_br, p)
-        df_rf = pd.DataFrame([
-            {"Bucket": k, "Valor": v, "%": v/valor_simul*100} 
-            for k,v in rf_buckets.items()
-        ])
-        st.dataframe(
-            df_rf.style.format({"Valor": format_brl, "%": "{:.1f}%"}),
-            use_container_width=True
-        )
-        
-        st.caption("Para propostas comerciais")
+        c1.metric("RF", f"{rf:.0%}", f"R$ {rf*valor:,.0f}")
+        c2.metric("RV", f"{rv:.0%}", f"R$ {rv*valor:,.0f}")
+        c3.metric("INT", f"{intl:.0%}", f"R$ {intl*valor:,.0f}")
+
     
