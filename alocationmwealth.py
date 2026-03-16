@@ -319,7 +319,12 @@ with h2:
 # =========================
 # Tabs
 # =========================
-tab_up, tab_aa = st.tabs(["Atualizar posições", "Asset Allocation"])
+tab_up, tab_aa, tab_teorica = st.tabs([
+    "Atualizar posições", 
+    "Asset Allocation", 
+    "Carteira Teórica"
+])
+
 
 with tab_up:
     st.subheader("Posições lidas do GitHub")
@@ -412,39 +417,73 @@ with tab_aa:
     carteiras = sorted(list(pesos_manual.keys()))
 
     # 2) Sidebar (mantive seu comportamento atual)
+    # Sidebar COMPLETA (substitua TUDO dentro do with st.sidebar:)
     with st.sidebar:
-        st.markdown("### Parâmetros da carteira")
-        carteira = st.selectbox("Carteira", carteiras)
-        patrimonio_brl = parse_input_money(st.text_input("Patrimônio total (R$)", value="500000"))
-
+        st.markdown("### 📊 Cliente & Parâmetros")
+        
+        # 1. Auto-preenchimento cliente real
+        if "dflatest" in st.session_state:
+            dflatest = st.session_state["dflatest"]
+            carteiras = sorted(dflatest["GRUPO GERAL"].dropna().unique())
+            carteira_real = st.selectbox("👥 Carteira:", carteiras)
+            
+            pos_carteira = dflatest[dflatest["GRUPO GERAL"] == carteira_real]
+            contas = sorted(pos_carteira["CLIENTE - CORRETORA"].dropna().unique())
+            conta_real = st.selectbox("🏦 Conta:", contas)
+            
+            pos_real = pos_carteira[pos_carteira["CLIENTE - CORRETORA"] == conta_real]
+            pl_real = pos_real["valor_mercado"].sum()  # Usa sempre valor_mercado
+            
+            st.metric("💰 Patrimônio", f"R$ {pl_real:,.0f}")
+            st.caption(f"{len(pos_real)} ativos")
+            
+            patrimonio_brl = pl_real
+            modelo_sel = "Neutro"  # Default
+            st.success("✅ Carregado!")
+        else:
+            patrimonio_brl = st.number_input("💰 Patrimônio R$", value=500000, step=10000)
+            modelo_sel = "Neutro"
+        
+        # 2. PTAX simplificado
         try:
-            ptax, data_ptax = get_ptax_usdbrl_last()
-            usdbrl = ptax
-            st.caption(f"PTAX venda automática: {usdbrl:.4f} ({data_ptax})")
-            usar_manual = st.checkbox("Editar USDBRL manualmente", value=False)
-        except Exception:
-            usdbrl = 5.00
-            usar_manual = True
-            st.warning("Falha ao buscar PTAX. Usando USDBRL manual.")
-
-        if usar_manual:
-            usdbrl = parse_input_money(st.text_input("USDBRL", value=str(usdbrl).replace(".", ",")))
+            ptax, _ = get_ptax_usdbrl_last()
+            usd_brl = ptax
+            st.caption(f"💱 PTAX: R$ {usd_brl:.4f}")
+        except:
+            usd_brl = 5.60
+            st.caption("💱 PTAX: R$ 5.60 (manual)")
+        
+        # 3. Modelo
+        try:
+            pesos_manual = load_pesos_xlsx()
+            carteiras_modelo = list(pesos_manual.keys())
+            modelo_sel = st.selectbox("🎯 Modelo alvo:", carteiras_modelo)
+        except:
+            st.info("📊 Pesos-alocacao.xlsx não encontrado")
+        
+        st.markdown("---")
 
     # 3) Cálculo ideal (mantive seu motor)
-    p = pesos_manual[carteira]
-    rf_br_w, rv_br_w, intl_w, intl_rf_w, intl_rv_w = macro_weights_from_neutro(p)
-
+    # Cálculo das métricas com proteção
+    try:
+        p = pesos_manual[modelo_sel]
+        rfbrw, rvbrw, intlw, intlrfw, intlrvw = macro_weights_from_neutro(p)
+    except:
+        rfbrw, rvbrw, intlw, intlrfw, intlrvw = 0.6, 0.2, 0.2, 0.15, 0.05  # Default Neutro
+    
+    # Valores calculados (mantém o resto igual)
     alocavel_brl = max(0.0, patrimonio_brl)
-    valor_rv_total_brl = alocavel_brl * rv_br_w
-    valor_int_total_brl = alocavel_brl * intl_w
-    valor_int_total_usd = (valor_int_total_brl / usdbrl) if usdbrl else 0.0
+    valor_rv_total_brl = alocavel_brl * rvbrw
+    valor_int_total_brl = alocavel_brl * intlw
+    valor_int_total_usd = valor_int_total_brl / usd_brl if usd_brl else 0.0
     valor_rf_br_brl = max(0.0, alocavel_brl - valor_rv_total_brl - valor_int_total_brl)
-
+    
+    # Métricas (mantém igual)
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Patrimônio (R$)", format_brl(alocavel_brl))
-    c2.metric("RF Brasil", format_brl(valor_rf_br_brl), delta=fmt_pct(rf_br_w))
-    c3.metric("RV Brasil", format_brl(valor_rv_total_brl), delta=fmt_pct(rv_br_w))
-    c4.metric("Internacional", format_brl(valor_int_total_brl), delta=fmt_pct(intl_w))
+    c1.metric("Patrimônio R$", format_brl(alocavel_brl))
+    c2.metric("RF Brasil", format_brl(valor_rf_br_brl), delta=fmt_pct(rfbrw))
+    c3.metric("RV Brasil", format_brl(valor_rv_total_brl), delta=fmt_pct(rvbrw))
+    c4.metric("Internacional", format_brl(valor_int_total_brl), delta=fmt_pct(intlw))
 
     st.markdown('<div class="mw-divider"></div>', unsafe_allow_html=True)
 
@@ -491,3 +530,30 @@ with tab_aa:
         st.markdown(f"Macro Internacional: {format_usd(valor_int_total_usd)} ({format_brl(valor_int_total_brl)})")
         st.info("Internacional RF/RV ainda está simplificado neste protótipo.")
         calcular_rv_yfinance("int_rv", valor_int_total_usd, equal_weights(RV_INT), moeda="USD", add_sa_suffix=False)
+        
+    with tab_teorica:
+        st.markdown("### 💡 Simulação Carteira Teórica")
+        
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            carteiras_teo = sorted(load_pesos_xlsx().keys())
+            carteira_sel = st.selectbox("Carteira modelo:", carteiras_teo)
+            valor_teo = st.number_input("Valor simulado R$", value=1000000, step=50000)
+        
+        # Calcula alocação teórica
+        pesos_teo = load_pesos_xlsx()[carteira_sel]
+        rf_br_teo, rv_br_teo, intl_teo = macro_weights_from_neutro(pesos_teo)[:3]
+        
+        col_rf, col_rv, col_intl = st.columns(3)
+        col_rf.metric("RF Brasil", f"{rf_br_teo:.1%}", f"R$ {rf_br_teo * valor_teo:,.0f}")
+        col_rv.metric("RV Brasil", f"{rv_br_teo:.1%}", f"R$ {rv_br_teo * valor_teo:,.0f}")
+        col_intl.metric("Internacional", f"{intl_teo:.1%}", f"R$ {intl_teo * valor_teo:,.0f}")
+        
+        # Detalhe RF buckets
+        rf_buckets = rf_buckets_ideal(valor_teo * rf_br_teo, pesos_teo)
+        df_teo = pd.DataFrame(list(rf_buckets.items()), columns=["Bucket", "Valor"])
+        df_teo["%"] = df_teo["Valor"] / valor_teo * 100
+        st.dataframe(df_teo.style.format({"Valor": format_brl, "%": "{:.1f}%"}), use_container_width=True)
+        
+        st.caption("💡 Use para apresentar propostas aos clientes")
+    
