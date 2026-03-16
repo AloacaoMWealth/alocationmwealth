@@ -297,62 +297,63 @@ with tab2:
     )
 
     # ===================== 2) RF BRASIL - SUB-BUCKETS =====================
-with st.expander("2) RF Brasil - Detalhamento por Sub-Bucket", expanded=True):
-    pos_rf = pos_cliente[pos_cliente["macro"] == "RF Brasil"].copy()
+    with st.expander("2) RF Brasil - Detalhamento por Sub-Bucket", expanded=True):
+        pos_rf = pos_cliente[pos_cliente["macro"] == "RF Brasil"].copy()
+        
+        if pos_rf.empty:
+            st.info("Nenhuma posição em RF Brasil para este cliente.")
+        else:
+            # === Classificação dos ativos reais ===
+            def sub_bucket_rf(row):
+                estr = (str(row.get("estrategia", "")) + " " + 
+                        str(row.get("sub_mercado", "")) + " " + 
+                        str(row.get("asset_tipo", ""))).upper()
+                
+                if any(x in estr for x in ["IMEDIATO", "LIQUIDEZ", "D+0", "D+1"]): return "Imediato"
+                if any(x in estr for x in ["1 A 30", "CURTO"]):          return "1 a 30 dias"
+                if any(x in estr for x in ["31 A 180"]):                 return "31 a 180 dias"
+                if any(x in estr for x in ["181 A 360"]):                return "181 a 360 dias"
+                if any(x in estr for x in ["361+", "LONGO"]):            return "361+ dias"
+                if any(x in estr for x in ["INFLA", "IPCA", "NTN-B", "NTNB"]): return "RF Inflação"
+                if any(x in estr for x in ["PRÉ", "PREFIXADO", "LTN", "NTN-F"]): return "RF Pré"
+                return "Outros / Não identificado"
     
-    if pos_rf.empty:
-        st.info("Nenhuma posição em RF Brasil para este cliente.")
-    else:
-        # === Classificação dos ativos reais ===
-        def sub_bucket_rf(row):
-            estr = (str(row.get("estrategia", "")) + " " + 
-                    str(row.get("sub_mercado", "")) + " " + 
-                    str(row.get("asset_tipo", ""))).upper()
+            pos_rf["sub_bucket"] = pos_rf.apply(sub_bucket_rf, axis=1)
+            atual_rf = pos_rf.groupby("sub_bucket")["valor_mercado"].sum()
+    
+            # === Alvos vindos DIRETO da planilha Pesos-alocacao.xlsx (por modelo) ===
+            sub_buckets = [
+                "Imediato", "1 a 30 dias", "31 a 180 dias", "181 a 360 dias",
+                "361+ dias", "RF Inflação", "RF Pré", "Outros / Não identificado"
+            ]
             
-            if any(x in estr for x in ["IMEDIATO", "LIQUIDEZ", "D+0", "D+1"]): return "Imediato"
-            if any(x in estr for x in ["1 A 30", "CURTO"]):          return "1 a 30 dias"
-            if any(x in estr for x in ["31 A 180"]):                 return "31 a 180 dias"
-            if any(x in estr for x in ["181 A 360"]):                return "181 a 360 dias"
-            if any(x in estr for x in ["361+", "LONGO"]):            return "361+ dias"
-            if any(x in estr for x in ["INFLA", "IPCA", "NTN-B", "NTNB"]): return "RF Inflação"
-            if any(x in estr for x in ["PRÉ", "PREFIXADO", "LTN", "NTN-F"]): return "RF Pré"
-            return "Outros / Não identificado"
-
-        pos_rf["sub_bucket"] = pos_rf.apply(sub_bucket_rf, axis=1)
-        atual_rf = pos_rf.groupby("sub_bucket")["valor_mercado"].sum()
-
-        # === Alvos vindos DIRETO da planilha Pesos-alocacao.xlsx (por modelo) ===
-        sub_buckets = [
-            "Imediato", "1 a 30 dias", "31 a 180 dias", "181 a 360 dias",
-            "361+ dias", "RF Inflação", "RF Pré", "Outros / Não identificado"
-        ]
-        
-        alvo_sub = {}
-        for bucket in sub_buckets:
-            # Pega o peso direto do modelo (ex: Moderado tem 0.20 para Imediato)
-            peso = float(p.get(bucket, 0.0))
-            alvo_sub[bucket] = pl_total * peso
-
-        # === Tabela comparativa ===
-        rf_detail = pd.DataFrame({
-            "Sub-Bucket": list(atual_rf.index),
-            "Atual (R$)":    [format_brl(v) for v in atual_rf.values],
-            "Alvo (R$)":     [format_brl(alvo_sub.get(k, 0)) for k in atual_rf.index],
-            "Diferença (R$)":[format_brl(v - alvo_sub.get(k, 0)) for k, v in atual_rf.items()]
-        })
-
-        # Ordenação lógica
-        ordem = {name: i for i, name in enumerate(sub_buckets)}
-        rf_detail["ordem"] = rf_detail["Sub-Bucket"].map(ordem)
-        rf_detail = rf_detail.sort_values("ordem").drop(columns="ordem")
-
-        st.dataframe(
-            rf_detail.style.applymap(style_compra_venda, subset=["Diferença (R$)"]),
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        st.caption("✅ Pesos respeitam exatamente o modelo escolhido na planilha Pesos-alocacao.xlsx")
+            alvo_sub = {}
+            for bucket in sub_buckets:
+                # Pega o peso direto do modelo (ex: Moderado tem 0.20 para Imediato)
+                peso = float(p.get(bucket, 0.0))
+                alvo_sub[bucket] = pl_total * peso
+    
+            # === Tabela comparativa ===
+            rf_detail = pd.DataFrame({
+                "Sub-Bucket": list(atual_rf.index),
+                "Atual (R$)":    [format_brl(v) for v in atual_rf.values],
+                "Alvo (R$)":     [format_brl(alvo_sub.get(k, 0)) for k in atual_rf.index],
+                "Diferença (R$)":[format_brl(v - alvo_sub.get(k, 0)) for k, v in atual_rf.items()]
+            })
+    
+            # Ordenação lógica
+            ordem = {name: i for i, name in enumerate(sub_buckets)}
+            rf_detail["ordem"] = rf_detail["Sub-Bucket"].map(ordem)
+            rf_detail = rf_detail.sort_values("ordem").drop(columns="ordem")
+    
+            st.dataframe(
+                rf_detail.style.applymap(style_compra_venda, subset=["Diferença (R$)"]),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            st.caption("✅ Pesos respeitam exatamente o modelo escolhido na planilha Pesos-alocacao.xlsx")
+            
     # ===================== 3) RV BRASIL - ATUAL + SUGERIDO =====================
     with st.expander("3) RV Brasil - Posições vs Sugestão", expanded=True):
         rv_real = pos_cliente[pos_cliente["macro"] == "RV Brasil"].copy()
