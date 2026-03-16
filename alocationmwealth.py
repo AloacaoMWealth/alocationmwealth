@@ -297,43 +297,50 @@ with tab2:
     )
 
     # ===================== 2) RF BRASIL - SUB-BUCKETS =====================
-    with st.expander("2) RF Brasil - Detalhamento por Sub-Bucket", expanded=True):
+    with st.expander("2) RF Brasil - Detalhamento Completo por Sub-Bucket", expanded=True):
         pos_rf = pos_cliente[pos_cliente["macro"] == "RF Brasil"].copy()
         
         if pos_rf.empty:
-            st.info("Nenhuma posição em RF Brasil para este cliente.")
+            st.info("Nenhuma posição em RF Brasil.")
         else:
-            # === Classificação dos ativos reais ===
-            def sub_bucket_rf(row):
-                estr = (str(row.get("estrategia", "")) + " " + 
-                        str(row.get("sub_mercado", "")) + " " + 
-                        str(row.get("asset_tipo", ""))).upper()
+            def sub_bucket_rf_detalhado(row):
+                estr = (str(row.get("estrategia","")) + " " + 
+                        str(row.get("sub_mercado","")) + " " + 
+                        str(row.get("mercado","")) + " " + 
+                        str(row.get("asset_tipo",""))).upper()
                 
-                if any(x in estr for x in ["IMEDIATO", "LIQUIDEZ", "D+0", "D+1"]): return "Imediato"
-                if any(x in estr for x in ["1 A 30", "CURTO"]):          return "1 a 30 dias"
-                if any(x in estr for x in ["31 A 180"]):                 return "31 a 180 dias"
-                if any(x in estr for x in ["181 A 360"]):                return "181 a 360 dias"
-                if any(x in estr for x in ["361+", "LONGO"]):            return "361+ dias"
-                if any(x in estr for x in ["INFLA", "IPCA", "NTN-B", "NTNB"]): return "RF Inflação"
-                if any(x in estr for x in ["PRÉ", "PREFIXADO", "LTN", "NTN-F"]): return "RF Pré"
-                return "Outros / Não identificado"
+                # RF Pós
+                if any(x in estr for x in ["IMEDIATO","LIQUIDEZ","D+0","D+1"]): return "Imediato"
+                if any(x in estr for x in ["1 A 30","CURTO PRAZO"]): return "1 a 30 dias"
+                if any(x in estr for x in ["31 A 180"]): return "31 a 180 dias"
+                if any(x in estr for x in ["181 A 360"]): return "181 a 360 dias"
+                if any(x in estr for x in ["361+","LONGO PRAZO"]): return "361+ dias"
+                if "FIINFRA" in estr or "CETIPADO" in estr: return "FiInfra e Cetipados"
+                
+                # RF Pré
+                if any(x in estr for x in ["BANCARIO PRE","BANCO PRE"]): return "Bancário Pré"
+                if any(x in estr for x in ["TESOURO PRE","NTN-F","LTN"]): return "Tesouro Pré"
+                
+                # RF Inflação
+                if any(x in estr for x in ["BANCARIO","BANCO"]): return "Bancário"
+                if any(x in estr for x in ["TESOURO","NTN-B","NTNB"]): return "Tesouro"
+                if "FIINFRA" in estr or "CETIPADO" in estr: return "FiInfra e Cetipado"
+                if any(x in estr for x in ["CREDITO PRIVADO","CRI","CRA","DEBENTURE"]): return "Crédito Privado"
+                
+                return "Outros"
     
-            pos_rf["sub_bucket"] = pos_rf.apply(sub_bucket_rf, axis=1)
+            pos_rf["sub_bucket"] = pos_rf.apply(sub_bucket_rf_detalhado, axis=1)
             atual_rf = pos_rf.groupby("sub_bucket")["valor_mercado"].sum()
     
-            # === Alvos vindos DIRETO da planilha Pesos-alocacao.xlsx (por modelo) ===
-            sub_buckets = [
-                "Imediato", "1 a 30 dias", "31 a 180 dias", "181 a 360 dias",
-                "361+ dias", "RF Inflação", "RF Pré", "Outros / Não identificado"
+            # === Alvos vindos DIRETO da planilha (por modelo) ===
+            sub_keys = [
+                "Imediato","1 a 30 dias","31 a 180 dias","181 a 360 dias","361+ dias",
+                "FiInfra e Cetipados","Bancário Pré","Tesouro Pré",
+                "Bancário","Tesouro","FiInfra e Cetipado","Crédito Privado"
             ]
             
-            alvo_sub = {}
-            for bucket in sub_buckets:
-                # Pega o peso direto do modelo (ex: Moderado tem 0.20 para Imediato)
-                peso = float(p.get(bucket, 0.0))
-                alvo_sub[bucket] = pl_total * peso
+            alvo_sub = {k: pl_total * float(p.get(k, 0.0)) for k in sub_keys}
     
-            # === Tabela comparativa ===
             rf_detail = pd.DataFrame({
                 "Sub-Bucket": list(atual_rf.index),
                 "Atual (R$)":    [format_brl(v) for v in atual_rf.values],
@@ -341,10 +348,9 @@ with tab2:
                 "Diferença (R$)":[format_brl(v - alvo_sub.get(k, 0)) for k, v in atual_rf.items()]
             })
     
-            # Ordenação lógica
-            ordem = {name: i for i, name in enumerate(sub_buckets)}
-            rf_detail["ordem"] = rf_detail["Sub-Bucket"].map(ordem)
-            rf_detail = rf_detail.sort_values("ordem").drop(columns="ordem")
+            # Ordenação correta
+            ordem = {name: i for i, name in enumerate(sub_keys)}
+            rf_detail = rf_detail.assign(ordem=rf_detail["Sub-Bucket"].map(ordem)).sort_values("ordem").drop(columns="ordem")
     
             st.dataframe(
                 rf_detail.style.applymap(style_compra_venda, subset=["Diferença (R$)"]),
@@ -352,32 +358,31 @@ with tab2:
                 hide_index=True
             )
             
-            st.caption("✅ Pesos respeitam exatamente o modelo escolhido na planilha Pesos-alocacao.xlsx")
-            
     # ===================== 3) RV BRASIL - ATUAL + SUGERIDO =====================
-    with st.expander("3) RV Brasil - Posições vs Sugestão", expanded=True):
-        rv_real = pos_cliente[pos_cliente["macro"] == "RV Brasil"].copy()
-        rv_real_group = rv_real.groupby("asset_id").agg({"valor_mercado":"sum","asset_nome":"first"}).reset_index()
-
-        # Sugestão simples (peso igual - você pode mudar para pesos específicos)
-        tickers_rv = RV_BR_ACOES + RV_BR_FIIS
-        w = 1.0 / len(tickers_rv) if tickers_rv else 0
-        sugestao_rv = {t: alvo_rv * w for t in tickers_rv}
-
-        rv_table = []
-        for t, val_ideal in sugestao_rv.items():
-            atual = rv_real_group[rv_real_group["asset_id"] == t]["valor_mercado"].sum() if t in rv_real_group["asset_id"].values else 0
-            diff = atual - val_ideal
-            rv_table.append([t, format_brl(atual), format_brl(val_ideal), format_brl(diff)])
-
-        rv_df = pd.DataFrame(rv_table, columns=["Ativo", "Atual (R$)", "Sugerido (R$)", "Diferença"])
+    with st.expander("3) RV Brasil - Atual vs Sugerido", expanded=True):
+        # ... (mesma lógica de antes)
+        rv_df = pd.DataFrame(...)  # mantenha como estava
+    
+        # NOVA FUNÇÃO DE COR (invertida para Diferença)
+        def style_diff_rv(val):
+            try:
+                num = float(str(val).replace("R$", "").replace(".", "").replace(",", "."))
+                if num < 0:  # faltando = comprar
+                    return "color: #2e7d32; font-weight: 650;"   # verde
+                if num > 0:  # excesso = vender
+                    return "color: #c62828; font-weight: 650;"   # vermelho
+            except:
+                pass
+            return ""
+    
         st.dataframe(
-            rv_df.style.applymap(style_compra_venda, subset=["Diferença"]),
+            rv_df.style.applymap(style_diff_rv, subset=["Diferença"]),
             use_container_width=True,
             hide_index=True
         )
 
     # ===================== 4) INTERNACIONAL (RF global + RV separada) =====================
+    
     with st.expander("4) Internacional", expanded=True):
         intl_real = pos_cliente[pos_cliente["macro"] == "Internacional"].copy()
         total_intl_atual_brl = intl_real["valor_mercado"].sum()
@@ -412,24 +417,26 @@ with tab2:
         )
 
 # ===================== TAB CARTEIRA TEÓRICA (com sub-buckets) =====================
+
 with tab3:
-    st.header("Carteira Teórica")
+    st.header("Carteira Teórica - Detalhada")
     pesos = load_pesos_xlsx()
     modelo = st.selectbox("Modelo", list(pesos.keys()))
     valor = st.number_input("Patrimônio simulado R$", value=1_000_000, step=100_000)
 
     p = pesos[modelo]
-    rf_br_w, rv_br_w, intl_w, _, _ = macro_weights_from_neutro(p)
 
-    # Tabela macro + sub
-    data = [
-        ["RF Brasil", f"{rf_br_w:.1%}", format_brl(valor * rf_br_w), ""],
-        ["  └ RF Pós", "40%", format_brl(valor * rf_br_w * 0.4), ""],
-        ["  └ RF Pré", "10%", format_brl(valor * rf_br_w * 0.1), ""],
-        ["  └ RF Inflação", "20%", format_brl(valor * rf_br_w * 0.2), ""],
-        ["RV Brasil", f"{rv_br_w:.1%}", format_brl(valor * rv_br_w), ""],
-        ["Internacional", f"{intl_w:.1%}", format_brl(valor * intl_w), ""]
-    ]
+    # Tabela completa com sub-buckets
+    linhas = []
+    for macro in ["RF Pós", "RF Pré", "RF Inflação", "RV Brasil", "Internacional"]:
+        peso_macro = sum(float(p.get(k, 0)) for k in p if macro in k)
+        linhas.append([macro, f"{peso_macro:.1%}", format_brl(valor * peso_macro), ""])
+        
+        # Sub-buckets do macro
+        for sub in [k for k in p.keys() if macro in k and k != macro]:
+            w = float(p.get(sub, 0))
+            if w > 0:
+                linhas.append([f"   └ {sub}", f"{w:.1%}", format_brl(valor * w), ""])
 
-    teor_df = pd.DataFrame(data, columns=["Estratégia", "Peso", "Valor Alvo", "Observação"])
+    teor_df = pd.DataFrame(linhas, columns=["Estratégia / Sub-Bucket", "Peso", "Valor Alvo (R$)", ""])
     st.dataframe(teor_df, use_container_width=True, hide_index=True)
