@@ -556,11 +556,11 @@ with tab_aa:
         st.info("Internacional RF/RV ainda está simplificado neste protótipo.")
         calcular_rv_yfinance("int_rv", valor_int_total_usd, equal_weights(RV_INT), moeda="USD", add_sa_suffix=False)
         
-    with tab_teorica:
+with tab_teorica:
         st.markdown("###Simulação Carteira Teórica")
     
-    col1, col2 = st.columns([1, 3])
-    with col1:
+col1, col2 = st.columns([1, 3])
+with col1:
         try:
             pesos = load_pesos_xlsx()
             carteiras = list(pesos.keys())
@@ -570,7 +570,7 @@ with tab_aa:
             st.error("Pesos-alocacao.xlsx não encontrado")
             st.stop()
     
-    with col2:
+with col2:
         # Macro alocação
         p = pesos[carteira_sel]
         rf_br, rv_br, intl = macro_weights_from_neutro(p)[:3]
