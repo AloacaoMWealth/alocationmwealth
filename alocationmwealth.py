@@ -400,24 +400,49 @@ with tab_up:
             )
 
 with tab_aa:
+    st.markdown("### 🎯 Asset Allocation - Cliente Real")
     
-    # Auto-fill com posições reais
-    if "dflatest" in st.session_state:
-        carteiras = sorted(st.session_state["dflatest"]["GRUPO GERAL"].dropna().unique())
-        carteira_pos = st.selectbox("Carregar posições de:", carteiras)
-        pos_carteira = st.session_state["dflatest"][st.session_state["dflatest"]["GRUPO GERAL"]]
+    # Sidebar com seleção cliente + auto-preenchimento
+    with st.sidebar:
+        st.markdown("### 👥 Selecione Cliente")
+        if "dflatest" in st.session_state:
+            dflatest = st.session_state["dflatest"]
+            carteiras = ["Todas"] + sorted(dflatest["GRUPO GERAL"].dropna().unique().tolist())
+            carteira_sel = st.selectbox("Carteira:", carteiras)
+            
+            if carteira_sel != "Todas":
+                pos_carteira = dflatest[dflatest["GRUPO GERAL"] == carteira_sel]
+                contas = sorted(pos_carteira["CLIENTE - CORRETORA"].dropna().unique())
+                conta_sel = st.selectbox("Conta:", contas)
+                pos_real = pos_carteira[pos_carteira["CLIENTE - CORRETORA"] == conta_sel]
+            else:
+                pos_real = dflatest
+                conta_sel = "Todas"
+            
+            total_real = pos_real["valor_mercado"].sum()
+            st.metric("💰 Total Real", f"R$ {total_real:,.0f}")
+            
+            # Posições atuais por bucket
+            if "bucket_estrategia" in pos_real.columns:
+                buckets = pos_real.groupby("bucket_estrategia")["valor_mercado"].sum()
+                for b, v in buckets.items():
+                    st.caption(f"📊 {b}: R$ {v:,.0f}")
+            
+            st.success("✅ Posições carregadas!")
+            st.session_state.patrimonio_brl = total_real
+            st.session_state.carteira_sel = carteira_sel
+            st.session_state.conta_sel = conta_sel
+        else:
+            st.warning("⚠️ Faça 'Rebuild' na aba Atualizar Posições primeiro")
+            st.session_state.patrimonio_brl = 500000
+    
+    # Usa o valor carregado
+    patrimonio_brl = st.session_state.get("patrimonio_brl", 500000)
+    
+    # Resto do código de cálculo (mantém igual)...
+    # [load_pesos_xlsx, métricas, expanders RF/RV/INT]
 
-    # 1) Carregar pesos
-    try:
-        pesos_manual = load_pesos_xlsx("Pesos-alocacao.xlsx")
-    except Exception as e:
-        st.error(f"Erro ao ler Pesos-alocacao.xlsx: {type(e).__name__} - {e}")
-        st.stop()
-
-    carteiras = sorted(list(pesos_manual.keys()))
-
-    # 2) Sidebar (mantive seu comportamento atual)
-    # Sidebar COMPLETA (substitua TUDO dentro do with st.sidebar:)
+    # Sidebar COMPLETA
     with st.sidebar:
         st.markdown("### 📊 Cliente & Parâmetros")
         
@@ -532,28 +557,39 @@ with tab_aa:
         calcular_rv_yfinance("int_rv", valor_int_total_usd, equal_weights(RV_INT), moeda="USD", add_sa_suffix=False)
         
     with tab_teorica:
-        st.markdown("### 💡 Simulação Carteira Teórica")
+        st.markdown("###Simulação Carteira Teórica")
+    
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        try:
+            pesos = load_pesos_xlsx()
+            carteiras = list(pesos.keys())
+            carteira_sel = st.selectbox("Modelo:", carteiras)
+            valor_simul = st.number_input("Valor R$", value=1000000, step=50000)
+        except:
+            st.error("Pesos-alocacao.xlsx não encontrado")
+            st.stop()
+    
+    with col2:
+        # Macro alocação
+        p = pesos[carteira_sel]
+        rf_br, rv_br, intl = macro_weights_from_neutro(p)[:3]
         
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            carteiras_teo = sorted(load_pesos_xlsx().keys())
-            carteira_sel = st.selectbox("Carteira modelo:", carteiras_teo)
-            valor_teo = st.number_input("Valor simulado R$", value=1000000, step=50000)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("RF Brasil", f"{rf_br:.1%}", f"R$ {rf_br*valor_simul:,.0f}")
+        c2.metric("RV Brasil", f"{rv_br:.1%}", f"R$ {rv_br*valor_simul:,.0f}")
+        c3.metric("Internacional", f"{intl:.1%}", f"R$ {intl*valor_simul:,.0f}")
         
-        # Calcula alocação teórica
-        pesos_teo = load_pesos_xlsx()[carteira_sel]
-        rf_br_teo, rv_br_teo, intl_teo = macro_weights_from_neutro(pesos_teo)[:3]
+        # Detalhe RF
+        rf_buckets = rf_buckets_ideal(valor_simul * rf_br, p)
+        df_rf = pd.DataFrame([
+            {"Bucket": k, "Valor": v, "%": v/valor_simul*100} 
+            for k,v in rf_buckets.items()
+        ])
+        st.dataframe(
+            df_rf.style.format({"Valor": format_brl, "%": "{:.1f}%"}),
+            use_container_width=True
+        )
         
-        col_rf, col_rv, col_intl = st.columns(3)
-        col_rf.metric("RF Brasil", f"{rf_br_teo:.1%}", f"R$ {rf_br_teo * valor_teo:,.0f}")
-        col_rv.metric("RV Brasil", f"{rv_br_teo:.1%}", f"R$ {rv_br_teo * valor_teo:,.0f}")
-        col_intl.metric("Internacional", f"{intl_teo:.1%}", f"R$ {intl_teo * valor_teo:,.0f}")
-        
-        # Detalhe RF buckets
-        rf_buckets = rf_buckets_ideal(valor_teo * rf_br_teo, pesos_teo)
-        df_teo = pd.DataFrame(list(rf_buckets.items()), columns=["Bucket", "Valor"])
-        df_teo["%"] = df_teo["Valor"] / valor_teo * 100
-        st.dataframe(df_teo.style.format({"Valor": format_brl, "%": "{:.1f}%"}), use_container_width=True)
-        
-        st.caption("💡 Use para apresentar propostas aos clientes")
+        st.caption("Para propostas comerciais")
     
