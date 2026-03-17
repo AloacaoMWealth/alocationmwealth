@@ -262,13 +262,10 @@ with tab2:
 
     # Seleção do Grupo Geral
     grupos = sorted(df_latest["GRUPO GERAL"].dropna().unique())
-    grupo_sel = st.selectbox("👥 Grupo Geral (Cliente)", grupos)
+    grupo_sel = st.selectbox("Grupo Geral (Cliente)", grupos)
 
     pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
     pl_total = float(pos_cliente["valor_mercado"].sum())
-
-    # ÚNICA MÉTRICA DE PATRIMÔNIO (removida a duplicação)
-    st.metric("💰 Patrimônio Consolidado", format_brl(pl_total))
 
     # ===================== PERFIL AUTOMÁTICO =====================
     perfil_cliente = "Não identificado"
@@ -281,24 +278,23 @@ with tab2:
             if not perfis.empty:
                 perfil_cliente = perfis.iloc[0]
 
-    st.caption(f"📌 **Perfil detectado na planilha Contas:** {perfil_cliente}")
+    st.caption(f"**Perfil detectado na planilha Contas:** {perfil_cliente}")
 
     # ===================== ÚNICO SELECTBOX DE MODELO (MATCHING FORTE) =====================
     pesos = load_pesos_xlsx()
     modelos = list(pesos.keys())
 
-    # MATCHING MELHORADO - agora reconhece "Arrojado Renda Construção", "Moderado Renda Construção", etc.
+    # MATCHING MELHORADO - agora reconhece exatamente "Arrojado Renda Construção", "Moderado Renda Construção", etc.
     default_idx = 0
-    perfil_norm = perfil_cliente.upper().strip()
+    perfil_norm = perfil_cliente.strip()
 
     for i, m in enumerate(modelos):
-        modelo_norm = m.upper().strip()
-        if (perfil_norm in modelo_norm or 
-            modelo_norm in perfil_norm or
-            ("RENDA CONSTRUÇÃO" in perfil_norm and "RENDA CONSTRUÇÃO" in modelo_norm) or
-            ("RENDA USUFRUTO" in perfil_norm and "RENDA USUFRUTO" in modelo_norm) or
-            ("ARROJADO" in perfil_norm and "ARROJADO" in modelo_norm) or
-            ("MODERADO" in perfil_norm and "MODERADO" in modelo_norm)):
+        if perfil_norm == m or perfil_norm.upper() == m.upper():
+            default_idx = i
+            break
+        # Fallback para casos com pequenas diferenças
+        if ("RENDA CONSTRUÇÃO" in perfil_norm.upper() and "RENDA CONSTRUÇÃO" in m.upper()) or \
+           ("RENDA USUFRUTO" in perfil_norm.upper() and "RENDA USUFRUTO" in m.upper()):
             default_idx = i
             break
 
@@ -309,7 +305,7 @@ with tab2:
         help="Puxado automaticamente da planilha Contas.xlsx. Altere apenas para simular outro cenário."
     )
 
-    p = pesos[modelo]   # ← Este é o modelo que realmente alimenta todos os cálculos
+    p = pesos[modelo]   # ← Este é o modelo que realmente controla todos os cálculos
 
     # PTAX
     try:
@@ -317,7 +313,7 @@ with tab2:
     except:
         ptax = 5.60
 
-    # ===================== DETALHAMENTO POR CORRETORA (ÚNICO E LIMPO) =====================
+    # ===================== DETALHAMENTO POR CORRETORA (ÚNICO) =====================
     st.subheader("Detalhamento por corretora")
 
     por_corretora = pos_cliente.groupby("corretora", as_index=False)["valor_mercado"].agg(
