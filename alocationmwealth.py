@@ -260,7 +260,7 @@ with tab2:
 
     df_latest = st.session_state.df_latest.copy()
 
-    # Seleção por GRUPO GERAL (consolida todas corretoras)
+    # Seleção do Grupo Geral
     grupos = sorted(df_latest["GRUPO GERAL"].dropna().unique())
     grupo_sel = st.selectbox("👥 Grupo Geral (Cliente)", grupos)
 
@@ -268,45 +268,38 @@ with tab2:
     pl_total = float(pos_cliente["valor_mercado"].sum())
 
     st.metric("💰 Patrimônio Consolidado", format_brl(pl_total))
-    
-    # ────────────────────────────────────────────────
-    # Puxar perfil/carteira automaticamente da planilha Contas
-    # ────────────────────────────────────────────────
+
+    # ===================== PERFIL AUTOMÁTICO (corrigido) =====================
     perfil_cliente = "Não identificado"
     if not df_contas.empty:
-        # Filtra pelo grupo (use .strip() para evitar problemas de espaço)
-        matching = df_contas[df_contas["GRUPO GERAL"].astype(str).str.strip() == str(grupo_sel).strip()]
+        matching = df_contas[
+            df_contas["GRUPO GERAL"].astype(str).str.strip() == str(grupo_sel).strip()
+        ]
         if not matching.empty:
-            # Pega o primeiro perfil não-nulo
-            perfis = matching["Perfil Carteira"].dropna()
+            perfis = matching["Perfil Carteira"].dropna().astype(str).str.strip()
             if not perfis.empty:
-                perfil_cliente = perfis.iloc[0].strip()  # remove espaços extras
-    
-    st.caption(f"📌 Perfil detectado na planilha Contas: **{perfil_cliente}**")
-    
-    # Modelos disponíveis na planilha Pesos
+                perfil_cliente = perfis.iloc[0]
+
+    st.caption(f"📌 **Perfil detectado na planilha Contas:** {perfil_cliente}")
+
+    # ===================== MODELO DE ALOCAÇÃO (ÚNICO SELECTBOX) =====================
     pesos = load_pesos_xlsx()
     modelos = list(pesos.keys())
-    
-    # Índice default: tenta achar o perfil do cliente na lista
+
+    # Tenta fazer match inteligente (case-insensitive + palavras-chave)
     default_idx = 0
-    if perfil_cliente in modelos:
-        default_idx = modelos.index(perfil_cliente)
-    elif any(perfil_cliente.lower() in m.lower() for m in modelos):
-        # Tentativa fuzzy (se o nome for parecido)
-        for i, m in enumerate(modelos):
-            if perfil_cliente.lower() in m.lower() or m.lower() in perfil_cliente.lower():
-                default_idx = i
-                break
-    
-    # Selectbox com override discreto
+    for i, m in enumerate(modelos):
+        if perfil_cliente.strip().lower() in m.lower() or m.lower() in perfil_cliente.strip().lower():
+            default_idx = i
+            break
+
     modelo = st.selectbox(
-        "Modelo de alocação",
+        "🎯 Modelo de alocação (padrão = perfil do cliente)",
         modelos,
         index=default_idx,
-        help="O valor padrão é o perfil cadastrado para este grupo. Altere apenas para simular outro cenário."
+        help="O sistema puxa automaticamente o perfil da planilha Contas.xlsx. Altere só para simular outro cenário."
     )
-    
+
     p = pesos[modelo]
 
     # PTAX
@@ -315,40 +308,40 @@ with tab2:
     except:
         ptax = 5.60
 
-    # ────────────────────────────────────────────────
-    # Breakdown por corretora e conta
-    # ────────────────────────────────────────────────
+    # ===================== DETALHAMENTO POR CORRETORA (limpo) =====================
     st.subheader("Detalhamento por corretora")
-    
-    # Resumo por corretora
+
     por_corretora = pos_cliente.groupby("corretora", as_index=False)["valor_mercado"].agg(
-        PL_total="sum",
-        Qtd_ativos="count"
+        PL_total="sum", Qtd_ativos="count"
     ).sort_values("PL_total", ascending=False)
-    
-    por_corretora["PL_total_fmt"] = por_corretora["PL_total"].apply(format_brl)
+
+    por_corretora["PL_fmt"] = por_corretora["PL_total"].apply(format_brl)
     por_corretora["% do total"] = (por_corretora["PL_total"] / pl_total * 100).round(1).astype(str) + "%"
-    
+
     st.dataframe(
-        por_corretora[["corretora", "PL_total_fmt", "% do total", "Qtd_ativos"]].rename(columns={
+        por_corretora[["corretora", "PL_fmt", "% do total", "Qtd_ativos"]].rename(columns={
             "corretora": "Corretora",
-            "PL_total_fmt": "PL (R$)",
+            "PL_fmt": "PL (R$)",
             "Qtd_ativos": "Nº de ativos"
         }),
         hide_index=True,
         use_container_width=True
     )
-    
-    # Métricas rápidas em colunas (opcional, mas fica bonito)
+
+    # Métricas rápidas
     cols = st.columns(len(por_corretora) + 1)
     cols[0].metric("PL Global", format_brl(pl_total))
-    
     for i, row in por_corretora.iterrows():
-        cols[i+1].metric(
-            row["corretora"],
-            row["PL_total_fmt"],
-            delta=f"{row['% do total']} • {row['Qtd_ativos']} ativos"
+        cols[i+1].metric(row["corretora"], row["PL_fmt"], delta=f"{row['% do total']} • {row['Qtd_ativos']} ativos")
+
+    with st.expander("Ver detalhamento por conta individual"):
+        por_conta = pos_cliente.groupby(["corretora", "conta"], as_index=False).agg(
+            PL=("valor_mercado", "sum"),
+            Ativos=("asset_id", "nunique"),
+            Cliente=("CLIENTE", "first")
         )
+        por_conta["PL_fmt"] = por_conta["PL"].apply(format_brl)
+        st.dataframe(por_conta[["corretora", "conta", "Cliente", "PL_fmt", "Ativos"]], hide_index=True, use_container_width=True)
     
     # Detalhamento por conta (expandido)
     with st.expander("Ver detalhamento por conta individual"):
