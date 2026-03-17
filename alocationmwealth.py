@@ -267,6 +267,9 @@ with tab2:
     pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
     pl_total = float(pos_cliente["valor_mercado"].sum())
 
+    # ÚNICA MÉTRICA DE PATRIMÔNIO CONSOLIDADO
+    st.metric("💰 Patrimônio Consolidado", format_brl(pl_total))
+
     # ===================== PERFIL AUTOMÁTICO =====================
     perfil_cliente = "Não identificado"
     if not df_contas.empty:
@@ -278,13 +281,13 @@ with tab2:
             if not perfis.empty:
                 perfil_cliente = perfis.iloc[0]
 
-    st.caption(f" **Perfil detectado na planilha Contas:** {perfil_cliente}")
+    st.caption(f"**Perfil detectado na planilha Contas:** {perfil_cliente}")
 
     # ===================== MAPEAMENTO EXPLÍCITO PERFIL → MODELO =====================
     pesos = load_pesos_xlsx()
     modelos = list(pesos.keys())
 
-    # Condicional forte: mapeia exatamente os nomes comuns da Contas para os da Pesos
+    # Condicional forte e priorizada
     modelo_default = None
     perfil_norm = perfil_cliente.strip().upper()
 
@@ -292,24 +295,29 @@ with tab2:
         modelo_default = "Arrojado Renda Construção"
     elif "MODERADO RENDA CONSTRUÇÃO" in perfil_norm:
         modelo_default = "Moderado Renda Construção"
-    elif "MODERADO RENDA USUFRUTO" in perfil_norm:
-        modelo_default = "Moderado Renda Usufruto"
     elif "CONSERVADOR RENDA CONSTRUÇÃO" in perfil_norm:
         modelo_default = "Conservador Renda Construção"
+    elif "MODERADO RENDA USUFRUTO" in perfil_norm:
+        modelo_default = "Moderado Renda Usufruto"
+    elif "CONSERVADOR RENDA USUFRUTO" in perfil_norm:
+        modelo_default = "Conservador Renda Usufruto"
     elif "ARROJADO RENDA USUFRUTO" in perfil_norm:
         modelo_default = "Arrojado Renda Usufruto"
-    elif "CONSERVADOR" in perfil_norm:
-        modelo_default = "Conservador"
+    elif "ARROJADO" in perfil_norm:
+        modelo_default = "Arrojado"
     elif "MODERADO" in perfil_norm:
         modelo_default = "Moderado"
-    # Adicione mais casos conforme necessário
+    elif "CONSERVADOR" in perfil_norm:
+        modelo_default = "Conservador"
+    elif "ULTRACONSERVADOR" in perfil_norm:
+        modelo_default = "Ultraconservador"
 
-    # Se encontrou um modelo válido, usa ele como default
+    # Se encontrou, usa o modelo mapeado
     if modelo_default and modelo_default in modelos:
         default_idx = modelos.index(modelo_default)
     else:
         default_idx = 0
-        st.warning(f"⚠️ Perfil '{perfil_cliente}' não encontrado na lista de modelos. Usando o primeiro da lista como padrão.")
+        st.warning(f"⚠️ Perfil '{perfil_cliente}' não mapeado automaticamente. Usando '{modelos[0]}' como padrão. Verifique a planilha Pesos-alocacao.xlsx.")
 
     modelo = st.selectbox(
         "Modelo de alocação (padrão = perfil do cliente)",
@@ -318,7 +326,7 @@ with tab2:
         help="Mapeado automaticamente da planilha Contas.xlsx. Altere apenas para simular outro cenário."
     )
 
-    p = pesos[modelo]  # ← Este modelo é usado em TODOS os cálculos abaixo
+    p = pesos[modelo]  # Este é o que alimenta TODOS os cálculos abaixo
 
     # PTAX
     try:
@@ -326,7 +334,7 @@ with tab2:
     except:
         ptax = 5.60
 
-    # ===================== DETALHAMENTO POR CORRETORA =====================
+    # ===================== DETALHAMENTO POR CORRETORA (SÓ MÉTRICAS, SEM TABELA) =====================
     st.subheader("Detalhamento por corretora")
 
     por_corretora = pos_cliente.groupby("corretora", as_index=False)["valor_mercado"].agg(
@@ -336,21 +344,17 @@ with tab2:
     por_corretora["PL_fmt"] = por_corretora["PL_total"].apply(format_brl)
     por_corretora["% do total"] = (por_corretora["PL_total"] / pl_total * 100).round(1).astype(str) + "%"
 
-    st.dataframe(
-        por_corretora[["corretora", "PL_fmt", "% do total", "Qtd_ativos"]].rename(columns={
-            "corretora": "Corretora",
-            "PL_fmt": "PL (R$)",
-            "Qtd_ativos": "Nº de ativos"
-        }),
-        hide_index=True,
-        use_container_width=True
-    )
-
-    # Métricas por corretora (sem duplicar patrimônio global)
-    cols = st.columns(len(por_corretora))
+    # Métricas lado a lado (PL Global + corretoras)
+    cols = st.columns(len(por_corretora) + 1)
+    cols[0].metric("PL Global", format_brl(pl_total))
     for i, row in por_corretora.iterrows():
-        cols[i].metric(row["corretora"], row["PL_fmt"], delta=f"{row['% do total']} • {row['Qtd_ativos']} ativos")
+        cols[i+1].metric(
+            row["corretora"],
+            row["PL_fmt"],
+            delta=f"{row['% do total']} • {row['Qtd_ativos']} ativos"
+        )
 
+    # Expander para contas individuais (mantido, mas discreto)
     with st.expander("Ver detalhamento por conta individual"):
         por_conta = pos_cliente.groupby(["corretora", "conta"], as_index=False).agg(
             PL=("valor_mercado", "sum"),
