@@ -147,6 +147,23 @@ def load_pesos_xlsx(path_xlsx: str = "Pesos-alocacao.xlsx"):
     return {k: v for k, v in pesos.items() if len(v) > 0}
 
 # =============================================================================
+# Leitura das Contas e Perfis
+# =============================================================================
+@st.cache_data(ttl=3600)  # cache por 1 hora
+def load_contas():
+    try:
+        path = "posicoes/Contas.xlsx"  # ajuste se o caminho for diferente
+        df = pd.read_excel(path, sheet_name=0)
+        # Limpa nomes de colunas (remove espaços extras)
+        df.columns = df.columns.str.strip()
+        return df
+    except Exception as e:
+        st.error(f"Erro ao carregar Contas.xlsx: {e}")
+        return pd.DataFrame()
+
+df_contas = load_contas()
+
+# =============================================================================
 # Regras macro
 # =============================================================================
 RF_BR_BUCKETS = [
@@ -251,12 +268,109 @@ with tab2:
     pl_total = float(pos_cliente["valor_mercado"].sum())
 
     st.metric("💰 Patrimônio Consolidado", format_brl(pl_total))
+    
+    # ────────────────────────────────────────────────
+    # Puxar perfil/carteira automaticamente da planilha Contas
+    # ────────────────────────────────────────────────
+    perfil_cliente = "Não identificado"
+    if not df_contas.empty:
+        # Filtra pelo grupo (use .strip() para evitar problemas de espaço)
+        matching = df_contas[df_contas["GRUPO GERAL"].astype(str).str.strip() == str(grupo_sel).strip()]
+        if not matching.empty:
+            # Pega o primeiro perfil não-nulo
+            perfis = matching["Perfil Carteira"].dropna()
+            if not perfis.empty:
+                perfil_cliente = perfis.iloc[0].strip()  # remove espaços extras
+    
+    st.caption(f"📌 Perfil detectado na planilha Contas: **{perfil_cliente}**")
+    
+    # Modelos disponíveis na planilha Pesos
+    pesos = load_pesos_xlsx()
+    modelos = list(pesos.keys())
+    
+    # Índice default: tenta achar o perfil do cliente na lista
+    default_idx = 0
+    if perfil_cliente in modelos:
+        default_idx = modelos.index(perfil_cliente)
+    elif any(perfil_cliente.lower() in m.lower() for m in modelos):
+        # Tentativa fuzzy (se o nome for parecido)
+        for i, m in enumerate(modelos):
+            if perfil_cliente.lower() in m.lower() or m.lower() in perfil_cliente.lower():
+                default_idx = i
+                break
+    
+    # Selectbox com override discreto
+    modelo = st.selectbox(
+        "Modelo de alocação",
+        modelos,
+        index=default_idx,
+        help="O valor padrão é o perfil cadastrado para este grupo. Altere apenas para simular outro cenário."
+    )
+    
+    p = pesos[modelo]
 
     # PTAX
     try:
         ptax, _ = get_ptax_usdbrl_last()
     except:
         ptax = 5.60
+
+    # ────────────────────────────────────────────────
+    # Breakdown por corretora e conta
+    # ────────────────────────────────────────────────
+    st.subheader("Detalhamento por corretora")
+    
+    # Resumo por corretora
+    por_corretora = pos_cliente.groupby("corretora", as_index=False)["valor_mercado"].agg(
+        PL_total="sum",
+        Qtd_ativos="count"
+    ).sort_values("PL_total", ascending=False)
+    
+    por_corretora["PL_total_fmt"] = por_corretora["PL_total"].apply(format_brl)
+    por_corretora["% do total"] = (por_corretora["PL_total"] / pl_total * 100).round(1).astype(str) + "%"
+    
+    st.dataframe(
+        por_corretora[["corretora", "PL_total_fmt", "% do total", "Qtd_ativos"]].rename(columns={
+            "corretora": "Corretora",
+            "PL_total_fmt": "PL (R$)",
+            "Qtd_ativos": "Nº de ativos"
+        }),
+        hide_index=True,
+        use_container_width=True
+    )
+    
+    # Métricas rápidas em colunas (opcional, mas fica bonito)
+    cols = st.columns(len(por_corretora) + 1)
+    cols[0].metric("PL Global", format_brl(pl_total))
+    
+    for i, row in por_corretora.iterrows():
+        cols[i+1].metric(
+            row["corretora"],
+            row["PL_total_fmt"],
+            delta=f"{row['% do total']} • {row['Qtd_ativos']} ativos"
+        )
+    
+    # Detalhamento por conta (expandido)
+    with st.expander("Ver detalhamento por conta individual"):
+        por_conta = pos_cliente.groupby(["corretora", "conta"], as_index=False).agg(
+            PL=("valor_mercado", "sum"),
+            Ativos=("asset_id", "nunique"),  # ou outro campo que identifique o ativo
+            Cliente=("CLIENTE", "first")     # se quiser mostrar o nome do titular
+        ).sort_values("PL", ascending=False)
+    
+        por_conta["PL_fmt"] = por_conta["PL"].apply(format_brl)
+        por_conta["% do grupo"] = (por_conta["PL"] / pl_total * 100).round(1).astype(str) + "%"
+    
+        st.dataframe(
+            por_conta[["corretora", "conta", "Cliente", "PL_fmt", "% do grupo", "Ativos"]].rename(columns={
+                "corretora": "Corretora",
+                "conta": "Conta",
+                "PL_fmt": "PL (R$)",
+                "Ativos": "Nº de ativos"
+            }),
+            hide_index=True,
+            use_container_width=True
+    )
 
     # Modelo alvo
     pesos = load_pesos_xlsx()
