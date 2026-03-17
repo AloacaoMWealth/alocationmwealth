@@ -262,14 +262,15 @@ with tab2:
 
     # Seleção do Grupo Geral
     grupos = sorted(df_latest["GRUPO GERAL"].dropna().unique())
-    grupo_sel = st.selectbox("Grupo Geral (Cliente)", grupos)
+    grupo_sel = st.selectbox("👥 Grupo Geral (Cliente)", grupos)
 
     pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
     pl_total = float(pos_cliente["valor_mercado"].sum())
 
-    st.metric("Patrimônio Consolidado", format_brl(pl_total))
+    # ÚNICA MÉTRICA DE PATRIMÔNIO (removida a duplicação)
+    st.metric("💰 Patrimônio Consolidado", format_brl(pl_total))
 
-    # ===================== PERFIL AUTOMÁTICO (MELHORADO) =====================
+    # ===================== PERFIL AUTOMÁTICO =====================
     perfil_cliente = "Não identificado"
     if not df_contas.empty:
         matching = df_contas[
@@ -280,32 +281,35 @@ with tab2:
             if not perfis.empty:
                 perfil_cliente = perfis.iloc[0]
 
-    st.caption(f"**Perfil detectado na planilha Contas:** {perfil_cliente}")
+    st.caption(f"📌 **Perfil detectado na planilha Contas:** {perfil_cliente}")
 
-    # ===================== MODELO DE ALOCAÇÃO (ÚNICO E INTELIGENTE) =====================
+    # ===================== ÚNICO SELECTBOX DE MODELO (MATCHING FORTE) =====================
     pesos = load_pesos_xlsx()
     modelos = list(pesos.keys())
 
-    # MATCHING MELHORADO - agora reconhece "Moderado Renda Construção"
+    # MATCHING MELHORADO - agora reconhece "Arrojado Renda Construção", "Moderado Renda Construção", etc.
     default_idx = 0
-    perfil_upper = perfil_cliente.upper().strip()
+    perfil_norm = perfil_cliente.upper().strip()
 
     for i, m in enumerate(modelos):
-        modelo_upper = m.upper().strip()
-        if (perfil_upper in modelo_upper or 
-            modelo_upper in perfil_upper or
-            "MODERADO RENDA CONSTRUÇÃO" in modelo_upper and "MODERADO" in perfil_upper):
+        modelo_norm = m.upper().strip()
+        if (perfil_norm in modelo_norm or 
+            modelo_norm in perfil_norm or
+            ("RENDA CONSTRUÇÃO" in perfil_norm and "RENDA CONSTRUÇÃO" in modelo_norm) or
+            ("RENDA USUFRUTO" in perfil_norm and "RENDA USUFRUTO" in modelo_norm) or
+            ("ARROJADO" in perfil_norm and "ARROJADO" in modelo_norm) or
+            ("MODERADO" in perfil_norm and "MODERADO" in modelo_norm)):
             default_idx = i
             break
 
     modelo = st.selectbox(
-        "Modelo de alocação (padrão = perfil do cliente)",
+        "🎯 Modelo de alocação (padrão = perfil do cliente)",
         modelos,
         index=default_idx,
         help="Puxado automaticamente da planilha Contas.xlsx. Altere apenas para simular outro cenário."
     )
 
-    p = pesos[modelo]   # ← Este é o que realmente alimenta os cálculos
+    p = pesos[modelo]   # ← Este é o modelo que realmente alimenta todos os cálculos
 
     # PTAX
     try:
@@ -313,7 +317,7 @@ with tab2:
     except:
         ptax = 5.60
 
-    # ===================== DETALHAMENTO POR CORRETORA =====================
+    # ===================== DETALHAMENTO POR CORRETORA (ÚNICO E LIMPO) =====================
     st.subheader("Detalhamento por corretora")
 
     por_corretora = pos_cliente.groupby("corretora", as_index=False)["valor_mercado"].agg(
