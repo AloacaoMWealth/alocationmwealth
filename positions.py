@@ -4,24 +4,8 @@ import json
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from datetime import timedelta
+
 import pandas as pd
-import numpy as np
-import streamlit as st
-import requests
-
-
-@st.cache_data(ttl=3600)
-def get_ptax():
-    base = "https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarPeriodo"
-    hoje = datetime.now().date()
-    ini = (hoje - timedelta(days=10)).strftime('%m-%d-%Y')
-    fim = hoje.strftime('%m-%d-%Y')
-    url = f"{base}(dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@dataInicial='{ini}'&@dataFinalCotacao='{fim}'&$format=json&$select=cotacaoVenda&$orderby=dataHoraCotacao desc&$top=1"
-    r = requests.get(url)
-    return float(r.json()['value'][0]['cotacaoVenda'])
-
-
 
 DATA_DIR = Path("data")
 LATEST_PARQUET = DATA_DIR / "positions_latest.parquet"
@@ -219,69 +203,47 @@ def parse_cs_positions(src) -> pd.DataFrame:
 
 
 def parse_xp_positions(src) -> pd.DataFrame:
-
+    """
+    XP.xlsx: lê todas as abas e captura qualquer aba que tenha:
+    CodigoCliente + (CodigoAtivo ou Ativo) + (ValorAtual ou Valor)
+    """
     xls = pd.ExcelFile(src)
     out = []
-    
-    # Sua tabela COMPLETA das abas (ajuste nomes exatos)
-    CONFIG_ABAS = {
-        'Financeiro': {'ativo': None, 'valor': ['PatrimonioTotal', 'PatrimonioTotalLiquido'], 'qtd': None},
-        'Custdia Remunerada': {'ativo': 'CodigoAtivo', 'valor': 'ValorTotal', 'qtd': 'QuantidadeAtivo'},
-        'Fundos': {'ativo': 'NomeFundo', 'valor': 'ValorLiquido', 'qtd': 'QuantidadeCotas'},
-        'Coe': {'ativo': 'CodigoPosicao', 'valor': 'ValorFinanceiroLiquido', 'qtd': 'QuantidadeTotal'},
-        'Tesouro Direto': {'ativo': 'NomeTitulo', 'valor': 'ValorLiquido', 'qtd': 'QuantidadeTotal'},
-        # Adicione TODAS da sua tabela aqui 👇
-    }
-    
-    for aba, config in CONFIG_ABAS.items():
-        if aba in xls.sheet_names:
-            df_aba = pd.read_excel(xls, sheet_name=aba)
-            df_aba.columns = [str(c).strip() for c in df_aba.columns]
-            
-            # Padroniza cliente
-            if 'CodigoCliente' not in df_aba.columns:
-                df_aba = df_aba.rename(columns={df_aba.columns[0]: 'CodigoCliente'})
-            
-            df_aba['aba_origem'] = aba  # Marca origem
-            
-            # Só colunas necessárias
-            cols_base = ['CodigoCliente', 'aba_origem']
-            if config['ativo']: cols_base.append(config['ativo'])
-            if config['valor']: cols_base.extend(config['valor'])
-            if config['qtd']: cols_base.append(config['qtd'])
-            
-            df_subset = df_aba[cols_base].copy()
-            
-            # Numéricos
-            for col in df_subset.columns:
-                if col not in ['CodigoCliente', 'aba_origem', config.get('ativo')]:
-                    df_subset[col] = pd.to_numeric(df_subset[col], errors='coerce').fillna(0.0)
-            
-            out.append(df_subset)
-    
-    if not out:
-        raise ValueError("Nenhuma aba válida encontrada!")
-    
-    # 🔑 CONSOLIDAÇÃO CORRETA por cliente + ativo
-    todas_posicoes = pd.concat(out, ignore_index=True)
-    
-    # Formato FINAL compatível
-    resultado = pd.DataFrame({
-        'corretora': 'XP',
-        'conta': todas_posicoes['CodigoCliente'].astype(str),
-        'assetid': todas_posicoes[config.get('ativo')].fillna(''),
-        'assetnome': todas_posicoes[config.get('ativo')].fillna(''),  
-        'assettipo': todas_posicoes['aba_origem'],  # ✅ TIPO por aba
-        'valormercado': todas_posicoes[config.get('valor')].sum(axis=1), 
-        'quantidade': todas_posicoes[config.get('qtd')].fillna(0.0),
-        'moeda': 'BRL',
-        'mercado': '',
-        'submercado': '',
-        'estrategia': ''
-    })
-    
-    return resultado
 
+    for sh in xls.sheet_names:
+        tmp = pd.read_excel(xls, sheet_name=sh)
+        tmp.columns = [str(c).strip() for c in tmp.columns]
+
+        if "CodigoCliente" not in tmp.columns:
+            continue
+
+        col_asset = "CodigoAtivo" if "CodigoAtivo" in tmp.columns else ("Ativo" if "Ativo" in tmp.columns else None)
+        col_val = "ValorAtual" if "ValorAtual" in tmp.columns else ("Valor" if "Valor" in tmp.columns else None)
+        col_qty = "QuantidadeTotalAtual" if "QuantidadeTotalAtual" in tmp.columns else (
+            "Quantidade" if "Quantidade" in tmp.columns else None
+        )
+
+        if col_asset is None or col_val is None:
+            continue
+
+        df = pd.DataFrame({
+            "corretora": "XP",
+            "conta": tmp["CodigoCliente"].apply(_normalize_account),
+            "asset_id": tmp[col_asset].astype(str).str.strip(),
+            "asset_nome": tmp.get("NomeAtivo", tmp.get("DescricaoAtivo", tmp.get(col_asset, ""))).astype(str).str.strip(),
+            "asset_tipo": sh,
+            "valor_mercado": pd.to_numeric(tmp[col_val], errors="coerce").fillna(0.0),
+            "quantidade": pd.to_numeric(tmp[col_qty], errors="coerce").fillna(0.0) if col_qty else 0.0,
+            "moeda": "BRL",
+            "mercado": "",
+            "sub_mercado": "",
+            "estrategia": "",
+        })
+        out.append(df)
+
+    if not out:
+        raise ValueError("XP: não encontrei abas com CodigoCliente + colunas de ativo/valor.")
+    return pd.concat(out, ignore_index=True)
 
 
 def parse_btg_positions(src) -> pd.DataFrame:
@@ -412,14 +374,6 @@ def build_and_save_latest(
         right_on=["corretora", "conta"],
         suffixes=("", "_ctrl"),
     )
-    
-    ptax = get_ptax()
-    merged['valor_original'] = merged['valor_mercado']  # mantém original
-    merged['valor_mercado'] = np.where(  # nova coluna sobreescreve
-        merged['corretora'] == 'CS', 
-        merged['valor_mercado'] * ptax, 
-        merged['valor_mercado']
-    )
 
     merged["dt_posicao"] = meta.get("dt_posicao", datetime.now().date().isoformat())
     merged = classify_bucket_estrategia(merged)
@@ -429,6 +383,7 @@ def build_and_save_latest(
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
     return merged
+
 
 def load_latest_positions() -> pd.DataFrame | None:
     if not LATEST_PARQUET.exists():
