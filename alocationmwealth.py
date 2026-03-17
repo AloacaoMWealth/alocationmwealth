@@ -262,7 +262,7 @@ with tab2:
 
     # Seleção do Grupo Geral
     grupos = sorted(df_latest["GRUPO GERAL"].dropna().unique())
-    grupo_sel = st.selectbox("Grupo Geral (Cliente)", grupos)
+    grupo_sel = st.selectbox("👥 Grupo Geral (Cliente)", grupos)
 
     pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
     pl_total = float(pos_cliente["valor_mercado"].sum())
@@ -278,34 +278,47 @@ with tab2:
             if not perfis.empty:
                 perfil_cliente = perfis.iloc[0]
 
-    st.caption(f"**Perfil detectado na planilha Contas:** {perfil_cliente}")
+    st.caption(f" **Perfil detectado na planilha Contas:** {perfil_cliente}")
 
-    # ===================== ÚNICO SELECTBOX DE MODELO (MATCHING FORTE) =====================
+    # ===================== MAPEAMENTO EXPLÍCITO PERFIL → MODELO =====================
     pesos = load_pesos_xlsx()
     modelos = list(pesos.keys())
 
-    # MATCHING MELHORADO - agora reconhece exatamente "Arrojado Renda Construção", "Moderado Renda Construção", etc.
-    default_idx = 0
-    perfil_norm = perfil_cliente.strip()
+    # Condicional forte: mapeia exatamente os nomes comuns da Contas para os da Pesos
+    modelo_default = None
+    perfil_norm = perfil_cliente.strip().upper()
 
-    for i, m in enumerate(modelos):
-        if perfil_norm == m or perfil_norm.upper() == m.upper():
-            default_idx = i
-            break
-        # Fallback para casos com pequenas diferenças
-        if ("RENDA CONSTRUÇÃO" in perfil_norm.upper() and "RENDA CONSTRUÇÃO" in m.upper()) or \
-           ("RENDA USUFRUTO" in perfil_norm.upper() and "RENDA USUFRUTO" in m.upper()):
-            default_idx = i
-            break
+    if "ARROJADO RENDA CONSTRUÇÃO" in perfil_norm:
+        modelo_default = "Arrojado Renda Construção"
+    elif "MODERADO RENDA CONSTRUÇÃO" in perfil_norm:
+        modelo_default = "Moderado Renda Construção"
+    elif "MODERADO RENDA USUFRUTO" in perfil_norm:
+        modelo_default = "Moderado Renda Usufruto"
+    elif "CONSERVADOR RENDA CONSTRUÇÃO" in perfil_norm:
+        modelo_default = "Conservador Renda Construção"
+    elif "ARROJADO RENDA USUFRUTO" in perfil_norm:
+        modelo_default = "Arrojado Renda Usufruto"
+    elif "CONSERVADOR" in perfil_norm:
+        modelo_default = "Conservador"
+    elif "MODERADO" in perfil_norm:
+        modelo_default = "Moderado"
+    # Adicione mais casos conforme necessário
+
+    # Se encontrou um modelo válido, usa ele como default
+    if modelo_default and modelo_default in modelos:
+        default_idx = modelos.index(modelo_default)
+    else:
+        default_idx = 0
+        st.warning(f"⚠️ Perfil '{perfil_cliente}' não encontrado na lista de modelos. Usando o primeiro da lista como padrão.")
 
     modelo = st.selectbox(
-        "🎯 Modelo de alocação (padrão = perfil do cliente)",
+        "Modelo de alocação (padrão = perfil do cliente)",
         modelos,
         index=default_idx,
-        help="Puxado automaticamente da planilha Contas.xlsx. Altere apenas para simular outro cenário."
+        help="Mapeado automaticamente da planilha Contas.xlsx. Altere apenas para simular outro cenário."
     )
 
-    p = pesos[modelo]   # ← Este é o modelo que realmente controla todos os cálculos
+    p = pesos[modelo]  # ← Este modelo é usado em TODOS os cálculos abaixo
 
     # PTAX
     try:
@@ -313,7 +326,7 @@ with tab2:
     except:
         ptax = 5.60
 
-    # ===================== DETALHAMENTO POR CORRETORA (ÚNICO) =====================
+    # ===================== DETALHAMENTO POR CORRETORA =====================
     st.subheader("Detalhamento por corretora")
 
     por_corretora = pos_cliente.groupby("corretora", as_index=False)["valor_mercado"].agg(
@@ -333,11 +346,10 @@ with tab2:
         use_container_width=True
     )
 
-    # Métricas rápidas
-    cols = st.columns(len(por_corretora) + 1)
-    cols[0].metric("Patrimônio Total", format_brl(pl_total))
+    # Métricas por corretora (sem duplicar patrimônio global)
+    cols = st.columns(len(por_corretora))
     for i, row in por_corretora.iterrows():
-        cols[i+1].metric(row["corretora"], row["PL_fmt"], delta=f"{row['% do total']} • {row['Qtd_ativos']} ativos")
+        cols[i].metric(row["corretora"], row["PL_fmt"], delta=f"{row['% do total']} • {row['Qtd_ativos']} ativos")
 
     with st.expander("Ver detalhamento por conta individual"):
         por_conta = pos_cliente.groupby(["corretora", "conta"], as_index=False).agg(
