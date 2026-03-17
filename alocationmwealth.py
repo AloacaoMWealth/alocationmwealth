@@ -167,14 +167,20 @@ df_contas = load_contas()
 # Regras macro
 # =============================================================================
 RF_BR_BUCKETS = [
+    # RF Pós
+    ("RF Pós", "Fundos de Invest."),
     ("RF Pós", "Imediato"),
     ("RF Pós", "1 a 30 dias"),
     ("RF Pós", "31 a 180 dias"),
     ("RF Pós", "181 a 360 dias"),
     ("RF Pós", "361+ dias"),
     ("RF Pós", "FiInfra e Cetipados"),
+    
+    # RF Pré
     ("RF Pré", "Bancário Pré"),
     ("RF Pré", "Tesouro Pré"),
+    
+    # RF Inflação
     ("RF Inflação", "Bancário"),
     ("RF Inflação", "Tesouro"),
     ("RF Inflação", "FiInfra e Cetipado"),
@@ -190,11 +196,84 @@ def macro_weights_from_neutro(p):
     return rf_br, rv_br, intl, intl_rf, intl_rv
 
 # =============================================================================
+# FUNDOS RECOMENDADOS - Classificação por categoria e liquidez
+# =============================================================================
+FUNDOS_RECOMENDADOS = {
+    "RF Pós - Liquidez (curto/médio prazo)": [
+        {"fundo": "BNP Paribas Match DI",                   "liquidez": "D+0"},
+        {"fundo": "Bradesco SKY",                           "liquidez": "D+0"},
+        {"fundo": "Safra DI Master",                        "liquidez": "D+0"},
+        {"fundo": "Tivio Institucional",                    "liquidez": "D+0"},
+        {"fundo": "Tivio Banks",                            "liquidez": "D+0"},
+        {"fundo": "BTG Yield DI FIRF Ref CrPr",             "liquidez": "D+0"},
+        {"fundo": "Riza Lotus",                             "liquidez": "D+1"},
+        {"fundo": "Absolute Atenas",                        "liquidez": "D+1"},
+        {"fundo": "Valore FI RF CP",                        "liquidez": "D+5"},
+        {"fundo": "Bradesco Zupo",                          "liquidez": "D+6"},
+        {"fundo": "BNP Paribas Rubi FIC FIRF CP",           "liquidez": "D+10"},
+        {"fundo": "Tivio Institucional 15",                 "liquidez": "D+15"},
+        {"fundo": "Absolute Creta",                         "liquidez": "D+31"},
+        {"fundo": "Safra Vitesse",                          "liquidez": "D+31"},
+        {"fundo": "XP CDI Debêntures Inc",                  "liquidez": "D+31"},
+        {"fundo": "Solis Capital Antares Light FIC FIM CP", "liquidez": "D+45"},
+        {"fundo": "Solis Capital Pioneiro FIC FIDC",        "liquidez": "D+60"},
+        {"fundo": "Jive BossaNova 90 FIDC",                 "liquidez": "D+90"},
+        {"fundo": "Kinea Oportunidade",                     "liquidez": "D+90"},
+        {"fundo": "TIVIO ALT 90 FIDC RL",                   "liquidez": "D+90"},
+        {"fundo": "Tivio Alt Credito High Yield 180 FIDC RL","liquidez": "D+180"},
+        {"fundo": "Jive BossaNova High yield Advisory FIC FIM", "liquidez": "D+360"},
+    ],
+    "RF Inflação - Longo prazo / Incentivados (inclui FI-Infra)": [
+        {"fundo": "Capitânia Infra Renda 90 Incentivado Infraestrutura RF CP", "liquidez": "D+90"},
+        {"fundo": "JURO11",  "liquidez": "Longo prazo", "indexador": "IPCA"},
+        {"fundo": "IFRA11",  "liquidez": "Longo prazo", "indexador": "IPCA"},
+        {"fundo": "KDIF11",  "liquidez": "Longo prazo", "indexador": "IPCA"},
+        {"fundo": "JGPI11",  "liquidez": "Longo prazo", "indexador": "IPCA"},
+        {"fundo": "BDIF11",  "liquidez": "Longo prazo", "indexador": "IPCA"},
+        {"fundo": "JMBI11",  "liquidez": "Longo prazo", "indexador": "IPCA"},
+        {"fundo": "CPTI11",  "liquidez": "Longo prazo", "indexador": "IPCA"},
+    ],
+    "RF Pós - FI-Infra / Cetipados (CDI)": [
+        {"fundo": "KNDI11",  "liquidez": "Longo prazo", "indexador": "CDI"},
+        {"fundo": "CDII11",  "liquidez": "Longo prazo", "indexador": "CDI"},
+        {"fundo": "IFRI11",  "liquidez": "Longo prazo", "indexador": "CDI"},
+        {"fundo": "AZQI11",  "liquidez": "Longo prazo", "indexador": "CDI"},
+        {"fundo": "KNCE11",  "liquidez": "Longo prazo", "indexador": "CDI"},
+        {"fundo": "AZIN11",  "liquidez": "Longo prazo", "indexador": "CDI"},
+    ],
+    "RV Brasil - Fundos de Ações": [
+        {"fundo": "SPX Patriot FIC FIA",                "liquidez": "32 dias"},
+        {"fundo": "Kaítalo Tarkus FIC FIA",             "liquidez": "32 dias"},
+        {"fundo": "Encore Valor Dividendos FIF Ações",  "liquidez": "32 dias"},
+        {"fundo": "Absolute Pace LB Advisory FIC FIA",  "liquidez": "32 dias"},
+        {"fundo": "Constellation Institucional",        "liquidez": "60 dias"},
+        {"fundo": "Encore LB FIC FIM",                  "liquidez": "32 dias"},
+        {"fundo": "Dahlia Total Return",                "liquidez": "32 dias"},
+        {"fundo": "Real Investor FIC de FIF em Ações",  "liquidez": "30 dias"},
+    ]
+}
+
+# =============================================================================
 # RV baskets (exemplo - ajuste conforme seu código original)
 # =============================================================================
-RV_BR_ACOES = ["ITUB4", "VALE3", "PETR4", "B3SA3", "WEGE3", "ABEV3", "BBAS3", "MGLU3"]
-RV_BR_FIIS  = ["KNRI11", "HGLG11", "XPML11", "MXRF11", "VISC11", "HGRE11"]
-RV_INT      = ["VOO", "QQQ", "SPY", "VTI", "VXUS"]
+
+# Ações - Carteiras sem foco em renda (Moderada, Arrojada, Conservadora)
+ACOES_SEM_RENDA = [
+    "AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"
+]
+
+# Ações - Carteiras com geração de renda (Renda Construção, Renda Usufruto, etc.)
+ACOES_COM_RENDA = [
+    "CPLE3", "EGIE3", "AXIA3", "ITUB3", "VALE3", "ALOS3", "FLRY3", "ABEV3", "PRIO3", "WEGE3"
+]
+
+# FIIs (comum para carteiras com renda)
+FIIs_RECOMENDADOS = [
+    "KNRI11", "XPML11", "HGLG11", "PVBI11", "HGRU11", "KNCR11", "KNIP11", "KNCA11"
+]
+
+# Internacional (ETFs globais - mantive sua lista original por enquanto)
+RV_INT = ["VOO", "QQQ", "SPY", "VTI", "VXUS"]
 
 def equal_weights(tickers):
     if not tickers:
@@ -266,9 +345,6 @@ with tab2:
 
     pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
     pl_total = float(pos_cliente["valor_mercado"].sum())
-
-    # ÚNICA MÉTRICA DE PATRIMÔNIO CONSOLIDADO
-    st.metric("💰 Patrimônio Consolidado", format_brl(pl_total))
 
     # ===================== PERFIL AUTOMÁTICO =====================
     perfil_cliente = "Não identificado"
@@ -437,6 +513,29 @@ with tab2:
                 if any(x in estr for x in ["CREDITO PRIVADO","CRI","CRA","DEBENTURE"]): return "Crédito Privado"
                 
                 return "Outros"
+            
+            
+            # Dentro do expander de RF Brasil (ou em um novo expander específico)
+        with st.expander("RF Brasil - Fundos Recomendados por Categoria", expanded=False):
+            # Liquidez curto prazo
+            st.subheader("Liquidez (RF Pós - curto/médio prazo)")
+            df_liq = pd.DataFrame(FUNDOS_RECOMENDADOS["RF Pós - Liquidez (curto/médio prazo)"])
+            st.dataframe(df_liq[["fundo", "liquidez"]], hide_index=True, use_container_width=True)
+        
+            # RF Inflação + FI-Infra
+            st.subheader("RF Inflação / Longo Prazo (inclui FI-Infra incentivados)")
+            df_infl = pd.DataFrame(FUNDOS_RECOMENDADOS["RF Inflação - Longo prazo / Incentivados (inclui FI-Infra)"])
+            st.dataframe(df_infl[["fundo", "liquidez", "indexador"]], hide_index=True, use_container_width=True)
+        
+            # RF Pós FI-Infra CDI
+            st.subheader("RF Pós - FI-Infra / Cetipados (indexador CDI)")
+            df_cdi = pd.DataFrame(FUNDOS_RECOMENDADOS["RF Pós - FI-Infra / Cetipados (CDI)"])
+            st.dataframe(df_cdi[["fundo", "liquidez", "indexador"]], hide_index=True, use_container_width=True)
+        
+            # Fundos de Ações (RV Brasil)
+            st.subheader("RV Brasil - Fundos de Ações recomendados")
+            df_rv_fundos = pd.DataFrame(FUNDOS_RECOMENDADOS["RV Brasil - Fundos de Ações"])
+            st.dataframe(df_rv_fundos[["fundo", "liquidez"]], hide_index=True, use_container_width=True)
     
             pos_rf["sub_bucket"] = pos_rf.apply(sub_bucket_rf_detalhado, axis=1)
             atual_rf = pos_rf.groupby("sub_bucket")["valor_mercado"].sum()
@@ -468,60 +567,68 @@ with tab2:
             )
             
     # ===================== 3) RV BRASIL - ATUAL + SUGERIDO =====================
-    
     with st.expander("3) RV Brasil - Atual vs Sugerido", expanded=True):
         rv_real = pos_cliente[pos_cliente["macro"] == "RV Brasil"].copy()
-        
+    
+        # Escolhe a lista de ações correta com base no modelo/perfil
+        if "Renda" in modelo.upper():
+            acoes_rec = [
+                "CPLE3", "EGIE3", "AXIA3", "ITUB3", "VALE3", "ALOS3", "FLRY3", "ABEV3", "PRIO3", "WEGE3"
+            ]
+        else:
+            acoes_rec = [
+                "AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"
+            ]
+    
+        fiis_rec = [
+            "KNRI11", "XPML11", "HGLG11", "PVBI11", "HGRU11", "KNCR11", "KNIP11", "KNCA11"
+        ]
+    
+        # Todos os ativos recomendados para RV Brasil
+        tickers_rv = acoes_rec + fiis_rec
+    
+        if not tickers_rv:
+            st.warning("Nenhum ticker definido para RV Brasil neste perfil.")
+            st.stop()
+    
+        # Peso igual por ativo (você pode ajustar para pesos diferentes depois)
+        peso_por_ativo = alvo_rv / len(tickers_rv)
+    
         if rv_real.empty:
             st.info("Cliente sem posições em RV Brasil no momento.")
-            # Sugestão completa mesmo sem posição atual
-            tickers_rv = RV_BR_ACOES + RV_BR_FIIS
-            if not tickers_rv:
-                st.warning("Nenhum ticker definido para RV Brasil.")
-            else:
-                peso_por_ativo = alvo_rv / len(tickers_rv)
-                sugestao = []
-                for t in tickers_rv:
-                    sugestao.append([t, "R$ 0,00", format_brl(peso_por_ativo), format_brl(-peso_por_ativo)])
-                
-                rv_df = pd.DataFrame(sugestao, columns=["Ativo", "Atual (R$)", "Sugerido (R$)", "Diferença (R$)"])
+            sugestao = []
+            for t in tickers_rv:
+                sugestao.append([t, "R$ 0,00", format_brl(peso_por_ativo), format_brl(peso_por_ativo)])
+            
+            rv_df = pd.DataFrame(sugestao, columns=["Ativo", "Atual (R$)", "Sugerido (R$)", "Diferença (R$)"])
         else:
             # Agrupar posições reais por ticker
             rv_real_group = rv_real.groupby("asset_id").agg({
                 "valor_mercado": "sum",
-                "asset_nome": "first"  # ou outro campo com nome amigável
+                "asset_nome": "first"  # nome amigável se existir
             }).reset_index()
-            
-            # Sugestão: peso igual entre todos os tickers da lista (pode mudar depois)
-            tickers_rv = RV_BR_ACOES + RV_BR_FIIS
-            if not tickers_rv:
-                st.warning("Lista de tickers RV Brasil vazia.")
-                st.stop()
-            
-            peso_por_ativo = alvo_rv / len(tickers_rv)
-            
+    
             sugestao = []
             for t in tickers_rv:
                 atual = rv_real_group[rv_real_group["asset_id"] == t]["valor_mercado"].sum() if t in rv_real_group["asset_id"].values else 0.0
-                diff = atual - peso_por_ativo
+                diff = peso_por_ativo - atual  # Invertido: positivo = comprar (verde), negativo = vender (vermelho)
                 sugestao.append([
                     t,
                     format_brl(atual),
                     format_brl(peso_por_ativo),
                     format_brl(diff)
                 ])
-            
+    
             rv_df = pd.DataFrame(sugestao, columns=["Ativo", "Atual (R$)", "Sugerido (R$)", "Diferença (R$)"])
-        
-        # Função de estilo corrigida (verde = comprar/faltando, vermelho = vender/excesso)
+    
+        # Função de estilo (verde = comprar/faltando, vermelho = vender/excesso)
         def style_diff_rv(val):
             try:
-                # Remove formatação e converte para float
                 num_str = str(val).replace("R$", "").replace(".", "").replace(",", ".").strip()
                 num = float(num_str)
-                if num < 0:   # faltando → comprar → verde
+                if num > 0:   # positivo → precisa comprar → verde
                     return "color: #2e7d32; font-weight: 650;"
-                if num > 0:   # excesso → vender → vermelho
+                if num < 0:   # negativo → excesso → vermelho
                     return "color: #c62828; font-weight: 650;"
             except:
                 pass
@@ -532,7 +639,10 @@ with tab2:
             use_container_width=True,
             hide_index=True
         )
-
+    
+        # Legenda clara
+        st.caption("🟢 Positivo = precisa comprar   🔴 Negativo = excesso (pode vender/reduzir)")
+        
     # ===================== 4) INTERNACIONAL (RF global + RV separada) =====================
     
     with st.expander("4) Internacional", expanded=True):
