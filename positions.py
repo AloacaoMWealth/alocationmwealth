@@ -219,69 +219,84 @@ def parse_cs_positions(src) -> pd.DataFrame:
 
 
 def parsexppositions(src) -> pd.DataFrame:
-    xls = pd.ExcelFile(src)
-    out = []
     
-    # Nomes REAL da 1ª aba (do seu XP.xlsx)
-    print(f"DEBUG: Abas encontradas: {xls.sheet_names}")  # ← REMOVE depois
+    """XP COMPLETO - Lê TODAS abas da sua tabela"""
+    resultado_lista = []
     
-    # Testa abas reais do seu arquivo
-    for aba in xls.sheet_names:
-        try:
-            df_aba = pd.read_excel(xls, sheet_name=aba, nrows=5)
-            print(f"DEBUG: Aba '{aba}' - colunas: {df_aba.columns.tolist()}")  # ← REMOVE depois
-            
-            # Procura CodigoCliente (1ª coluna sempre)
-            if 'CodigoCliente' in df_aba.columns or len(df_aba.columns) > 0:
-                df_aba = pd.read_excel(xls, sheet_name=aba)
-                df_aba.columns = [str(c).strip() for c in df_aba.columns]
-                
-                # Renomeia 1ª coluna para CodigoCliente
-                df_aba = df_aba.rename(columns={df_aba.columns[0]: 'CodigoCliente'})
-                df_aba['aba_origem'] = aba
-                
-                # Pega TODAS colunas com "Valor" ou "Quantidade"
-                valor_cols = [c for c in df_aba.columns if 'valor' in c.lower() or 'total' in c.lower()]
-                qtd_cols = [c for c in df_aba.columns if 'quantidade' in c.lower() or 'qtd' in c.lower()]
-                ativo_col = next((c for c in df_aba.columns if 'ativo' in c.lower()), None)
-                
-                # Mínimo: cliente + alguma métrica
-                if valor_cols or qtd_cols:
-                    cols_keep = ['CodigoCliente', 'aba_origem']
-                    if ativo_col: cols_keep.append(ativo_col)
-                    cols_keep.extend(valor_cols[:2])  # Máx 2 colunas valor
-                    cols_keep.extend(qtd_cols[:1])   # Máx 1 coluna qtd
+    # 📋 SUA TABELA COMPLETA (preencha nomes exatos das abas)
+    ABAS_CONFIG = {
+        'Financeiro': {'ativo_col': None, 'valor_col': 'PatrimonioTotalLiquido', 'qtd_col': None},
+        'Custdia Remunerada': {'ativo_col': 'CodigoAtivo', 'valor_col': 'ValorTotal', 'qtd_col': 'QuantidadeAtivo'},
+        'Fundos': {'ativo_col': 'NomeFundo', 'valor_col': 'ValorLiquido', 'qtd_col': 'QuantidadeCotas'},
+        'Coe': {'ativo_col': 'CodigoPosicao', 'valor_col': 'ValorFinanceiroLiquido', 'qtd_col': 'QuantidadeTotal'},
+        'Tesouro Direto': {'ativo_col': 'NomeTitulo', 'valor_col': 'ValorLiquido', 'qtd_col': 'QuantidadeTotal'},
+        'Aluguis': {'ativo_col': 'CodigoAtivo', 'valor_col': 'ValorAtual', 'qtd_col': 'QuantidadeTotal'},
+        'BMF': {'ativo_col': 'CodigoInstrumento', 'valor_col': 'ValorPosicaoAtual', 'qtd_col': 'QuantidadeTotalAtual'},
+        'Clubes': {'ativo_col': 'NomeClube', 'valor_col': 'ValorLiquido', 'qtd_col': 'QuantidadeCotas'},
+        'PréFixa Flexíveis': {'ativo_col': 'CodigoInstrumento', 'valor_col': 'ValorPosicaoAtual', 'qtd_col': 'QuantidadeTotalAtual'},
+        'Proventos Fundo RF': {'ativo_col': 'CodigoAtivo', 'valor_col': 'ValorLiquidoAtual', 'qtd_col': 'QuantidadeProvisionada'}
+    }
+    
+    try:
+        xls = pd.ExcelFile(src)
+        print(f"📂 Abas disponíveis: {xls.sheet_names}")
+        
+        for aba_nome, config in ABAS_CONFIG.items():
+            if aba_nome in xls.sheet_names:
+                try:
+                    # Lê aba
+                    df = pd.read_excel(xls, sheet_name=aba_nome)
+                    df.columns = [str(c).strip() for c in df.columns]
                     
-                    df_subset = df_aba[cols_keep].copy()
-                    out.append(df_subset)
-                    print(f"DEBUG: Adicionou {len(df_subset)} linhas de '{aba}'")  # ← REMOVE depois
-        except Exception as e:
-            continue
+                    # Cliente = 1ª coluna
+                    df = df.rename(columns={df.columns[0]: 'CodigoCliente'})
+                    
+                    # Pega colunas (se existirem)
+                    ativo = df.get(config['ativo_col'], pd.Series(['POSICAO_' + aba_nome]*len(df), index=df.index))
+                    valor = pd.to_numeric(df.get(config['valor_col'], 0), errors='coerce').fillna(0.0)
+                    qtd = pd.to_numeric(df.get(config['qtd_col'], 0), errors='coerce').fillna(0.0)
+                    cliente = df['CodigoCliente'].astype(str)
+                    
+                    # Monta linha por linha
+                    for idx in df.index:
+                        if valor[idx] > 0:  # Só posições com valor
+                            resultado_lista.append({
+                                'corretora': 'XP',
+                                'conta': cliente[idx],
+                                'assetid': str(ativo[idx]),
+                                'assetnome': str(ativo[idx]),
+                                'assettipo': aba_nome,
+                                'valormercado': float(valor[idx]),
+                                'quantidade': float(qtd[idx]),
+                                'moeda': 'BRL',
+                                'mercado': aba_nome,
+                                'submercado': aba_nome,
+                                'estrategia': 'HOLD'
+                            })
+                    
+                    print(f"✅ {aba_nome}: {len(df)} linhas, {sum(valor>0)} com valor")
+                    
+                except Exception as e:
+                    print(f"⚠️ Erro em {aba_nome}: {e}")
+                    continue
+        
+    except Exception as e:
+        print(f"❌ Erro arquivo XP: {e}")
     
-    print(f"DEBUG: Total abas processadas: {len(out)}")  # ← REMOVE depois
+    # ✅ SEMPRE retorna DataFrame
+    if not resultado_lista:
+        print("⚠️ Nenhuma posição encontrada - retorna estrutura vazia")
+        return pd.DataFrame([{
+            'corretora': 'XP', 'conta': '0', 'assetid': 'VAZIO',
+            'assetnome': 'Sem posições XP', 'assettipo': 'Erro',
+            'valormercado': 0.0, 'quantidade': 0.0, 'moeda': 'BRL',
+            'mercado': '', 'submercado': '', 'estrategia': ''
+        }])
     
-    if not out:
-        print("ERRO: Nenhuma aba válida!")
-        return pd.DataFrame()
-    
-    todas_posicoes = pd.concat(out, ignore_index=True)
-    
-    # RESULTADO SIMPLES E FUNCIONAL
-    resultado = pd.DataFrame({
-        'corretora': 'XP',
-        'conta': todas_posicoes['CodigoCliente'].astype(str),
-        'assetid': todas_posicoes.iloc[:, 2].fillna('POSICAO_XP').astype(str),  # 3ª coluna = ativo
-        'assetnome': todas_posicoes.iloc[:, 2].fillna('POSICAO_XP').astype(str),
-        'assettipo': todas_posicoes['aba_origem'],
-        'valormercado': todas_posicoes.iloc[:, 3:].sum(axis=1).fillna(0.0),  # Soma resto
-        'quantidade': 1.0,
-        'moeda': 'BRL',
-        'mercado': '',
-        'submercado': '',
-        'estrategia': ''
-    })
-    
-    return resultado
+    df_final = pd.DataFrame(resultado_lista)
+    print(f"🎉 XP TOTAL: {len(df_final)} posições consolidadas")
+    return df_final
+
 
 def parse_btg_positions(src) -> pd.DataFrame:
     """
