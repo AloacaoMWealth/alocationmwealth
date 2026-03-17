@@ -459,10 +459,16 @@ with tab2:
     def classifica_macro(row):
         if row["corretora"] == "CS":
             return "Internacional"
-        at = str(row.get("asset_tipo","") + str(row.get("mercado",""))).upper()
-        if any(x in at for x in ["ACAO","FII","EQUITY","ETF","RV"]):
+        
+        # ✅ TRATA NaN corretamente
+        asset_tipo = str(row.get("asset_tipo", "") or "").strip()
+        mercado = str(row.get("mercado", "") or "").strip()
+        at = (asset_tipo + " " + mercado).upper()
+        
+        if any(x in at for x in ["ACAO","FII","EQUITY","ETF","RV","AÇÕES"]):
             return "RV Brasil"
         return "RF Brasil"
+
 
     pos_cliente["macro"] = pos_cliente.apply(classifica_macro, axis=1)
     atual_macro = pos_cliente.groupby("macro")["valor_mercado"].sum().reindex(["RF Brasil","RV Brasil","Internacional"]).fillna(0)
