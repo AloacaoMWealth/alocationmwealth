@@ -187,34 +187,40 @@ def parse_cs_positions(src) -> pd.DataFrame:
     raw = pd.read_csv(io.StringIO(csv_data), sep=",", engine="python")
     raw.columns = [str(c).strip() for c in raw.columns]
     
-    market_col = next((c for c in raw.columns if 'market value' in c.lower()), None)
-    
-    if market_col:
-        raw[market_col] = raw[market_col].astype(str).str.replace("$", "", regex=False)
-        raw[market_col] = raw[market_col].str.replace(",", "", regex=False)
-        raw[market_col] = pd.to_numeric(raw[market_col], errors='coerce').fillna(0.0)
+    market_col = "Market Value"
 
+    raw[market_col] = (
+        raw[market_col]
+        .astype(str)
+        .str.replace("$", "", regex=False)
+        .str.replace(",", "", regex=False)
+        .str.strip()
+    )
+    
+    raw[market_col] = pd.to_numeric(raw[market_col], errors="coerce").fillna(0.0)
+    
+   
     sym_col = "Symbol/CUSIP" if "Symbol/CUSIP" in raw.columns else (
         "CUSIP" if "CUSIP" in raw.columns else ("Symbol" if "Symbol" in raw.columns else None)
     )
     if sym_col is None:
         sym_col = "Symbol/CUSIP"
 
+     
     df = pd.DataFrame({
-        "corretora": "CS",
-        "conta": raw["Account"].apply(_normalize_account),
-        "asset_id": raw.get(sym_col, "").astype(str).str.strip(),
-        "asset_nome": raw.get("Name", "").astype(str).str.strip(),
-        "asset_tipo": raw.get("Security Type", "").astype(str).str.strip(),
-        "valor_mercado": raw.get("Market Value", ""),
-        "quantidade": 0.0,
-        "moeda": "USD",
-        "mercado": "",
-        "sub_mercado": "",
-        "estrategia": "",
-    })
+         "corretora": "CS",
+         "conta": raw["Account"].apply(_normalize_account),
+         "asset_id": raw["Symbol/CUSIP"].astype(str).str.strip(),
+         "asset_nome": raw["Name"].astype(str).str.strip(),
+         "asset_tipo": raw["Security Type"].astype(str).str.strip(),
+         "valor_mercado": raw[market_col],
+         "quantidade": 0.0,
+         "moeda": "USD",
+         "mercado": "",
+         "sub_mercado": "",
+         "estrategia": "",
+     })
 
-    df["valor_mercado"] = pd.to_numeric(df["valor_mercado"], errors="coerce").fillna(0.0)
     df["asset_id"] = df["asset_id"].replace({"nan": "", "None": ""})
     return df
 
