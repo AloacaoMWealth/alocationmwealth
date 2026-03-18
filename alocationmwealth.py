@@ -326,11 +326,19 @@ with tab1:
                 st.success("✅ Posição consolidada com sucesso!")
                 
                 # ===================== MÉTRICAS PRINCIPAIS =====================
-                st.subheader("📊 Resumo Patrimonial Consolidado")
+                st.subheader("Resumo Patrimonial Consolidado")
                 
-                # Agrupamento por corretora
-                resumo = df.groupby("corretora")["valor_mercado"].agg(["sum", "count"]).reset_index()
-                resumo.columns = ["Corretora", "PL", "Qtd_Contas"]
+                # Contas distintas (por corretora + conta)
+                contas_distintas = df[["corretora", "conta"]].drop_duplicates()
+                
+                # Agrupamento por corretora (PL e quantidade de contas distintas)
+                resumo = df.groupby("corretora")["valor_mercado"].agg(["sum"]).reset_index()
+                resumo.columns = ["Corretora", "PL"]
+                
+                # Quantidade de contas distintas por corretora
+                contas_por_corretora = df.groupby("corretora")["conta"].nunique().reset_index()
+                contas_por_corretora.columns = ["Corretora", "Qtd_Contas"]
+                resumo = resumo.merge(contas_por_corretora, on="Corretora", how="left")
                 
                 # PL Total Wealth
                 pl_wealth = resumo["PL"].sum()
@@ -341,7 +349,7 @@ with tab1:
                 # Métricas em colunas grandes
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("PL Total Wealth", format_brl(pl_wealth), 
-                           delta=f"{len(df)} contas totais")
+                           delta=f"{len(contas_distintas)} contas distintas totais")
                 col2.metric("PL XP", format_brl(pl_xp), 
                            delta=f"{resumo.loc[resumo['Corretora']=='XP', 'Qtd_Contas'].sum() if 'XP' in resumo['Corretora'].values else 0} contas")
                 col3.metric("PL BTG", format_brl(pl_btg), 
@@ -350,14 +358,14 @@ with tab1:
                            delta=f"US$ {(pl_cs_brl / 5.60):,.2f} • {resumo.loc[resumo['Corretora']=='CS', 'Qtd_Contas'].sum() if 'CS' in resumo['Corretora'].values else 0} contas")
                 
                 # ===================== EXPANDER COM LISTA COMPLETA =====================
-                with st.expander("📋 Ver lista completa de TODOS os ativos consolidados", expanded=False):
+                with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
                     st.dataframe(
                         df[["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
                             "valor_mercado", "quantidade", "moeda"]].sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
                         use_container_width=True,
                         hide_index=True
                     )
-                    st.caption(f"Total de {len(df)} posições consolidadas")
+                    st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
                 
             except Exception as e:
                 st.error(f"Erro ao reconstruir: {e}")
