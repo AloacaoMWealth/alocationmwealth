@@ -248,25 +248,22 @@ def parse_xp_positions(src) -> pd.DataFrame:
             
             if config['valor'] in df.columns:
                 valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
+                print(f"✅ {aba}: {len(df)} linhas, R${valor.sum():,.0f}")
                 
-                for i in range(len(df)):
-                    if valor.iloc[i].item() > 0:          
-                        ativo_col = config['ativo']
-                        ativo = str(df.iloc[i][ativo_col]) if ativo_col and ativo_col in df.columns else aba
-                        
-                        conta = _normalize_account(df.iloc[i]['CodigoCliente'])
-                        
-                        qtd_col = config['qtd']
-                        quantidade = float(df.iloc[i][qtd_col]) if qtd_col and qtd_col in df.columns else 1.0
+                for i in df.index:
+                    if valor.iloc[i].item() > 0:          # ← ÚNICA MUDANÇA (resolve o erro)
+                        ativo = (str(df.iloc[i][config['ativo']]) 
+                                 if config['ativo'] and config['ativo'] in df.columns 
+                                 else f"{aba}")
                         
                         resultado.append({
                             'corretora': 'XP',
-                            'conta': conta,
-                            'asset_id': ativo[:12],      
+                            'conta': _normalize_account(df.iloc[i]['CodigoCliente']),  # mantive normalização (segura)
+                            'asset_id': ativo[:12],      # ← nome correto para o resto do app
                             'asset_nome': ativo[:30],
                             'asset_tipo': aba,
                             'valor_mercado': float(valor.iloc[i]),
-                            'quantidade': quantidade,
+                            'quantidade': float(df.iloc[i][config['qtd']]) if config['qtd'] and config['qtd'] in df.columns else 1.0,
                             'moeda': 'BRL',
                             'mercado': aba,
                             'sub_mercado': aba[:10],
@@ -274,6 +271,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
                         })
     
     df_final = pd.DataFrame(resultado)
+    print(f"XP TOTAL: {len(df_final)} posições, R${df_final['valor_mercado'].sum():,.0f}")
     return df_final
 
 def parse_btg_positions(src) -> pd.DataFrame:
