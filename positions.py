@@ -233,7 +233,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
         'Proventos Fundo Imob': {'ativo': 'CodigoAtivo', 'valor': 'PrecoAtual', 'qtd': 'QuantidadeProvisionada', 'conta': 'CodigoCliente', 'estrategia': None},
         'Provisão Evento RF': {'ativo': 'Evento', 'valor': 'Valor', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
         'Coe': {'ativo': 'NomeAtivo', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Renda Fixa': {'ativo': 'NickName', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': 'NomeIndexador'},
+        'Renda Fixa': {'ativo': 'NickName', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
         'Financeiro': {'ativo': 'ValorTotal', 'valor': 'ValorDisponivel', 'qtd': 'QuantidadeDiasDevedor', 'conta': 'CodigoCliente', 'estrategia': None}
     }
     
@@ -252,18 +252,11 @@ def parse_xp_positions(src) -> pd.DataFrame:
                 
                 for i in df.index:
                     if valor.iloc[i] > 0:
-                        # Pegar a coluna de conta do mapa (fallback para 'CodigoCliente' se não definido)
-                        conta_col = config.get('conta', 'CodigoCliente')
-                        conta = _normalize_account(df.iloc[i][conta_col])  # normaliza sempre
-                        
-                        estrategia = config.get('estrategia', 'HOLD')
-                        
-                        ativo_col = config['ativo']
-                        ativo = str(df.iloc[i][ativo_col]) if ativo_col and ativo_col in df.columns else f"{aba}"
-                        
+                        ativo = (str(df.iloc[i][config['ativo']]) if config['ativo'] and config['ativo'] in df.columns 
+                                else f"{aba}")
                         resultado.append({
                             'corretora': 'XP',
-                            'conta': conta,
+                            'conta': str(df.iloc[i]['CodigoCliente']),
                             'asset_id': ativo[:12],
                             'asset_nome': ativo[:30],
                             'asset_tipo': aba,
@@ -272,9 +265,9 @@ def parse_xp_positions(src) -> pd.DataFrame:
                             'moeda': 'BRL',
                             'mercado': aba,
                             'sub_mercado': aba[:10],
-                            'estrategia': estrategia
+                            'estrategia': 'HOLD'
                         })
-                    
+    
     df_final = pd.DataFrame(resultado)
     print(f"XP TOTAL: {len(df_final)} posições, R${df_final['valor_mercado'].sum():,.0f}")
     return df_final
