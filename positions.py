@@ -161,64 +161,58 @@ def load_control_accounts(src=None) -> pd.DataFrame:
 
 def parse_cs_positions(src) -> pd.DataFrame:
     import io
-
+    
     if isinstance(src, (str, Path)):
         text = Path(src).read_text(encoding="utf-8", errors="ignore")
     else:
         b = src.read()
         text = b if isinstance(b, str) else b.decode("utf-8", errors="ignore")
-
+    
     lines = text.splitlines()
     header_idx = None
-
+    
     for i, ln in enumerate(lines):
         if ln.strip().startswith("Account,"):
             header_idx = i
             break
-    if header_idx is None:
-        for i, ln in enumerate(lines):
-            if ln.strip().lower().startswith("account,"):
-                header_idx = i
-                break
-    if header_idx is None:
-        raise ValueError("CS: não encontrei a linha de header iniciando com 'Account,' no CSV.")
-
+    
     csv_data = "\n".join(lines[header_idx:])
     raw = pd.read_csv(io.StringIO(csv_data), sep=",", engine="python")
     raw.columns = [str(c).strip() for c in raw.columns]
     
-    market_col = raw.columns[raw.columns.str.contains("Market Value", case=False)][0]
-    raw[market_col] = raw[market_col].astype(str).str.replace("$", "", regex=False)
-    raw[market_col] = pd.to_numeric(raw[market_col], errors='coerce').fillna(0.0)
-
-    sym_col = "Symbol/CUSIP" if "Symbol/CUSIP" in raw.columns else (
-        "CUSIP" if "CUSIP" in raw.columns else ("Symbol" if "Symbol" in raw.columns else None)
-    )
-    if sym_col is None:
-        sym_col = "Symbol/CUSIP"
-
+    # 🔍 ACHA COLUNA CERTA
+    market_col = next((c for c in raw.columns if 'market value' in c.lower()), None)
+    print(f"🔍 CS coluna encontrada: '{market_col}'")
+    
+    if market_col:
+        # 1️⃣ Remove $ 
+        raw[market_col] = raw[market_col].astype(str).str.replace("$", "", regex=False)
+        
+        # 2️⃣ Remove VÍRGULAS de milhar (1,234 → 1234)
+        raw[market_col] = raw[market_col].str.replace(",", "", regex=False)
+        
+        # 3️⃣ Converte float
+        raw[market_col] = pd.to_numeric(raw[market_col], errors='coerce').fillna(0.0)
+        
+        print(f"📊 CS DEBUG: sum=${raw[market_col].sum():,.2f} ({len(raw[market_col][raw[market_col]>0])} posições > $0)")
+    
+    sym_col = next((c for c in raw.columns if any(x in c.lower() for x in ['symbol', 'cusip'])), None)
+    
     df = pd.DataFrame({
-        "corretora": "CS",
-        "conta": raw["Account"].apply(_normalize_account),
-        "asset_id": raw.get(sym_col, "").astype(str).str.strip(),
-        "asset_nome": raw.get("Name", "").astype(str).str.strip(),
-        "asset_tipo": raw.get("Security Type", "").astype(str).str.strip(),
-        "valor_mercado": raw.get("Market Value", ""),
-        "quantidade": 0.0,
-        "moeda": "USD",
-        "mercado": "",
-        "sub_mercado": "",
-        "estrategia": "",
+        'corretora': 'CS',
+        'conta': raw["Account"].apply(_normalize_account),
+        'assetid': raw.get(sym_col, pd.Series(["CS_" + str(i) for i in range(len(raw))])).astype(str),
+        'assetnome': raw.get("Name", "Fixed Income").astype(str),
+        'assettipo': raw.get("Security Type", "Fixed Income").astype(str),
+        'valormercado': raw[market_col] if market_col else 0.0,
+        'quantidade': 0.0,
+        'moeda': 'USD',
+        'mercado': '',
+        'submercado': '',
+        'estrategia': ''
     })
-
-    df["valor_mercado"] = (
-        df["valor_mercado"].astype(str)
-        .str.replace("$", "", regex=False)
-        .str.replace(",", "", regex=False)
-        .str.strip()
-    )
-    df["valor_mercado"] = pd.to_numeric(df["valor_mercado"], errors="coerce").fillna(0.0)
-    df["asset_id"] = df["asset_id"].replace({"nan": "", "None": ""})
+    
+    print(f"🎉 CS FINAL: {len(df)} posições, US${df['valormercado'].sum():,.0f}")
     return df
 
 
