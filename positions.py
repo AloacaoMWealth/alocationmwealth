@@ -269,7 +269,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
                         })
     
     df_final = pd.DataFrame(resultado)
-    print(f"XP TOTAL: {len(df_final)} posições, R${df_final['valormercado'].sum():,.0f}")
+    print(f"XP TOTAL: {len(df_final)} posições, R${df_final['valor_mercado'].sum():,.0f}")
     return df_final
 
 def parse_btg_positions(src) -> pd.DataFrame:
