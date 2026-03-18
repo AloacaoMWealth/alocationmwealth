@@ -247,29 +247,35 @@ def parse_xp_positions(src) -> pd.DataFrame:
             
             if config['valor'] in df.columns:
                 valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
-                
-                # Filtro vetorizado completo
                 mask = valor > 0
+                
                 if mask.any():
-                    df_filtrado = df[mask].copy().reset_index(drop=True)
+                    print(f"✅ {aba}: {mask.sum()} linhas com valor > 0, R${valor.sum():,.0f}")
+                    
+                    df_filtrado = df[mask].reset_index(drop=True)
                     valor_filtrado = valor[mask].reset_index(drop=True)
                     
-                    # Vetorizado: normaliza contas e ativos de uma vez
-                    df_filtrado['conta'] = df_filtrado['CodigoCliente'].apply(_normalize_account)
-                    df_filtrado['asset_id'] = df_filtrado[config['ativo']].astype(str).str[:12] if config['ativo'] else f"{aba}"
-                    df_filtrado['asset_nome'] = df_filtrado[config['ativo']].astype(str).str[:30] if config['ativo'] else f"{aba}"
-                    df_filtrado['quantidade'] = df_filtrado.get(config['qtd'], 1.0) if config['qtd'] else 1.0
-                    
-                    # Cria dicionário de linhas
                     for i in range(len(df_filtrado)):
+                        ativo_col = config['ativo']
+                        ativo = str(df_filtrado.iloc[i][ativo_col]) if ativo_col and ativo_col in df_filtrado.columns else aba
+                        
+                        conta = _normalize_account(df_filtrado.iloc[i]['CodigoCliente'])
+                        
+                        qtd_col = config['qtd']
+                        if qtd_col and qtd_col in df_filtrado.columns:
+                            qtd_val = df_filtrado.iloc[i][qtd_col]
+                            quantidade = float(qtd_val) if pd.notna(qtd_val) else 1.0
+                        else:
+                            quantidade = 1.0
+                        
                         resultado.append({
                             'corretora': 'XP',
-                            'conta': df_filtrado.iloc[i]['conta'],
-                            'asset_id': df_filtrado.iloc[i]['asset_id'],
-                            'asset_nome': df_filtrado.iloc[i]['asset_nome'],
+                            'conta': conta,
+                            'asset_id': ativo[:12],
+                            'asset_nome': ativo[:30],
                             'asset_tipo': aba,
                             'valor_mercado': float(valor_filtrado.iloc[i]),
-                            'quantidade': float(df_filtrado.iloc[i]['quantidade']),
+                            'quantidade': quantidade,
                             'moeda': 'BRL',
                             'mercado': aba,
                             'sub_mercado': aba[:10],
