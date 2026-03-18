@@ -188,18 +188,24 @@ def parse_cs_positions(src) -> pd.DataFrame:
     raw.columns = [str(c).strip() for c in raw.columns]
     
     market_col = "Market Value"
-
-    raw[market_col] = (
-        raw[market_col]
-        .astype(str)
-        .str.replace("$", "", regex=False)
-        .str.replace(",", "", regex=False)
-        .str.strip()
-    )
     
-    raw[market_col] = pd.to_numeric(raw[market_col], errors="coerce").fillna(0.0)
+    s = raw[market_col].astype(str)   
+    s = s.str.replace("$", "", regex=False).str.strip()    
+    s = s.str.replace(r"[^0-9.]", "", regex=True)
     
-   
+    def fix_dots(x: str) -> str:
+        if x.count(".") <= 1:
+            return x
+        head, dec = x.rsplit(".", 1)
+        head = head.replace(".", "")
+        return head + "." + dec
+    
+    s = s.apply(fix_dots)
+    
+    raw[market_col] = pd.to_numeric(s, errors="coerce").fillna(0.0)
+    
+    print("SOMA CS (USD):", raw[market_col].sum())
+ 
     sym_col = "Symbol/CUSIP" if "Symbol/CUSIP" in raw.columns else (
         "CUSIP" if "CUSIP" in raw.columns else ("Symbol" if "Symbol" in raw.columns else None)
     )
