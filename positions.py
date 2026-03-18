@@ -238,7 +238,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
     }
     
     xls = pd.ExcelFile(src)
-    print(f" XP abas encontradas: {[a for a in xls.sheet_names if a in MAPA_XP_ABAS]}")
+    print(f"📂 XP abas encontradas: {[a for a in xls.sheet_names if a in MAPA_XP_ABAS]}")
     
     for aba, config in MAPA_XP_ABAS.items():
         if aba in xls.sheet_names:
@@ -249,10 +249,11 @@ def parse_xp_positions(src) -> pd.DataFrame:
             if config['valor'] in df.columns:
                 valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
                 
-                # Loop simples (exatamente como estava antes das mudanças)
                 for i in range(len(df)):
-                    if valor.iloc[i] > 0:                     # ← era isso que funcionava
-                        ativo = str(df.iloc[i][config['ativo']]) if config['ativo'] and config['ativo'] in df.columns else aba
+                    if valor.iloc[i].item() > 0:          
+                        ativo_col = config['ativo']
+                        ativo = str(df.iloc[i][ativo_col]) if ativo_col and ativo_col in df.columns else aba
+                        
                         conta = _normalize_account(df.iloc[i]['CodigoCliente'])
                         
                         qtd_col = config['qtd']
