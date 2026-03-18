@@ -238,7 +238,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
     }
     
     xls = pd.ExcelFile(src)
-    print(f"📂 XP abas encontradas: {[a for a in xls.sheet_names if a in MAPA_XP_ABAS]}")
+    print(f"XP abas encontradas: {[a for a in xls.sheet_names if a in MAPA_XP_ABAS]}")
     
     for aba, config in MAPA_XP_ABAS.items():
         if aba in xls.sheet_names:
@@ -254,9 +254,12 @@ def parse_xp_positions(src) -> pd.DataFrame:
                     if valor.iloc[i] > 0:
                         ativo = (str(df.iloc[i][config['ativo']]) if config['ativo'] and config['ativo'] in df.columns 
                                 else f"{aba}")
+                        
+                        conta_normalizada = _normalize_account(df.iloc[i]['CodigoCliente'])
+                        
                         resultado.append({
                             'corretora': 'XP',
-                            'conta': str(df.iloc[i]['CodigoCliente']),  # ← SEM padronizar aqui!
+                            'conta': conta_normalizada,
                             'assetid': ativo[:12],
                             'assetnome': ativo[:30],
                             'assettipo': aba,
@@ -269,7 +272,6 @@ def parse_xp_positions(src) -> pd.DataFrame:
                         })
     
     df_final = pd.DataFrame(resultado)
-    print(f"XP TOTAL: {len(df_final)} posições, R${df_final['valormercado'].sum():,.0f}")
     return df_final
 
 def parse_btg_positions(src) -> pd.DataFrame:
@@ -382,20 +384,23 @@ def build_and_save_latest(
 
     pos = pd.concat([xp_df, btg_df, cs_df], ignore_index=True)
 
+    # Normalização final de corretora
     pos["corretora"] = pos["corretora"].apply(_normalize_broker)
-    # Padronização final: conta BTG sempre 8 dígitos (ambos os lados)
-    def _pad_btg_to_8(conta: str) -> str:
-        """Força BTG para 8 dígitos (zeros à esquerda), mesmo se tiver 9."""
-        d = _only_digits(conta)
-        return d[-8:].zfill(8) if len(d) >= 8 else d.zfill(8)
-    
- 
-    # Padroniza APENAS CONTAS BTG
+
+    # Normalização de conta para TODOS (incluindo XP)
+    pos["conta"] = pos["conta"].apply(_normalize_account)
+
+    # Padronização específica BTG (8 dígitos)
     mask_btg = pos["corretora"] == "BTG"
     pos.loc[mask_btg, "conta"] = pos.loc[mask_btg, "conta"].apply(_pad_btg_to_8)
-    control_df.loc[control_df["corretora"] == "BTG", "conta"] = control_df.loc[control_df["corretora"] == "BTG", "conta"].apply(_pad_btg_to_8)
 
+    # Mesma normalização no control_df (garantia dupla)
+    control_df = control_df.copy()
+    control_df["conta"] = control_df["conta"].apply(_normalize_account)
+    mask_btg_ctrl = control_df["corretora"] == "BTG"
+    control_df.loc[mask_btg_ctrl, "conta"] = control_df.loc[mask_btg_ctrl, "conta"].apply(_pad_btg_to_8)
 
+    # MERGE (agora com contas normalizadas nos dois lados)
     merged = pos.merge(
         control_df,
         how="left",
@@ -403,10 +408,10 @@ def build_and_save_latest(
         right_on=["corretora", "conta"],
         suffixes=("", "_ctrl"),
     )
-    
+
+    # PTAX
     ptax = get_ptax()
-    merged['valor_original'] = merged['valor_mercado']  # mantém original
-    merged['valor_mercado'] = np.where(  # nova coluna sobreescreve
+    merged['valor_mercado'] = np.where(
         merged['corretora'] == 'CS', 
         merged['valor_mercado'] * ptax, 
         merged['valor_mercado']
