@@ -230,7 +230,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
         'Tesouro Direto': {'ativo': 'NomeTitulo', 'valor': 'ValorBruto', 'qtd': 'QuantidadeTotal'},
         'Previdência': {'ativo': 'NomeFundo', 'valor': 'ValorReservaAcamulada', 'qtd': None},
         'Proventos': {'ativo': 'CodigoAtivo', 'valor': 'PrecoAtual', 'qtd': 'QuantidadeProvisionada'},
-        'Proventos Fundo Imob': {'ativo': 'CodigoArivo', 'valor': 'PrecoAtual', 'qtd': 'QuantidadeProvisionada'},
+        'Proventos Fundo Imob': {'ativo': 'CodigoAtivo', 'valor': 'PrecoAtual', 'qtd': 'QuantidadeProvisionada'},
         'Provisão Evento RF': {'ativo': 'Evento', 'valor': 'Valor', 'qtd': None},
         'Coe': {'ativo': 'NomeAtivo', 'valor': 'ValorFinanceiroBruto', 'qtd': None},
         'Renda Fixa': {'ativo': 'NickName', 'valor': 'ValorFinanceiroBruto', 'qtd': None},
