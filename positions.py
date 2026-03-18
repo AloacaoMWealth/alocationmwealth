@@ -238,7 +238,6 @@ def parse_xp_positions(src) -> pd.DataFrame:
     }
     
     xls = pd.ExcelFile(src)
-    print(f"📂 XP abas encontradas: {[a for a in xls.sheet_names if a in MAPA_XP_ABAS]}")
     
     for aba, config in MAPA_XP_ABAS.items():
         if aba in xls.sheet_names:
@@ -249,33 +248,31 @@ def parse_xp_positions(src) -> pd.DataFrame:
             if config['valor'] in df.columns:
                 valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
                 
-                # === CORREÇÃO PRINCIPAL: filtro vetorizado (evita ambiguidade) ===
+                # Filtro vetorizado completo
                 mask = valor > 0
                 if mask.any():
-                    print(f"✅ {aba}: {mask.sum()} linhas com valor > 0, R${valor.sum():,.0f}")
-                    
-                    df_filtrado = df[mask].reset_index(drop=True)
+                    df_filtrado = df[mask].copy().reset_index(drop=True)
                     valor_filtrado = valor[mask].reset_index(drop=True)
                     
+                    # Vetorizado: normaliza contas e ativos de uma vez
+                    df_filtrado['conta'] = df_filtrado['CodigoCliente'].apply(_normalize_account)
+                    df_filtrado['asset_id'] = df_filtrado[config['ativo']].astype(str).str[:12] if config['ativo'] else f"{aba}"
+                    df_filtrado['asset_nome'] = df_filtrado[config['ativo']].astype(str).str[:30] if config['ativo'] else f"{aba}"
+                    df_filtrado['quantidade'] = df_filtrado.get(config['qtd'], 1.0) if config['qtd'] else 1.0
+                    
+                    # Cria dicionário de linhas
                     for i in range(len(df_filtrado)):
-                        ativo = (str(df_filtrado.iloc[i][config['ativo']]) 
-                                 if config['ativo'] and config['ativo'] in df_filtrado.columns 
-                                 else f"{aba}")
-                        
-                        conta_normalizada = _normalize_account(df_filtrado.iloc[i]['CodigoCliente'])
-                        
                         resultado.append({
                             'corretora': 'XP',
-                            'conta': conta_normalizada,
-                            'assetid': ativo[:12],
-                            'assetnome': ativo[:30],
-                            'assettipo': aba,
-                            'valormercado': float(valor_filtrado.iloc[i]),
-                            'quantidade': float(df_filtrado.get(config['qtd'], pd.Series([1.0]*len(df_filtrado)))[i]) 
-                                          if config['qtd'] else 1.0,
+                            'conta': df_filtrado.iloc[i]['conta'],
+                            'asset_id': df_filtrado.iloc[i]['asset_id'],
+                            'asset_nome': df_filtrado.iloc[i]['asset_nome'],
+                            'asset_tipo': aba,
+                            'valor_mercado': float(valor_filtrado.iloc[i]),
+                            'quantidade': float(df_filtrado.iloc[i]['quantidade']),
                             'moeda': 'BRL',
                             'mercado': aba,
-                            'submercado': aba[:10],
+                            'sub_mercado': aba[:10],
                             'estrategia': 'HOLD'
                         })
     
