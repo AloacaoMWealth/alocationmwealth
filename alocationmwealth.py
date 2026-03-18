@@ -346,12 +346,16 @@ with tab2:
     pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
     pl_total = float(pos_cliente["valor_mercado"].sum())
 
-    # ===================== PERFIL AUTOMÁTICO (CORRIGIDO) =====================
+    # ===================== PERFIL AUTOMÁTICO =====================
+    
     perfil_cliente = "Não identificado"
-    if not df_contas.empty and "GRUPO GERAL" in df_contas.columns:
-        matching = df_contas[
-            df_contas["GRUPO GERAL"].astype(str).str.strip().eq(str(grupo_sel).strip())
-        ]
+    
+    if df_contas is not None and not df_contas.empty and "GRUPO GERAL" in df_contas.columns:
+        grupo_sel_str = str(grupo_sel).strip()
+        mask = df_contas["GRUPO GERAL"].astype(str).str.strip().eq(grupo_sel_str)
+        
+        matching = df_contas[mask]
+        
         if not matching.empty:
             perfis = matching["Perfil Carteira"].dropna().astype(str).str.strip()
             if not perfis.empty:
