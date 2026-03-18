@@ -238,7 +238,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
     }
     
     xls = pd.ExcelFile(src)
-    print(f"XP abas encontradas: {[a for a in xls.sheet_names if a in MAPA_XP_ABAS]}")
+    print(f"📂 XP abas encontradas: {[a for a in xls.sheet_names if a in MAPA_XP_ABAS]}")
     
     for aba, config in MAPA_XP_ABAS.items():
         if aba in xls.sheet_names:
@@ -248,14 +248,21 @@ def parse_xp_positions(src) -> pd.DataFrame:
             
             if config['valor'] in df.columns:
                 valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
-                print(f"✅ {aba}: {len(df)} linhas, R${valor.sum():,.0f}")
                 
-                for i in df.index:
-                    if valor.iloc[i] > 0:
-                        ativo = (str(df.iloc[i][config['ativo']]) if config['ativo'] and config['ativo'] in df.columns 
-                                else f"{aba}")
+                # === CORREÇÃO PRINCIPAL: filtro vetorizado (evita ambiguidade) ===
+                mask = valor > 0
+                if mask.any():
+                    print(f"✅ {aba}: {mask.sum()} linhas com valor > 0, R${valor.sum():,.0f}")
+                    
+                    df_filtrado = df[mask].reset_index(drop=True)
+                    valor_filtrado = valor[mask].reset_index(drop=True)
+                    
+                    for i in range(len(df_filtrado)):
+                        ativo = (str(df_filtrado.iloc[i][config['ativo']]) 
+                                 if config['ativo'] and config['ativo'] in df_filtrado.columns 
+                                 else f"{aba}")
                         
-                        conta_normalizada = _normalize_account(df.iloc[i]['CodigoCliente'])
+                        conta_normalizada = _normalize_account(df_filtrado.iloc[i]['CodigoCliente'])
                         
                         resultado.append({
                             'corretora': 'XP',
@@ -263,8 +270,9 @@ def parse_xp_positions(src) -> pd.DataFrame:
                             'assetid': ativo[:12],
                             'assetnome': ativo[:30],
                             'assettipo': aba,
-                            'valormercado': float(valor.iloc[i]),
-                            'quantidade': float(df.get(config['qtd'], pd.Series([1.0]*len(df)))[i]) if config['qtd'] else 1.0,
+                            'valormercado': float(valor_filtrado.iloc[i]),
+                            'quantidade': float(df_filtrado.get(config['qtd'], pd.Series([1.0]*len(df_filtrado)))[i]) 
+                                          if config['qtd'] else 1.0,
                             'moeda': 'BRL',
                             'mercado': aba,
                             'submercado': aba[:10],
