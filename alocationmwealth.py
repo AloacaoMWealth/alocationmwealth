@@ -346,24 +346,23 @@ with tab2:
     pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
     pl_total = float(pos_cliente["valor_mercado"].sum())
 
-    # ===================== PERFIL AUTOMÁTICO =====================
+    # ===================== PERFIL AUTOMÁTICO (CORRIGIDO) =====================
     perfil_cliente = "Não identificado"
-    if not df_contas.empty:
+    if not df_contas.empty and "GRUPO GERAL" in df_contas.columns:
         matching = df_contas[
-            df_contas["GRUPO GERAL"].astype(str).str.strip() == str(grupo_sel).strip()
+            df_contas["GRUPO GERAL"].astype(str).str.strip().eq(str(grupo_sel).strip())
         ]
         if not matching.empty:
             perfis = matching["Perfil Carteira"].dropna().astype(str).str.strip()
             if not perfis.empty:
                 perfil_cliente = perfis.iloc[0]
 
-    st.caption(f"**Perfil detectado na planilha Contas:** {perfil_cliente}")
+    st.caption(f" **Perfil detectado na planilha Contas:** {perfil_cliente}")
 
     # ===================== MAPEAMENTO EXPLÍCITO PERFIL → MODELO =====================
     pesos = load_pesos_xlsx()
     modelos = list(pesos.keys())
 
-    # Condicional forte e priorizada
     modelo_default = None
     perfil_norm = perfil_cliente.strip().upper()
 
@@ -388,21 +387,20 @@ with tab2:
     elif "ULTRACONSERVADOR" in perfil_norm:
         modelo_default = "Ultraconservador"
 
-    # Se encontrou, usa o modelo mapeado
     if modelo_default and modelo_default in modelos:
         default_idx = modelos.index(modelo_default)
     else:
         default_idx = 0
-        st.warning(f"⚠️ Perfil '{perfil_cliente}' não mapeado automaticamente. Usando '{modelos[0]}' como padrão. Verifique a planilha Pesos-alocacao.xlsx.")
+        st.warning(f" Perfil '{perfil_cliente}' não mapeado. Usando '{modelos[0]}'.")
 
     modelo = st.selectbox(
         "Modelo de alocação (padrão = perfil do cliente)",
         modelos,
         index=default_idx,
-        help="Mapeado automaticamente da planilha Contas.xlsx. Altere apenas para simular outro cenário."
+        help="Mapeado automaticamente da planilha Contas.xlsx."
     )
 
-    p = pesos[modelo]  # Este é o que alimenta TODOS os cálculos abaixo
+    p = pesos[modelo]
 
     # PTAX
     try:
@@ -410,7 +408,7 @@ with tab2:
     except:
         ptax = 5.60
 
-    # ===================== DETALHAMENTO POR CORRETORA (SÓ MÉTRICAS, SEM TABELA) =====================
+    # ===================== DETALHAMENTO POR CORRETORA (SÓ MÉTRICAS) =====================
     st.subheader("Detalhamento por corretora")
 
     por_corretora = pos_cliente.groupby("corretora", as_index=False)["valor_mercado"].agg(
@@ -420,17 +418,11 @@ with tab2:
     por_corretora["PL_fmt"] = por_corretora["PL_total"].apply(format_brl)
     por_corretora["% do total"] = (por_corretora["PL_total"] / pl_total * 100).round(1).astype(str) + "%"
 
-    # Métricas lado a lado (PL Global + corretoras)
     cols = st.columns(len(por_corretora) + 1)
     cols[0].metric("PL Global", format_brl(pl_total))
     for i, row in por_corretora.iterrows():
-        cols[i+1].metric(
-            row["corretora"],
-            row["PL_fmt"],
-            delta=f"{row['% do total']} • {row['Qtd_ativos']} ativos"
-        )
+        cols[i+1].metric(row["corretora"], row["PL_fmt"], delta=f"{row['% do total']} • {row['Qtd_ativos']} ativos")
 
-    # Expander para contas individuais (mantido, mas discreto)
     with st.expander("Ver detalhamento por conta individual"):
         por_conta = pos_cliente.groupby(["corretora", "conta"], as_index=False).agg(
             PL=("valor_mercado", "sum"),
