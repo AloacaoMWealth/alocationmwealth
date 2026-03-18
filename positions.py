@@ -238,6 +238,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
     }
     
     xls = pd.ExcelFile(src)
+    print(f" XP abas encontradas: {[a for a in xls.sheet_names if a in MAPA_XP_ABAS]}")
     
     for aba, config in MAPA_XP_ABAS.items():
         if aba in xls.sheet_names:
@@ -247,34 +248,23 @@ def parse_xp_positions(src) -> pd.DataFrame:
             
             if config['valor'] in df.columns:
                 valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
-                mask = valor > 0
                 
-                if mask.any():
-                    print(f"✅ {aba}: {mask.sum()} linhas com valor > 0, R${valor.sum():,.0f}")
-                    
-                    df_filtrado = df[mask].reset_index(drop=True)
-                    valor_filtrado = valor[mask].reset_index(drop=True)
-                    
-                    for i in range(len(df_filtrado)):
-                        ativo_col = config['ativo']
-                        ativo = str(df_filtrado.iloc[i][ativo_col]) if ativo_col and ativo_col in df_filtrado.columns else aba
-                        
-                        conta = _normalize_account(df_filtrado.iloc[i]['CodigoCliente'])
+                # Loop simples (exatamente como estava antes das mudanças)
+                for i in range(len(df)):
+                    if valor.iloc[i] > 0:                     # ← era isso que funcionava
+                        ativo = str(df.iloc[i][config['ativo']]) if config['ativo'] and config['ativo'] in df.columns else aba
+                        conta = _normalize_account(df.iloc[i]['CodigoCliente'])
                         
                         qtd_col = config['qtd']
-                        if qtd_col and qtd_col in df_filtrado.columns:
-                            qtd_val = df_filtrado.iloc[i][qtd_col]
-                            quantidade = float(qtd_val) if pd.notna(qtd_val) else 1.0
-                        else:
-                            quantidade = 1.0
+                        quantidade = float(df.iloc[i][qtd_col]) if qtd_col and qtd_col in df.columns else 1.0
                         
                         resultado.append({
                             'corretora': 'XP',
                             'conta': conta,
-                            'asset_id': ativo[:12],
+                            'asset_id': ativo[:12],      
                             'asset_nome': ativo[:30],
                             'asset_tipo': aba,
-                            'valor_mercado': float(valor_filtrado.iloc[i]),
+                            'valor_mercado': float(valor.iloc[i]),
                             'quantidade': quantidade,
                             'moeda': 'BRL',
                             'mercado': aba,
