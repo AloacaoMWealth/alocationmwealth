@@ -234,7 +234,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
         'Provisão Evento RF': {'ativo': 'Evento', 'valor': 'Valor', 'qtd': None},
         'Coe': {'ativo': 'NomeAtivo', 'valor': 'ValorFinanceiroBruto', 'qtd': None},
         'Renda Fixa': {'ativo': 'NickName', 'valor': 'ValorFinanceiroBruto', 'qtd': None},
-        'Financeiro': {'ativo': None, 'valor': 'ValorDisponivel', 'qtd': None}
+        'Financeiro': {'ativo': 'ValorTotal', 'valor': 'ValorDisponivel', 'qtd': 'QuantidadeDiasDevedor'}
     }
     
     xls = pd.ExcelFile(src)
