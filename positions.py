@@ -187,9 +187,12 @@ def parse_cs_positions(src) -> pd.DataFrame:
     raw = pd.read_csv(io.StringIO(csv_data), sep=",", engine="python")
     raw.columns = [str(c).strip() for c in raw.columns]
     
-    market_col = raw.columns[raw.columns.str.contains("Market Value", case=False)][0]
-    raw[market_col] = raw[market_col].astype(str).str.replace("$", "", regex=False)
-    raw[market_col] = pd.to_numeric(raw[market_col], errors='coerce').fillna(0.0)
+    market_col = next((c for c in raw.columns if 'market value' in c.lower()), None)
+    
+    if market_col:
+        raw[market_col] = raw[market_col].astype(str).str.replace("$", "", regex=False)
+        raw[market_col] = raw[market_col].str.replace(",", "", regex=False)
+        raw[market_col] = pd.to_numeric(raw[market_col], errors='coerce').fillna(0.0)
 
     sym_col = "Symbol/CUSIP" if "Symbol/CUSIP" in raw.columns else (
         "CUSIP" if "CUSIP" in raw.columns else ("Symbol" if "Symbol" in raw.columns else None)
