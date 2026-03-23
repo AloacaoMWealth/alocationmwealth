@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 import requests
 import json
 from pathlib import Path
-
 import positions as posmod  # seu módulo positions.py
 
 try:
