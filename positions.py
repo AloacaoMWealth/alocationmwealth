@@ -432,16 +432,25 @@ def build_and_save_latest(
         with open(LATEST_META, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
         print("Meta JSON salvo com sucesso")
-    except Exception as e:
-        print(f"Erro ao salvar meta JSON (ignorando): {e}")
-        # Continua o rebuild mesmo assim
+    except Exception as json_err:
+        print(f"Erro ao salvar meta JSON (ignorando para continuar rebuild): {json_err}")
 
     return merged
 
 def load_latest_positions() -> pd.DataFrame | None:
     if not LATEST_PARQUET.exists():
         return None
-    return pd.read_parquet(LATEST_PARQUET)
+    df = pd.read_parquet(LATEST_PARQUET)
+    meta = {"dt_posicao": datetime.now().isoformat(), "diagnostics": {}}
+    try:
+        with open(LATEST_META, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception as e:
+        print(f"JSON meta corrompido/inexistente, usando default: {e}")
+
+    df.attrs["meta"] = meta
+    
+    return df
 
 
 def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
