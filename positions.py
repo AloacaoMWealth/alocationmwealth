@@ -428,8 +428,8 @@ def build_and_save_latest(
     merged = classify_bucket_estrategia(merged)
 
     merged.to_parquet(LATEST_PARQUET, index=False)
-    with open(LATEST_META, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+   # with open(LATEST_META, "w", encoding="utf-8") as f:
+    #    json.dump(meta, f, ensure_ascii=False, indent=2)
 
     return merged
 
