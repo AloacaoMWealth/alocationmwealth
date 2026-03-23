@@ -428,8 +428,13 @@ def build_and_save_latest(
     merged = classify_bucket_estrategia(merged)
 
     merged.to_parquet(LATEST_PARQUET, index=False)
-    with open(LATEST_META, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+    try:
+        with open(LATEST_META, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+        print("Meta JSON salvo com sucesso")
+    except Exception as e:
+        print(f"Erro ao salvar meta JSON (ignorando): {e}")
+        # Continua o rebuild mesmo assim
 
     return merged
 
