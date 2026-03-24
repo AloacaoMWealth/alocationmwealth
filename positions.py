@@ -231,24 +231,22 @@ def parse_cs_positions(src) -> pd.DataFrame:
     return df
 
 def parse_xp_positions(src) -> pd.DataFrame:
-    print("=== USANDO NOVA VERSÃO parse_xp_positions (com .item() e limpeza Financeiro) ===")
-    
     resultado = []
     
     MAPA_XP_ABAS = {
-        'Custódia Remunerada': {'ativo': 'CodigoAtivo', 'valor': 'ValorTotal', 'qtd': 'QuantidadeAtivo', 'conta': 'CodigoCliente', 'estrategia': 'LIQUIDEZ'},
+        'Custódia Remunerada': {'ativo': 'CodigoAtivo', 'valor': 'ValorTotal', 'qtd': 'QuantidadeAtivo', 'conta': 'CodigoCliente', 'estrategia': None},
         'Ações': {'ativo': 'CodigoAtivo', 'valor': 'ValorAtual', 'qtd': 'QuantidadeTotalComGarantias', 'conta': 'CodigoCliente', 'estrategia': None},
         'Fundos Imobiliários': {'ativo': 'CodigoAtivo', 'valor': 'ValorAtual', 'qtd': 'QuantidadeTotalAtual', 'conta': 'CodigoCliente', 'estrategia': None},
         'Opções Flexíveis': {'ativo': 'CodigoInstrumento', 'valor': 'Posicao', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
         'Fundos': {'ativo': 'NomeFundo', 'valor': 'ValorAtual', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Tesouro Direto': {'ativo': 'NomeTitulo', 'valor': 'ValorBruto', 'qtd': 'QuantidadeTotal', 'conta': 'CodigoCliente', 'estrategia': 'RF TESOURO'},
+        'Tesouro Direto': {'ativo': 'NomeTitulo', 'valor': 'ValorBruto', 'qtd': 'QuantidadeTotal', 'conta': 'CodigoCliente', 'estrategia': None},
         'Previdência': {'ativo': 'NomeFundo', 'valor': 'ValorReservaAcamulada', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
         'Proventos': {'ativo': 'CodigoAtivo', 'valor': 'PrecoAtual', 'qtd': 'QuantidadeProvisionada', 'conta': 'CodigoCliente', 'estrategia': None},
         'Proventos Fundo Imob': {'ativo': 'CodigoAtivo', 'valor': 'PrecoAtual', 'qtd': 'QuantidadeProvisionada', 'conta': 'CodigoCliente', 'estrategia': None},
-        'Provisão Evento RF': {'ativo': 'Evento', 'valor': 'Valor', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': 'EVENTO'},
+        'Provisão Evento RF': {'ativo': 'Evento', 'valor': 'Valor', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
         'Coe': {'ativo': 'NomeAtivo', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Renda Fixa': {'ativo': 'NickName', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': 'RF'},
-        'Financeiro': {'ativo': None, 'valor': 'ValorDisponivel', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': 'LIQUIDEZ'}
+        'Renda Fixa': {'ativo': 'NickName', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
+        'Financeiro': {'ativo': 'ValorTotal', 'valor': 'ValorDisponivel', 'qtd': 'QuantidadeDiasDevedor', 'conta': 'CodigoCliente', 'estrategia': None}
     }
     
     xls = pd.ExcelFile(src)
@@ -260,52 +258,27 @@ def parse_xp_positions(src) -> pd.DataFrame:
             df.columns = [str(c).strip() for c in df.columns]
             df = df.rename(columns={df.columns[0]: 'CodigoCliente'})
             
-            if config['valor'] not in df.columns:
-                continue
+            if config['valor'] in df.columns:
+                valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
+                print(f"✅ {aba}: {len(df)} linhas, R${valor.sum():,.0f}")
                 
-            valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
-            print(f"✅ {aba}: {len(df)} linhas, R${valor.sum():,.0f}")
-            
-            for i in range(len(df)):
-                # EVITA O ERRO "truth value of a Series is ambiguous"
-                valor_atual = valor.iloc[i].item() if pd.notna(valor.iloc[i]) else 0
-                if valor_atual <= 0:
-                    continue
-                
-                # TRATAMENTO ESPECIAL PARA FINANCEIRO E LINHAS DE DATA
-                if aba == "Financeiro":
-                    codigo_cliente = str(df.iloc[i]['CodigoCliente']).strip()
-                    asset_id = "Saldo Financeiro"
-                    asset_nome = f"Saldo em Conta XP - Cliente {codigo_cliente}"
-                else:
-                    ativo_col = config['ativo']
-                    ativo_raw = str(df.iloc[i][ativo_col]) if ativo_col and ativo_col in df.columns else aba
-                    if any(x in ativo_raw for x in ["CodigoCliente", "/2026", ":", "DataAtualizacao"]):
-                        continue
-                    asset_id = ativo_raw[:12]
-                    asset_nome = ativo_raw[:30]
-                
-                conta_col = config.get('conta', 'CodigoCliente')
-                conta = _normalize_account(df.iloc[i][conta_col])
-                
-                qtd_col = config.get('qtd')
-                quantidade = float(df.iloc[i][qtd_col]) if qtd_col and qtd_col in df.columns else 1.0
-                
-                estrategia = config.get('estrategia') or 'HOLD'
-                
-                resultado.append({
-                    'corretora': 'XP',
-                    'conta': conta,
-                    'asset_id': asset_id,
-                    'asset_nome': asset_nome,
-                    'asset_tipo': aba,
-                    'valor_mercado': float(valor_atual),
-                    'quantidade': quantidade,
-                    'moeda': 'BRL',
-                    'mercado': aba,
-                    'sub_mercado': aba[:10],
-                    'estrategia': estrategia
-                })
+                for i in df.index:
+                    if valor.iloc[i] > 0:
+                        ativo = (str(df.iloc[i][config['ativo']]) if config['ativo'] and config['ativo'] in df.columns 
+                                else f"{aba}")
+                        resultado.append({
+                            'corretora': 'XP',
+                            'conta': str(df.iloc[i]['CodigoCliente']),
+                            'asset_id': ativo[:12],
+                            'asset_nome': ativo[:30],
+                            'asset_tipo': aba,
+                            'valor_mercado': float(valor.iloc[i]),
+                            'quantidade': float(df.get(config['qtd'], pd.Series([1.0]*len(df)))[i]) if config['qtd'] else 1.0,
+                            'moeda': 'BRL',
+                            'mercado': aba,
+                            'sub_mercado': aba[:10],
+                            'estrategia': 'HOLD'
+                        })
     
     df_final = pd.DataFrame(resultado)
     print(f"XP TOTAL: {len(df_final)} posições, R${df_final['valor_mercado'].sum():,.0f}")
