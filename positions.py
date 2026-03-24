@@ -231,6 +231,8 @@ def parse_cs_positions(src) -> pd.DataFrame:
     return df
 
 def parse_xp_positions(src) -> pd.DataFrame:
+    print("=== USANDO NOVA VERSÃO parse_xp_positions (com .item() e limpeza Financeiro) ===")
+    
     resultado = []
     
     MAPA_XP_ABAS = {
@@ -265,12 +267,12 @@ def parse_xp_positions(src) -> pd.DataFrame:
             print(f"✅ {aba}: {len(df)} linhas, R${valor.sum():,.0f}")
             
             for i in range(len(df)):
-                # === EVITA ERRO "truth value of a Series is ambiguous" ===
+                # EVITA O ERRO "truth value of a Series is ambiguous"
                 valor_atual = valor.iloc[i].item() if pd.notna(valor.iloc[i]) else 0
                 if valor_atual <= 0:
                     continue
                 
-                # === TRATAMENTO ESPECIAL PARA FINANCEIRO E LINHAS DE DATA ===
+                # TRATAMENTO ESPECIAL PARA FINANCEIRO E LINHAS DE DATA
                 if aba == "Financeiro":
                     codigo_cliente = str(df.iloc[i]['CodigoCliente']).strip()
                     asset_id = "Saldo Financeiro"
@@ -279,7 +281,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
                     ativo_col = config['ativo']
                     ativo_raw = str(df.iloc[i][ativo_col]) if ativo_col and ativo_col in df.columns else aba
                     if any(x in ativo_raw for x in ["CodigoCliente", "/2026", ":", "DataAtualizacao"]):
-                        continue  # pula linhas de metadata/data
+                        continue
                     asset_id = ativo_raw[:12]
                     asset_nome = ativo_raw[:30]
                 
