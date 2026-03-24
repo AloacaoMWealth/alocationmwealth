@@ -263,22 +263,31 @@ def parse_xp_positions(src) -> pd.DataFrame:
                 print(f"✅ {aba}: {len(df)} linhas, R${valor.sum():,.0f}")
                 
                 for i in df.index:
-                    if valor.iloc[i] > 0:
+                    valor_atual = valor.iloc[i]
+                    if pd.isna(valor_atual) or valor_atual <= 0:
+                        continue
+                    
+                    if aba == "Financeiro":
+                        codigo_cliente = str(df.iloc[i]['CodigoCliente']).strip()
+                        ativo = "Saldo Financeiro"
+                        asset_nome = f"Saldo em Conta XP - Cliente {codigo_cliente}"
+                    else:
                         ativo = (str(df.iloc[i][config['ativo']]) if config['ativo'] and config['ativo'] in df.columns 
                                 else f"{aba}")
-                        resultado.append({
-                            'corretora': 'XP',
-                            'conta': str(df.iloc[i]['CodigoCliente']),
-                            'asset_id': ativo[:12],
-                            'asset_nome': ativo[:30],
-                            'asset_tipo': aba,
-                            'valor_mercado': float(valor.iloc[i]),
-                            'quantidade': float(df.get(config['qtd'], pd.Series([1.0]*len(df)))[i]) if config['qtd'] else 1.0,
-                            'moeda': 'BRL',
-                            'mercado': aba,
-                            'sub_mercado': aba[:10],
-                            'estrategia': 'HOLD'
-                        })
+                    
+                    resultado.append({
+                        'corretora': 'XP',
+                        'conta': str(df.iloc[i]['CodigoCliente']),
+                        'asset_id': ativo[:12] if isinstance(ativo, str) else "Saldo Financeiro",
+                        'asset_nome': asset_nome[:30] if 'asset_nome' in locals() else ativo[:30],
+                        'asset_tipo': aba,
+                        'valor_mercado': float(valor_atual),
+                        'quantidade': float(df.get(config['qtd'], pd.Series([1.0]*len(df)))[i]) if config['qtd'] else 1.0,
+                        'moeda': 'BRL',
+                        'mercado': aba,
+                        'sub_mercado': aba[:10],
+                        'estrategia': 'HOLD'
+                    })
     
     df_final = pd.DataFrame(resultado)
     print(f"XP TOTAL: {len(df_final)} posições, R${df_final['valor_mercado'].sum():,.0f}")
