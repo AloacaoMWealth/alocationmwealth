@@ -234,19 +234,19 @@ def parse_xp_positions(src) -> pd.DataFrame:
     resultado = []
     
     MAPA_XP_ABAS = {
-        'Custódia Remunerada': {'ativo': 'CodigoAtivo', 'valor': 'ValorTotal', 'qtd': 'QuantidadeAtivo', 'conta': 'CodigoCliente', 'estrategia': None},
-        'Ações': {'ativo': 'CodigoAtivo', 'valor': 'ValorAtual', 'qtd': ' QuantidadeTotalComGarantias', 'conta': 'CodigoCliente', 'estrategia': None},
+        'Custódia Remunerada': {'ativo': 'CodigoAtivo', 'valor': 'ValorTotal', 'qtd': 'QuantidadeAtivo', 'conta': 'CodigoCliente', 'estrategia': 'LIQUIDEZ'},
+        'Ações': {'ativo': 'CodigoAtivo', 'valor': 'ValorAtual', 'qtd': 'QuantidadeTotalComGarantias', 'conta': 'CodigoCliente', 'estrategia': None},
         'Fundos Imobiliários': {'ativo': 'CodigoAtivo', 'valor': 'ValorAtual', 'qtd': 'QuantidadeTotalAtual', 'conta': 'CodigoCliente', 'estrategia': None},
         'Opções Flexíveis': {'ativo': 'CodigoInstrumento', 'valor': 'Posicao', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
         'Fundos': {'ativo': 'NomeFundo', 'valor': 'ValorAtual', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Tesouro Direto': {'ativo': 'NomeTitulo', 'valor': 'ValorBruto', 'qtd': 'QuantidadeTotal', 'conta': 'CodigoCliente', 'estrategia': None},
+        'Tesouro Direto': {'ativo': 'NomeTitulo', 'valor': 'ValorBruto', 'qtd': 'QuantidadeTotal', 'conta': 'CodigoCliente', 'estrategia': 'RF TESOURO'},
         'Previdência': {'ativo': 'NomeFundo', 'valor': 'ValorReservaAcamulada', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
         'Proventos': {'ativo': 'CodigoAtivo', 'valor': 'PrecoAtual', 'qtd': 'QuantidadeProvisionada', 'conta': 'CodigoCliente', 'estrategia': None},
         'Proventos Fundo Imob': {'ativo': 'CodigoAtivo', 'valor': 'PrecoAtual', 'qtd': 'QuantidadeProvisionada', 'conta': 'CodigoCliente', 'estrategia': None},
-        'Provisão Evento RF': {'ativo': 'Evento', 'valor': 'Valor', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
+        'Provisão Evento RF': {'ativo': 'Evento', 'valor': 'Valor', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': 'EVENTO'},
         'Coe': {'ativo': 'NomeAtivo', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Renda Fixa': {'ativo': 'NickName', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Financeiro': {'ativo': None, 'valor': 'ValorDisponivel', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': 'Saldo em Conta'}
+        'Renda Fixa': {'ativo': 'NickName', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': 'RF'},
+        'Financeiro': {'ativo': None, 'valor': 'ValorDisponivel', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': 'LIQUIDEZ'}
     }
     
     xls = pd.ExcelFile(src)
@@ -265,6 +265,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
             print(f"✅ {aba}: {len(df)} linhas, R${valor.sum():,.0f}")
             
             for i in range(len(df)):
+                # === EVITA ERRO "truth value of a Series is ambiguous" ===
                 valor_atual = valor.iloc[i].item() if pd.notna(valor.iloc[i]) else 0
                 if valor_atual <= 0:
                     continue
