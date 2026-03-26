@@ -6,8 +6,11 @@ from datetime import datetime, timedelta
 import requests
 import json
 from pathlib import Path
-
+import locale
 import positions as posmod  # seu módulo positions.py
+
+
+locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
 
 try:
     import yfinance as yf
@@ -378,8 +381,7 @@ with tab1:
                     ).fillna(0.0)
                     
                     display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
-                                   "valor_mercado", "quantidade", "moeda"]
-                    
+                                   "valor_mercado", "quantidade", "moeda"]          
                     st.dataframe(
                         df_display[display_cols]
                         .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
@@ -388,12 +390,12 @@ with tab1:
                         column_config={
                             "valor_mercado": st.column_config.NumberColumn(
                                 "Valor de Mercado",
-                                format="R$ %.2f",          # Formato brasileiro
-                                help="Valor em Reais"
+                                format="R$ %,.2f",
+                                help="CS já convertido pela PTAX"
                             ),
                             "quantidade": st.column_config.NumberColumn(
                                 "Quantidade",
-                                format="%.4f"
+                                format="%,.4f"
                             )
                         }
                     )

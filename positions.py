@@ -208,9 +208,9 @@ def parse_cs_positions(src) -> pd.DataFrame:
             break
 
     if quantity_col:
-        raw["quantidade"] = pd.to_numeric(raw[quantity_col], errors="coerce").fillna(0.0)
+        raw["Quantity"] = pd.to_numeric(raw[quantity_col], errors="coerce").fillna(0.0)
     else:
-        raw["quantidade"] = 0.0
+        raw["Quantity"] = 0.0
 
     print(f"✅ CS - SOMA BRUTA USD: {raw[market_col].sum():,.2f} | linhas: {len(raw)}")
 
@@ -221,8 +221,8 @@ def parse_cs_positions(src) -> pd.DataFrame:
         "asset_id": raw.get("Symbol/CUSIP", raw.get("Symbol", pd.Series([""]*len(raw)))).astype(str).str.strip(),
         "asset_nome": raw.get("Name", pd.Series([""]*len(raw))).astype(str).str.strip(),
         "asset_tipo": raw.get("Security Type", pd.Series([""]*len(raw))).astype(str).str.strip(),
-        "valor_mercado": raw[market_col],          # em USD (será convertido depois)
-        "quantidade": raw["quantidade"],           # ← Nova coluna Quantity da CS
+        "valor_mercado": raw[market_col],         
+        "quantidade": raw["Quantity"],         
         "moeda": "USD",
         "mercado": "",
         "sub_mercado": "",
