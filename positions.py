@@ -172,7 +172,7 @@ def parse_cs_positions(src) -> pd.DataFrame:
     header_idx = None
 
     for i, ln in enumerate(lines):
-        if "Account," in ln and "Market Value" in ln:   # mais tolerante
+        if "Account," in ln and "Market Value" in ln:
             header_idx = i
             break
     if header_idx is None:
@@ -193,14 +193,26 @@ def parse_cs_positions(src) -> pd.DataFrame:
     if market_col not in raw.columns:
         raise ValueError(f"CS: coluna '{market_col}' não encontrada. Colunas: {list(raw.columns)}")
 
-    # Limpeza robusta
+    # Limpeza robusta do valor
     s = raw[market_col].astype(str).str.replace("$", "", regex=False).str.strip()
-    s = s.str.replace(",", "", regex=False)           # remove separador de milhar americano
-    s = s.str.replace(r"[^0-9.]", "", regex=True)     # deixa só números e ponto
+    s = s.str.replace(",", "", regex=False)
+    s = s.str.replace(r"[^0-9.]", "", regex=True)
 
     raw[market_col] = pd.to_numeric(s, errors="coerce").fillna(0.0)
 
-    print(f"✅ CS - SOMA BRUTA USD: {raw[market_col].sum():,.2f}")
+    # Nova coluna Quantity (se existir no relatório)
+    quantity_col = None
+    for possible in ["Quantity", "Qty", "Quantidade", "quantity"]:
+        if possible in raw.columns:
+            quantity_col = possible
+            break
+
+    if quantity_col:
+        raw["quantidade"] = pd.to_numeric(raw[quantity_col], errors="coerce").fillna(0.0)
+    else:
+        raw["quantidade"] = 0.0
+
+    print(f"✅ CS - SOMA BRUTA USD: {raw[market_col].sum():,.2f} | linhas: {len(raw)}")
 
     # Cria DataFrame final
     df = pd.DataFrame({
@@ -209,8 +221,8 @@ def parse_cs_positions(src) -> pd.DataFrame:
         "asset_id": raw.get("Symbol/CUSIP", raw.get("Symbol", pd.Series([""]*len(raw)))).astype(str).str.strip(),
         "asset_nome": raw.get("Name", pd.Series([""]*len(raw))).astype(str).str.strip(),
         "asset_tipo": raw.get("Security Type", pd.Series([""]*len(raw))).astype(str).str.strip(),
-        "valor_mercado": raw[market_col],
-        "quantidade": 0.0,
+        "valor_mercado": raw[market_col],          # em USD (será convertido depois)
+        "quantidade": raw["quantidade"],           # ← Nova coluna Quantity da CS
         "moeda": "USD",
         "mercado": "",
         "sub_mercado": "",
@@ -219,7 +231,6 @@ def parse_cs_positions(src) -> pd.DataFrame:
 
     print(f"✅ CS - TOTAL FINAL USD: {df['valor_mercado'].sum():,.2f} | linhas: {len(df)}")
     return df
-
 def parse_xp_positions(src) -> pd.DataFrame:
     resultado = []
     
