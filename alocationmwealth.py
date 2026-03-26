@@ -370,32 +370,27 @@ with tab1:
                 )
                 
                 # ===================== EXPANDER COM LISTA COMPLETA =====================
-                with st.expander("Ver lista completa de TODOS os ativos consolidadas", expanded=False):
+                with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
                     df_display = df.copy()
-                    df_display["valor_mercado"] = pd.to_numeric(
-                        df_display["valor_mercado"], errors="coerce"
-                    ).fillna(0.0)
+                    df_display["valor_mercado"] = pd.to_numeric(df_display["valor_mercado"], errors="coerce").fillna(0.0)
+                    
+                    display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
+                                    "valor_mercado", "quantidade", "moeda"]
+                    
+                    styled_df = df_display[display_cols].sort_values(
+                        by=["corretora", "valor_mercado"], ascending=[True, False]
+                    ).style.format({
+                        "valor_mercado": lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                        "quantidade": "{:.4f}".replace(".", ",").replace(",", "X").replace("X", ".")  # Ajusta quantidade
+                    })
                     
                     st.dataframe(
-                        df_display[["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
-                                   "valor_mercado", "quantidade", "moeda"]]
-                        .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
+                        styled_df,
                         use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "valor_mercado": st.column_config.NumberColumn(
-                                "Valor de Mercado",
-                                format="R$ %,.2f",  # Funciona (mesmo invertido)
-                                help="CS já convertido pela PTAX"
-                            ),
-                            "quantidade": st.column_config.NumberColumn(
-                                "Quantidade",
-                                format="%,.2f"
-                            )
-                        }
+                        hide_index=True
                     )
                     st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
-                
+               
             except Exception as e:
                 st.error(f"Erro ao reconstruir: {e}")
                 
