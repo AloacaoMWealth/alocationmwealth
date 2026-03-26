@@ -370,47 +370,28 @@ with tab1:
                 )
                 
                 # ===================== EXPANDER COM LISTA COMPLETA =====================
-                with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
+                with st.expander("Ver lista completa de TODOS os ativos consolidadas", expanded=False):
                     df_display = df.copy()
                     df_display["valor_mercado"] = pd.to_numeric(
                         df_display["valor_mercado"], errors="coerce"
                     ).fillna(0.0)
                     
-                    def format_br(value, prefix="", decimals=2):
-                        s = f"{value:,.{decimals}f}"
-                        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
-                        return prefix + s  # Sem espaço extra
-                    
-                    # TESTE (deve mostrar R$ 521.814,45 EXATO)
-                    st.write("**Teste formato:**")
-                    st.write(format_br(521814.45, "R$ ", 2))
-                    st.write(format_br(1234567.89, "R$ ", 2))
-                
-                    # CRIA colunas display
-                    df_display["valor_mercado_display"] = df_display["valor_mercado"].apply(
-                        lambda x: format_br(x, "R$ ", 2)
-                    )
-                    df_display["quantidade_display"] = df_display["quantidade"].apply(
-                        lambda x: format_br(x, "", 4)
-                    )
-                    
-                    # display_cols ORIGINAL (com float)
-                    display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
-                                    "valor_mercado", "quantidade", "moeda"]
-                    
-                    # CÓPIA para display (SUBSTITUI posições exatas)
-                    display_cols_display = display_cols.copy()
-                    display_cols_display[5] = "valor_mercado_display"
-                    display_cols_display[6] = "quantidade_display"
-                    
                     st.dataframe(
-                        df_display[display_cols_display]
+                        df_display[["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
+                                   "valor_mercado", "quantidade", "moeda"]]
                         .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
                         use_container_width=True,
                         hide_index=True,
                         column_config={
-                            "valor_mercado_display": st.column_config.TextColumn("Valor de Mercado"),
-                            "quantidade_display": st.column_config.TextColumn("Quantidade")
+                            "valor_mercado": st.column_config.NumberColumn(
+                                "Valor de Mercado",
+                                format="R$ %,.2f",  # Funciona (mesmo invertido)
+                                help="CS já convertido pela PTAX"
+                            ),
+                            "quantidade": st.column_config.NumberColumn(
+                                "Quantidade",
+                                format="%,.4f"
+                            )
                         }
                     )
                     st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
