@@ -379,38 +379,40 @@ with tab1:
                     display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
                                    "valor_mercado", "quantidade", "moeda"]  
                     
-                def format_br(value, prefix="R$ ", decimals=2):
-                        """Formata float para BR: 1234567.89 → R$ 1.234.567,89"""
-                        s = f"{abs(value):,.{decimals}f}"
-                        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
-                        if value < 0:
-                            s = f"-{s}"
-                        return prefix + s
-                    
-                df_display["valor_mercado_fmt"] = df_display["valor_mercado"].apply(
-                        lambda x: format_br(x, "R$ ", 2)
-                    )
-                df_display["quantidade_fmt"] = df_display["quantidade"].apply(
-                        lambda x: format_br(x, "", 4)
-                    )
-                    
-                display_cols_fmt = [c if c not in ["valor_mercado", "quantidade"] 
-                                        else f"{c}_fmt" for c in display_cols]
+                def format_br(value, prefix="", decimals=2):
+                    """1234567.89 → 'R$ 1.234.567,89' EXATO BR"""
+                    # Formata com US, depois troca: ,→X ; .→, ; X→.
+                    s = f"{value:,.{decimals}f}"
+                    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+                    return prefix + s
+                
+                # DEBUG: teste na tela primeiro
+                st.write("**Teste formato:**")
+                st.write(format_br(521814.45, "R$ ", 2))  # Deve mostrar: R$ 521.814,45
+                st.write(format_br(1234567.89, "R$ ", 2))  # R$ 1.234.567,89
+                
+                # Aplique NO DataFrame
+                df_display = df_display.copy()  # Evite modificar original
+                df_display["valor_mercado_display"] = df_display["valor_mercado"].apply(
+                    lambda x: format_br(x, "R$ ", 2)
+                )
+                df_display["quantidade_display"] = df_display["quantidade"].apply(
+                    lambda x: format_br(x, "", 4)
+                )
+                
+                # Ajuste display_cols para usar _display
+                display_cols_display = display_cols.copy()
+                display_cols_display[display_cols_display.index("valor_mercado")] = "valor_mercado_display"
+                display_cols_display[display_cols_display.index("quantidade")] = "quantidade_display"
+                
                 st.dataframe(
-                    df_display[display_cols]
+                    df_display[display_cols_display]
                     .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
                     use_container_width=True,
                     hide_index=True,
-                    column_config={
-                        "valor_mercado": st.column_config.NumberColumn(
-                            "Valor de Mercado",
-                            format="R$ %,.2f",
-                            help="CS já convertido pela PTAX"
-                        ),
-                        "quantidade": st.column_config.NumberColumn(
-                            "Quantidade",
-                            format="%,.4f"
-                        )
+                    column_config={  # Opcional: alinhamento
+                        "valor_mercado_display": st.column_config.TextColumn("Valor de Mercado"),
+                        "quantidade_display": st.column_config.TextColumn("Quantidade")
                     }
                 )
                 st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
