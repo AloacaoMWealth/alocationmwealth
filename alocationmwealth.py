@@ -6,11 +6,7 @@ from datetime import datetime, timedelta
 import requests
 import json
 from pathlib import Path
-import locale
-import positions as posmod  # seu módulo positions.py
-
-
-locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
+import positions as posmod
 
 try:
     import yfinance as yf
@@ -382,24 +378,25 @@ with tab1:
                     
                     display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
                                    "valor_mercado", "quantidade", "moeda"]          
-                    st.dataframe(
-                        df_display[display_cols]
-                        .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "valor_mercado": st.column_config.NumberColumn(
-                                "Valor de Mercado",
-                                format="R$ %,.2f",
-                                help="CS já convertido pela PTAX"
-                            ),
-                            "quantidade": st.column_config.NumberColumn(
-                                "Quantidade",
-                                format="%,.4f"
-                            )
-                        }
-                    )
-                    st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
+                st.dataframe(
+                    df_display[display_cols]
+                    .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "valor_mercado": st.column_config.NumberColumn(
+                            "Valor de Mercado",
+                            format="R$ %,.2f",
+                            help="CS já convertido pela PTAX"
+                        ),
+                        "quantidade": st.column_config.NumberColumn(
+                            "Quantidade",
+                            format="%,.4f"
+                        )
+                    }
+                )
+                st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
+
                 
             except Exception as e:
                 st.error(f"Erro ao reconstruir: {e}")
