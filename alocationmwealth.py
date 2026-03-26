@@ -367,29 +367,34 @@ with tab1:
                         format_brl(pl_cs_brl),
                         delta=f"US$ {pl_cs_usd:,.2f} • PTAX {ptax:.4f}"
                     )
-                # ===================== EXPANDER COM LISTA COMPLETA (TESTE SEM FORMATAÇÃO) =====================
+                # ===================== EXPANDER COM LISTA COMPLETA =====================
                 with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
                     df_display = df.copy()
                     
-                    if "valor_mercado" not in df_display.columns:
-                        st.error("Coluna 'valor_mercado' não encontrada no DataFrame!")
-                        st.write("Colunas disponíveis:", list(df_display.columns))
-                    else:
-                        df_display["valor_mercado"] = pd.to_numeric(
-                            df_display["valor_mercado"], errors="coerce"
-                        ).fillna(0.0)
-
-                        display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
-                                       "valor_mercado", "quantidade", "moeda"]
-                        
-                        st.dataframe(
-                            df_display[display_cols]
-                            .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
-                            use_container_width=True,
-                            hide_index=True
-                        )
-                        st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
-                        st.info("🔧 Teste: tabela sem formatação (valor_mercado bruto)")
+                    # Garante que valor_mercado seja numérico
+                    df_display["valor_mercado"] = pd.to_numeric(
+                        df_display["valor_mercado"], errors="coerce"
+                    ).fillna(0.0)
+                    
+                    # Cria a coluna formatada de forma segura
+                    def format_brl_safe(v):
+                        try:
+                            return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                        except:
+                            return "R$ 0,00"
+                    
+                    df_display["valor_mercado_fmt"] = df_display["valor_mercado"].apply(format_brl_safe)
+                    
+                    display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
+                                   "valor_mercado_fmt", "quantidade", "moeda"]
+                    
+                    st.dataframe(
+                        df_display[display_cols]
+                        .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
                 
             except Exception as e:
                 st.error(f"Erro ao reconstruir: {e}")
