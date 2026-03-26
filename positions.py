@@ -208,18 +208,22 @@ def parse_cs_positions(src) -> pd.DataFrame:
             quantity_col = possible
             break
         if quantity_col:
-            # MESMA LIMPEZA do Market Value!
-            s_qty = raw[quantity_col].astype(str).str.strip()
-            s_qty = s_qty.str.replace(",", "", regex=False)  # Remove VÍRGULA milhar
-            s_qty = s_qty.str.replace(r"[^0-9.]", "", regex=True)  # Só números + ponto
-            raw["Quantity"] = pd.to_numeric(s_qty, errors="coerce").fillna(0.0)
-            print(f"✅ CS Quantity OK: {raw['Quantity'].sum():,.0f} unidades")
-        else:
-            raw["Quantity"] = 0.0
+            def clean_qty(val):
+                if pd.isna(val):
+                    return 0.0
+                s = str(val).strip().upper()
+                s = s.replace(",", "")
+                s = ''.join(c for c in s if c.isdigit() or c == '.')
+                if '.' in s:
+                    parts = s.split('.')
+                    s = parts[0] + '.' + ''.join(parts[1][:8])
+                try:
+                    return float(s) if s else 0.0
+                except:
+                    return 0.0
+            
+    raw["Quantity"] = raw[quantity_col].apply(clean_qty)
 
-    print(f"✅ CS - SOMA BRUTA USD: {raw[market_col].sum():,.2f} | linhas: {len(raw)}")
-
-    # Cria DataFrame final
     df = pd.DataFrame({
         "corretora": "CS",
         "conta": raw["Account"].apply(_normalize_account),
