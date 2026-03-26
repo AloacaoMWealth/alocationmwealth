@@ -377,7 +377,25 @@ with tab1:
                     ).fillna(0.0)
                     
                     display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
-                                   "valor_mercado", "quantidade", "moeda"]          
+                                   "valor_mercado", "quantidade", "moeda"]  
+                    
+                def format_br(value, prefix="R$ ", decimals=2):
+                        """Formata float para BR: 1234567.89 → R$ 1.234.567,89"""
+                        s = f"{abs(value):,.{decimals}f}"
+                        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+                        if value < 0:
+                            s = f"-{s}"
+                        return prefix + s
+                    
+                df_display["valor_mercado_fmt"] = df_display["valor_mercado"].apply(
+                        lambda x: format_br(x, "R$ ", 2)
+                    )
+                df_display["quantidade_fmt"] = df_display["quantidade"].apply(
+                        lambda x: format_br(x, "", 4)
+                    )
+                    
+                display_cols_fmt = [c if c not in ["valor_mercado", "quantidade"] 
+                                        else f"{c}_fmt" for c in display_cols]
                 st.dataframe(
                     df_display[display_cols]
                     .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
