@@ -390,7 +390,7 @@ with tab1:
                             ),
                             "quantidade": st.column_config.NumberColumn(
                                 "Quantidade",
-                                format="%,.4f"
+                                format="%,.2f"
                             )
                         }
                     )
