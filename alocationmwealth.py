@@ -335,38 +335,44 @@ with tab1:
                 # ===================== MÉTRICAS PRINCIPAIS =====================
                 st.subheader("Resumo Patrimonial Consolidado")
                 
-                # Contas distintas (por corretora + conta)
+                # Força existência e limpeza da coluna valor_mercado
+                df["valor_mercado"] = pd.to_numeric(df.get("valor_mercado", 0), errors="coerce").fillna(0.0)
+                
                 contas_distintas = df[["corretora", "conta"]].drop_duplicates()
                 
-                # Agrupamento por corretora (PL e quantidade de contas distintas)
-                resumo = df.groupby("corretora")["valor_mercado"].agg(["sum"]).reset_index()
+                # Agrupamento super seguro
+                resumo = (
+                    df.groupby("corretora")["valor_mercado"]
+                    .agg(["sum"])
+                    .reset_index()
+                )
                 resumo.columns = ["Corretora", "PL"]
                 
-                # Quantidade de contas distintas por corretora
+                # Contas por corretora
                 contas_por_corretora = df.groupby("corretora")["conta"].nunique().reset_index()
                 contas_por_corretora.columns = ["Corretora", "Qtd_Contas"]
-                resumo = resumo.merge(contas_por_corretora, on="Corretora", how="left")
+                resumo = resumo.merge(contas_por_corretora, on="Corretora", how="left").fillna(0)
                 
-                # PL Total Wealth
-                pl_wealth = resumo["PL"].sum()
-                pl_xp = resumo.loc[resumo["Corretora"] == "XP", "PL"].sum() if "XP" in resumo["Corretora"].values else 0
-                pl_btg = resumo.loc[resumo["Corretora"] == "BTG", "PL"].sum() if "BTG" in resumo["Corretora"].values else 0
-                pl_cs_brl = resumo.loc[resumo["Corretora"] == "CS", "PL"].sum() if "CS" in resumo["Corretora"].values else 0
-                pl_cs_usd = pl_cs_brl / ptax if pl_cs_brl > 0 else 0
-            
-              
+                # Cálculo dos PLs com proteção
+                pl_wealth = float(resumo["PL"].sum())
+                pl_xp = float(resumo.loc[resumo["Corretora"] == "XP", "PL"].sum()) if "XP" in resumo["Corretora"].values else 0.0
+                pl_btg = float(resumo.loc[resumo["Corretora"] == "BTG", "PL"].sum()) if "BTG" in resumo["Corretora"].values else 0.0
+                pl_cs_brl = float(resumo.loc[resumo["Corretora"] == "CS", "PL"].sum()) if "CS" in resumo["Corretora"].values else 0.0
+                pl_cs_usd = pl_cs_brl / ptax if pl_cs_brl > 0 else 0.0
+                
                 col1, col2, col3, col4 = st.columns(4)
+                
                 col1.metric("PL Total Wealth", format_brl(pl_wealth), 
                            delta=f"{len(contas_distintas)} contas distintas totais")
                 col2.metric("PL XP", format_brl(pl_xp), 
-                           delta=f"{resumo.loc[resumo['Corretora']=='XP', 'Qtd_Contas'].sum() if 'XP' in resumo['Corretora'].values else 0} contas")
+                           delta=f"{int(resumo.loc[resumo['Corretora']=='XP', 'Qtd_Contas'].sum() if not resumo.empty else 0)} contas")
                 col3.metric("PL BTG", format_brl(pl_btg), 
-                           delta=f"{resumo.loc[resumo['Corretora']=='BTG', 'Qtd_Contas'].sum() if 'BTG' in resumo['Corretora'].values else 0} contas")
+                           delta=f"{int(resumo.loc[resumo['Corretora']=='BTG', 'Qtd_Contas'].sum() if not resumo.empty else 0)} contas")
                 col4.metric(
-                        "PL CS",
-                        format_brl(pl_cs_brl),
-                        delta=f"US$ {pl_cs_usd:,.2f} • PTAX {ptax:.4f}"
-                    )
+                    "PL CS",
+                    format_brl(pl_cs_brl),
+                    delta=f"US$ {pl_cs_usd:,.2f} • PTAX {ptax:.4f}"
+                )
                 # ===================== EXPANDER COM LISTA COMPLETA (VERSÃO COM DEBUG) =====================
                 with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
                     df_display = df.copy()
