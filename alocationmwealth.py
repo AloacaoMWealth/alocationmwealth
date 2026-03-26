@@ -335,25 +335,23 @@ with tab1:
                 # ===================== MÉTRICAS PRINCIPAIS =====================
                 st.subheader("Resumo Patrimonial Consolidado")
                 
-                # Força existência e limpeza da coluna valor_mercado
-                df["valor_mercado"] = pd.to_numeric(df.get("valor_mercado", 0), errors="coerce").fillna(0.0)
+                # Força a coluna valor_mercado a existir e ser numérica (proteção máxima)
+                df["valor_mercado"] = pd.to_numeric(
+                    df.get("valor_mercado", pd.Series([0.0] * len(df))), 
+                    errors="coerce"
+                ).fillna(0.0)
                 
                 contas_distintas = df[["corretora", "conta"]].drop_duplicates()
                 
-                # Agrupamento super seguro
-                resumo = (
-                    df.groupby("corretora")["valor_mercado"]
-                    .agg(["sum"])
-                    .reset_index()
-                )
+                # Agrupamento ultra-seguro
+                resumo = df.groupby("corretora")["valor_mercado"].agg(["sum"]).reset_index()
                 resumo.columns = ["Corretora", "PL"]
                 
-                # Contas por corretora
                 contas_por_corretora = df.groupby("corretora")["conta"].nunique().reset_index()
                 contas_por_corretora.columns = ["Corretora", "Qtd_Contas"]
                 resumo = resumo.merge(contas_por_corretora, on="Corretora", how="left").fillna(0)
                 
-                # Cálculo dos PLs com proteção
+                # Cálculo dos PLs com proteção total
                 pl_wealth = float(resumo["PL"].sum())
                 pl_xp = float(resumo.loc[resumo["Corretora"] == "XP", "PL"].sum()) if "XP" in resumo["Corretora"].values else 0.0
                 pl_btg = float(resumo.loc[resumo["Corretora"] == "BTG", "PL"].sum()) if "BTG" in resumo["Corretora"].values else 0.0
