@@ -368,20 +368,15 @@ with tab1:
                         delta=f"US$ {pl_cs_usd:,.2f} • PTAX {ptax:.4f}"
                     )
                 # ===================== EXPANDER COM LISTA COMPLETA =====================
-                # ===================== EXPANDER COM LISTA COMPLETA =====================
                 with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
-                    df_display = df.copy()
-                    df_display["valor_mercado"] = pd.to_numeric(
-                    df_display["valor_mercado"], errors="coerce"
-                    ).fillna(0.0)
-                    
-                    df_display["valor_mercado_fmt"] = df_display["valor_mercado"].apply(
-                        lambda x: format_brl(x) if pd.notna(x) else "R$ 0,00"
-                    )
+                    df_display = df.copy()                
+                    df_display["valor_mercado"] = pd.to_numeric(df_display["valor_mercado"], errors="coerce").fillna(0.0)                   
+                    df_display["valor_mercado_fmt"] = df_display["valor_mercado"].apply(format_brl)                    
+                    display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
+                                    "valor_mercado_fmt", "quantidade", "moeda"]
                     
                     st.dataframe(
-                        df_display[["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
-                                    "valor_mercado_fmt", "quantidade", "moeda"]]
+                        df_display[display_cols]
                         .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
                         use_container_width=True,
                         hide_index=True
@@ -390,6 +385,7 @@ with tab1:
                 
             except Exception as e:
                 st.error(f"Erro ao reconstruir: {e}")
+                
 
 # =============================================================================
 # TAB 2 - Asset Allocation

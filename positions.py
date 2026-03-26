@@ -421,10 +421,11 @@ def build_and_save_latest(
         right_on=["corretora", "conta"],
         suffixes=("", "_ctrl"),
     )
-    
+
+    merged["valor_mercado"] = pd.to_numeric(merged["valor_mercado"], errors="coerce").fillna(0.0)
     ptax = get_ptax()
-    merged['valor_original'] = merged['valor_mercado']  # mantém original
-    merged['valor_mercado'] = np.where(  # nova coluna sobreescreve
+    merged['valor_original'] = merged['valor_mercado'].copy()   # mantém original em USD para CS
+    merged['valor_mercado'] = np.where(
         merged['corretora'] == 'CS', 
         merged['valor_mercado'] * ptax, 
         merged['valor_mercado']
