@@ -209,7 +209,7 @@ def parse_cs_positions(src) -> pd.DataFrame:
         "asset_id": raw.get("Symbol/CUSIP", raw.get("Symbol", pd.Series([""]*len(raw)))).astype(str).str.strip(),
         "asset_nome": raw.get("Name", pd.Series([""]*len(raw))).astype(str).str.strip(),
         "asset_tipo": raw.get("Security Type", pd.Series([""]*len(raw))).astype(str).str.strip(),
-        "valor_mercado": raw[market_col],          # em USD (será convertido depois)
+        "valor_mercado": raw[market_col],
         "quantidade": 0.0,
         "moeda": "USD",
         "mercado": "",

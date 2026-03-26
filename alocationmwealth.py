@@ -378,12 +378,8 @@ with tab1:
                         df_display["valor_mercado"], errors="coerce"
                     ).fillna(0.0)
                     
-                    df_display["valor_mercado_fmt"] = df_display["valor_mercado"].apply(
-                        lambda x: f"R$ {float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                    )
-                    
                     display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
-                                   "valor_mercado_fmt", "quantidade", "moeda"]
+                                   "valor_mercado", "quantidade", "moeda"]
                     
                     st.dataframe(
                         df_display[display_cols]
