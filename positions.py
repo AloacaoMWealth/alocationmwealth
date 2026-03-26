@@ -188,29 +188,29 @@ def parse_cs_positions(src) -> pd.DataFrame:
 
     raw.columns = [str(c).strip() for c in raw.columns]
 
-    # Coluna de valor
     market_col = "Market Value"
     if market_col not in raw.columns:
         raise ValueError(f"CS: coluna '{market_col}' não encontrada. Colunas: {list(raw.columns)}")
-
-    # Limpeza robusta do valor
     s = raw[market_col].astype(str).str.replace("$", "", regex=False).str.strip()
     s = s.str.replace(",", "", regex=False)
     s = s.str.replace(r"[^0-9.]", "", regex=True)
 
     raw[market_col] = pd.to_numeric(s, errors="coerce").fillna(0.0)
 
-    # Nova coluna Quantity (se existir no relatório)
     quantity_col = None
     for possible in ["Quantity", "Qty", "Quantidade", "quantity"]:
         if possible in raw.columns:
             quantity_col = possible
             break
-
-    if quantity_col:
-        raw["Quantity"] = pd.to_numeric(raw[quantity_col], errors="coerce").fillna(0.0)
-    else:
-        raw["Quantity"] = 0.0
+        if quantity_col:
+            # MESMA LIMPEZA do Market Value!
+            s_qty = raw[quantity_col].astype(str).str.strip()
+            s_qty = s_qty.str.replace(",", "", regex=False)  # Remove VÍRGULA milhar
+            s_qty = s_qty.str.replace(r"[^0-9.]", "", regex=True)  # Só números + ponto
+            raw["Quantity"] = pd.to_numeric(s_qty, errors="coerce").fillna(0.0)
+            print(f"✅ CS Quantity OK: {raw['Quantity'].sum():,.0f} unidades")
+        else:
+            raw["Quantity"] = 0.0
 
     print(f"✅ CS - SOMA BRUTA USD: {raw[market_col].sum():,.2f} | linhas: {len(raw)}")
 
