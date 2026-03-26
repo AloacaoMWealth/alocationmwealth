@@ -342,8 +342,6 @@ with tab1:
                 ).fillna(0.0)
                 
                 contas_distintas = df[["corretora", "conta"]].drop_duplicates()
-                
-                # Agrupamento ultra-seguro
                 resumo = df.groupby("corretora")["valor_mercado"].agg(["sum"]).reset_index()
                 resumo.columns = ["Corretora", "PL"]
                 
@@ -375,13 +373,17 @@ with tab1:
                 # ===================== EXPANDER COM LISTA COMPLETA =====================
                 with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
                     df_display = df.copy()
-                               
+                    
                     df_display["valor_mercado"] = pd.to_numeric(
                         df_display["valor_mercado"], errors="coerce"
                     ).fillna(0.0)
                     
+                    df_display["valor_mercado_fmt"] = df_display["valor_mercado"].apply(
+                        lambda x: f"R$ {float(x):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                    )
+                    
                     display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
-                                   "valor_mercado", "quantidade", "moeda"]
+                                   "valor_mercado_fmt", "quantidade", "moeda"]
                     
                     st.dataframe(
                         df_display[display_cols]
