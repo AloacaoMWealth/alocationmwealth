@@ -367,16 +367,23 @@ with tab1:
                         format_brl(pl_cs_brl),
                         delta=f"US$ {pl_cs_usd:,.2f} • PTAX {ptax:.4f}"
                     )
-                # ===================== EXPANDER COM LISTA COMPLETA =====================
+                # ===================== EXPANDER COM LISTA COMPLETA (VERSÃO COM DEBUG) =====================
                 with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
                     df_display = df.copy()
                     
-                    # Garante que valor_mercado seja numérico
+                    st.write("**Debug - Colunas disponíveis no df:**", list(df_display.columns))
+                    
+                    # Verifica se a coluna existe
+                    if "valor_mercado" not in df_display.columns:
+                        st.error("❌ Coluna 'valor_mercado' não encontrada!")
+                        st.stop()
+                    
+                    # Força limpeza
                     df_display["valor_mercado"] = pd.to_numeric(
                         df_display["valor_mercado"], errors="coerce"
                     ).fillna(0.0)
                     
-                    # Cria a coluna formatada de forma segura
+                    # Formatação segura
                     def format_brl_safe(v):
                         try:
                             return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -387,6 +394,11 @@ with tab1:
                     
                     display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
                                    "valor_mercado_fmt", "quantidade", "moeda"]
+                    
+                    # Garante colunas
+                    for col in display_cols:
+                        if col not in df_display.columns:
+                            df_display[col] = ""
                     
                     st.dataframe(
                         df_display[display_cols]
