@@ -254,14 +254,15 @@ def parse_xp_positions(src) -> pd.DataFrame:
     
     for aba, config in MAPA_XP_ABAS.items():
         if aba in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=aba)
-            df.columns = [str(c).strip() for c in df.columns]
-            df = df.rename(columns={df.columns[0]: 'CodigoCliente'})
-            
-            if config['valor'] in df.columns:
-                valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
-                print(f"✅ {aba}: {len(df)} linhas, R${valor.sum():,.0f}")
+                df = pd.read_excel(xls, sheet_name=aba, header=0)
+                df.columns = df.columns.str.strip()
                 
+                if aba == "Financeiro" and "DataAtualizacao" in df.columns:
+                        df = df.drop(columns=["DataAtualizacao"]).reset_index(drop=True)
+            
+                if config['valor'] in df.columns:
+                    valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
+                     
                 for i in df.index:
                     valor_atual = valor.iloc[i]
                     if pd.isna(valor_atual) or valor_atual <= 0:
