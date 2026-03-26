@@ -368,19 +368,25 @@ with tab1:
                         delta=f"US$ {pl_cs_usd:,.2f} • PTAX {ptax:.4f}"
                     )
                 # ===================== EXPANDER COM LISTA COMPLETA =====================
+                # ===================== EXPANDER COM LISTA COMPLETA =====================
                 with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
-                                df_display = df.copy()
-                                df_display["valor_mercado_fmt"] = df_display["valor_mercado"].apply(
-                                    lambda x: format_brl(x) if pd.notna(x) else ""
-                                )
-                                st.dataframe(
-                                    df_display[["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
-                                                "valor_mercado_fmt", "quantidade", "moeda"]]
-                                    .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
-                                st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
+                    df_display = df.copy()
+                    df_display["valor_mercado"] = pd.to_numeric(
+                    df_display["valor_mercado"], errors="coerce"
+                    ).fillna(0.0)
+                    
+                    df_display["valor_mercado_fmt"] = df_display["valor_mercado"].apply(
+                        lambda x: format_brl(x) if pd.notna(x) else "R$ 0,00"
+                    )
+                    
+                    st.dataframe(
+                        df_display[["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
+                                    "valor_mercado_fmt", "quantidade", "moeda"]]
+                        .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
                 
             except Exception as e:
                 st.error(f"Erro ao reconstruir: {e}")
