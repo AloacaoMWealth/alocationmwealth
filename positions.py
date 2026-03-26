@@ -401,14 +401,11 @@ def build_and_save_latest(
     pos = pd.concat([xp_df, btg_df, cs_df], ignore_index=True)
 
     pos["corretora"] = pos["corretora"].apply(_normalize_broker)
-    # Padronização final: conta BTG sempre 8 dígitos (ambos os lados)
     def _pad_btg_to_8(conta: str) -> str:
         """Força BTG para 8 dígitos (zeros à esquerda), mesmo se tiver 9."""
         d = _only_digits(conta)
         return d[-8:].zfill(8) if len(d) >= 8 else d.zfill(8)
     
- 
-    # Padroniza APENAS CONTAS BTG
     mask_btg = pos["corretora"] == "BTG"
     pos.loc[mask_btg, "conta"] = pos.loc[mask_btg, "conta"].apply(_pad_btg_to_8)
     control_df.loc[control_df["corretora"] == "BTG", "conta"] = control_df.loc[control_df["corretora"] == "BTG", "conta"].apply(_pad_btg_to_8)
@@ -424,11 +421,11 @@ def build_and_save_latest(
 
     merged["valor_mercado"] = pd.to_numeric(merged["valor_mercado"], errors="coerce").fillna(0.0)
     ptax = get_ptax()
-    merged['valor_original'] = merged['valor_mercado'].copy()   # mantém original em USD para CS
+    merged['valor_original'] = merged['valor_mercado'].copy()
     merged['valor_mercado'] = np.where(
-        merged['corretora'] == 'CS', 
-        merged['valor_mercado'] * ptax, 
-        merged['valor_mercado']
+        merged['corretora'] == 'CS',
+        merged['valor_mercado'] * ptax,      
+        merged['valor_mercado']              
     )
 
     merged["dt_posicao"] = meta.get("dt_posicao", datetime.now().date().isoformat())
@@ -438,9 +435,8 @@ def build_and_save_latest(
     try:
         with open(LATEST_META, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
-        print("Meta JSON salvo com sucesso")
     except Exception as json_err:
-        print(f"Erro ao salvar meta JSON (ignorando para continuar rebuild): {json_err}")
+        print(f"Erro ao salvar meta JSON: {json_err}")
 
     return merged
 
