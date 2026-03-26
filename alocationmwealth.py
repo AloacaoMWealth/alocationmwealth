@@ -373,15 +373,23 @@ with tab1:
                 with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
                     df_display = df.copy()
                     df_display["valor_mercado"] = pd.to_numeric(df_display["valor_mercado"], errors="coerce").fillna(0.0)
+                    df_display["quantidade"] = pd.to_numeric(df_display["quantidade"], errors="coerce").fillna(0.0)
                     
                     display_cols = ["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
                                     "valor_mercado", "quantidade", "moeda"]
                     
+                    # Styler BR PERFEITO
+                    def fmt_valor(x):
+                        return f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                    
+                    def fmt_qtd(x):
+                        return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                    
                     styled_df = df_display[display_cols].sort_values(
                         by=["corretora", "valor_mercado"], ascending=[True, False]
                     ).style.format({
-                        "valor_mercado": lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-                        "quantidade": "{:.4f}".replace(".", ",").replace(",", "X").replace("X", ".")  # Ajusta quantidade
+                        "valor_mercado": fmt_valor,
+                        "quantidade": fmt_qtd
                     })
                     
                     st.dataframe(
