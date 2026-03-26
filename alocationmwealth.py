@@ -373,7 +373,6 @@ with tab1:
                 # ===================== EXPANDER COM LISTA COMPLETA =====================
                 with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
                     df_display = df.copy()
-                    
                     df_display["valor_mercado"] = pd.to_numeric(
                         df_display["valor_mercado"], errors="coerce"
                     ).fillna(0.0)
@@ -385,7 +384,18 @@ with tab1:
                         df_display[display_cols]
                         .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
                         use_container_width=True,
-                        hide_index=True
+                        hide_index=True,
+                        column_config={
+                            "valor_mercado": st.column_config.NumberColumn(
+                                "Valor de Mercado",
+                                format="R$ %.2f",          # Formato brasileiro
+                                help="Valor em Reais"
+                            ),
+                            "quantidade": st.column_config.NumberColumn(
+                                "Quantidade",
+                                format="%.4f"
+                            )
+                        }
                     )
                     st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
                 
