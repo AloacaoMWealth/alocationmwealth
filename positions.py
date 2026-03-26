@@ -172,7 +172,7 @@ def parse_cs_positions(src) -> pd.DataFrame:
     header_idx = None
 
     for i, ln in enumerate(lines):
-        if ln.strip().startswith("Account,"):
+        if "Account," in ln and "Market Value" in ln:   # mais tolerante
             header_idx = i
             break
     if header_idx is None:
@@ -181,53 +181,43 @@ def parse_cs_positions(src) -> pd.DataFrame:
                 header_idx = i
                 break
     if header_idx is None:
-        raise ValueError("CS: não encontrei a linha de header iniciando com 'Account,' no CSV.")
+        raise ValueError("CS: não encontrei linha de header com 'Account,' e 'Market Value'.")
 
     csv_data = "\n".join(lines[header_idx:])
-    raw = pd.read_csv(io.StringIO(csv_data), sep=",", engine="python")
+    raw = pd.read_csv(io.StringIO(csv_data), sep=",", engine="python", quotechar='"')
+
     raw.columns = [str(c).strip() for c in raw.columns]
-    
+
+    # Coluna de valor
     market_col = "Market Value"
-    
-    s = raw[market_col].astype(str)   
-    s = s.str.replace("$", "", regex=False).str.strip()    
-    s = s.str.replace(r"[^0-9.]", "", regex=True)
-    
-    def fix_dots(x: str) -> str:
-        if x.count(".") <= 1:
-            return x
-        head, dec = x.rsplit(".", 1)
-        head = head.replace(".", "")
-        return head + "." + dec
-    
-    s = s.apply(fix_dots)
-    
+    if market_col not in raw.columns:
+        raise ValueError(f"CS: coluna '{market_col}' não encontrada. Colunas: {list(raw.columns)}")
+
+    # Limpeza robusta
+    s = raw[market_col].astype(str).str.replace("$", "", regex=False).str.strip()
+    s = s.str.replace(",", "", regex=False)           # remove separador de milhar americano
+    s = s.str.replace(r"[^0-9.]", "", regex=True)     # deixa só números e ponto
+
     raw[market_col] = pd.to_numeric(s, errors="coerce").fillna(0.0)
-    
-    print("SOMA CS (USD):", raw[market_col].sum())
- 
-    sym_col = "Symbol/CUSIP" if "Symbol/CUSIP" in raw.columns else (
-        "CUSIP" if "CUSIP" in raw.columns else ("Symbol" if "Symbol" in raw.columns else None)
-    )
-    if sym_col is None:
-        sym_col = "Symbol/CUSIP"
 
-     
+    print(f"✅ CS - SOMA BRUTA USD: {raw[market_col].sum():,.2f}")
+
+    # Cria DataFrame final
     df = pd.DataFrame({
-         "corretora": "CS",
-         "conta": raw["Account"].apply(_normalize_account),
-         "asset_id": raw["Symbol/CUSIP"].astype(str).str.strip(),
-         "asset_nome": raw["Name"].astype(str).str.strip(),
-         "asset_tipo": raw["Security Type"].astype(str).str.strip(),
-         "valor_mercado": raw[market_col],
-         "quantidade": 0.0,
-         "moeda": "USD",
-         "mercado": "",
-         "sub_mercado": "",
-         "estrategia": "",
-     })
+        "corretora": "CS",
+        "conta": raw["Account"].apply(_normalize_account),
+        "asset_id": raw.get("Symbol/CUSIP", raw.get("Symbol", pd.Series([""]*len(raw)))).astype(str).str.strip(),
+        "asset_nome": raw.get("Name", pd.Series([""]*len(raw))).astype(str).str.strip(),
+        "asset_tipo": raw.get("Security Type", pd.Series([""]*len(raw))).astype(str).str.strip(),
+        "valor_mercado": raw[market_col],          # em USD (será convertido depois)
+        "quantidade": 0.0,
+        "moeda": "USD",
+        "mercado": "",
+        "sub_mercado": "",
+        "estrategia": "",
+    })
 
-    df["asset_id"] = df["asset_id"].replace({"nan": "", "None": ""})
+    print(f"✅ CS - TOTAL FINAL USD: {df['valor_mercado'].sum():,.2f} | linhas: {len(df)}")
     return df
 
 def parse_xp_positions(src) -> pd.DataFrame:

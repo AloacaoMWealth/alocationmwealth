@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import requests
 import json
 from pathlib import Path
+
 import positions as posmod  # seu módulo positions.py
 
 try:
@@ -161,6 +162,13 @@ def load_contas():
         return pd.DataFrame()
 
 df_contas = load_contas()
+
+try:
+    ptax, ptax_data = get_ptax_usdbrl_last()
+    st.caption(f"💱 PTAX usada: **{ptax:.4f}** (atualizada em {ptax_data})")
+except Exception as e:
+    ptax = 5.60
+    st.warning(f"Não foi possível obter PTAX automática. Usando valor fixo R$ {ptax:.2f}")
 
 # =============================================================================
 # Regras macro
@@ -344,8 +352,9 @@ with tab1:
                 pl_xp = resumo.loc[resumo["Corretora"] == "XP", "PL"].sum() if "XP" in resumo["Corretora"].values else 0
                 pl_btg = resumo.loc[resumo["Corretora"] == "BTG", "PL"].sum() if "BTG" in resumo["Corretora"].values else 0
                 pl_cs_brl = resumo.loc[resumo["Corretora"] == "CS", "PL"].sum() if "CS" in resumo["Corretora"].values else 0
-                
-                # Métricas em colunas grandes
+                pl_cs_usd = pl_cs_brl / ptax if pl_cs_brl > 0 else 0
+            
+              
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("PL Total Wealth", format_brl(pl_wealth), 
                            delta=f"{len(contas_distintas)} contas distintas totais")
@@ -353,18 +362,25 @@ with tab1:
                            delta=f"{resumo.loc[resumo['Corretora']=='XP', 'Qtd_Contas'].sum() if 'XP' in resumo['Corretora'].values else 0} contas")
                 col3.metric("PL BTG", format_brl(pl_btg), 
                            delta=f"{resumo.loc[resumo['Corretora']=='BTG', 'Qtd_Contas'].sum() if 'BTG' in resumo['Corretora'].values else 0} contas")
-                col4.metric("PL CS", f"R$ {pl_cs_brl:,.2f}", 
-                           delta=f"US$ {(pl_cs_brl / 5.60):,.2f} • {resumo.loc[resumo['Corretora']=='CS', 'Qtd_Contas'].sum() if 'CS' in resumo['Corretora'].values else 0} contas")
-                
+                col4.metric(
+                        "PL CS",
+                        format_brl(pl_cs_brl),
+                        delta=f"US$ {pl_cs_usd:,.2f} • PTAX {ptax:.4f}"
+                    )
                 # ===================== EXPANDER COM LISTA COMPLETA =====================
                 with st.expander("Ver lista completa de TODOS os ativos consolidados", expanded=False):
-                    st.dataframe(
-                        df[["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
-                            "valor_mercado", "quantidade", "moeda"]].sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                    st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
+                                df_display = df.copy()
+                                df_display["valor_mercado_fmt"] = df_display["valor_mercado"].apply(
+                                    lambda x: format_brl(x) if pd.notna(x) else ""
+                                )
+                                st.dataframe(
+                                    df_display[["corretora", "conta", "asset_id", "asset_nome", "asset_tipo", 
+                                                "valor_mercado_fmt", "quantidade", "moeda"]]
+                                    .sort_values(by=["corretora", "valor_mercado"], ascending=[True, False]),
+                                    use_container_width=True,
+                                    hide_index=True
+                                )
+                                st.caption(f"Total de {len(df)} posições consolidadas • {len(contas_distintas)} contas distintas")
                 
             except Exception as e:
                 st.error(f"Erro ao reconstruir: {e}")
