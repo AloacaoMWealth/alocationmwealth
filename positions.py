@@ -10,6 +10,11 @@ import numpy as np
 import streamlit as st
 import requests
 
+def force_numeric(df: pd.DataFrame, cols: list[str]):
+    """Força colunas numéricas (proteção parquet)"""
+    for col in cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
 @st.cache_data(ttl=3600)
 def get_ptax():
@@ -477,6 +482,16 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
     xp_df = parse_xp_positions(REPO_XP_XLSX)
     btg_df = parse_btg_positions(REPO_BTG_XLSX)
     cs_df = parse_cs_positions(REPO_CS_CSV)
+    
+    cs_df["quantidade"] = pd.to_numeric(cs_df["quantidade"], errors="coerce").fillna(0.0)
+    cs_df["valor_mercado"] = pd.to_numeric(cs_df["valor_mercado"], errors="coerce").fillna(0.0)
+    print(f"🔧 CS após coerce: {cs_df['quantidade'].dtype} | NaN qty: {(cs_df['quantidade'].isna()).sum()}")
+    
+    force_numeric(xp_df, ["quantidade", "valor_mercado"])
+    force_numeric(btg_df, ["quantidade", "valor_mercado"])
+    force_numeric(cs_df, ["quantidade", "valor_mercado"])
+    
+    pos = pd.concat([xp_df, btg_df, cs_df], ignore_index=True)
 
     meta = {
         "dt_posicao": dt_posicao or datetime.now().date().isoformat(),
