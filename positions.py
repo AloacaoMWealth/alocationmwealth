@@ -163,7 +163,6 @@ def load_control_accounts(src=None) -> pd.DataFrame:
     df.to_parquet(CONTROL_PARQUET, index=False)
     return df
 
-
 def parse_cs_positions(src) -> pd.DataFrame:
     import io
 
@@ -193,45 +192,49 @@ def parse_cs_positions(src) -> pd.DataFrame:
 
     raw.columns = [str(c).strip() for c in raw.columns]
 
+    # === Valor de Mercado ===
     market_col = "Market Value"
     if market_col not in raw.columns:
-        raise ValueError(f"CS: coluna '{market_col}' não encontrada. Colunas: {list(raw.columns)}")
+        raise ValueError(f"CS: coluna '{market_col}' não encontrada.")
+
     s = raw[market_col].astype(str).str.replace("$", "", regex=False).str.strip()
     s = s.str.replace(",", "", regex=False)
     s = s.str.replace(r"[^0-9.]", "", regex=True)
-
     raw[market_col] = pd.to_numeric(s, errors="coerce").fillna(0.0)
 
+    # === Quantity da CS (nome exato que você passou) ===
     quantity_col = None
     for possible in ["Quantity", "Qty", "Quantidade", "quantity"]:
         if possible in raw.columns:
             quantity_col = possible
             break
-        if quantity_col:
-            def clean_qty(val):
-                if pd.isna(val):
-                    return 0.0
-                s = str(val).strip().upper()
-                s = s.replace(",", "")
-                s = ''.join(c for c in s if c.isdigit() or c == '.')
-                if '.' in s:
-                    parts = s.split('.')
-                    s = parts[0] + '.' + ''.join(parts[1][:8])
-                try:
-                    return float(s) if s else 0.0
-                except:
-                    return 0.0
-            
-    raw["Quantity"] = raw[quantity_col].apply(clean_qty)
 
+    def clean_qty(val):
+        if pd.isna(val):
+            return 0.0
+        try:
+            s = str(val).strip().replace(",", "")
+            s = ''.join(c for c in s if c.isdigit() or c == '.')
+            return float(s) if s else 0.0
+        except:
+            return 0.0
+
+    if quantity_col:
+        raw["quantidade"] = raw[quantity_col].apply(clean_qty)
+    else:
+        raw["quantidade"] = 0.0
+
+    print(f"✅ CS - SOMA BRUTA USD: {raw[market_col].sum():,.2f} | linhas: {len(raw)}")
+
+    # === DataFrame final ===
     df = pd.DataFrame({
         "corretora": "CS",
         "conta": raw["Account"].apply(_normalize_account),
         "asset_id": raw.get("Symbol/CUSIP", raw.get("Symbol", pd.Series([""]*len(raw)))).astype(str).str.strip(),
         "asset_nome": raw.get("Name", pd.Series([""]*len(raw))).astype(str).str.strip(),
         "asset_tipo": raw.get("Security Type", pd.Series([""]*len(raw))).astype(str).str.strip(),
-        "valor_mercado": raw[market_col],         
-        "quantidade": raw["Quantity"],         
+        "valor_mercado": raw[market_col],
+        "quantidade": raw["quantidade"],
         "moeda": "USD",
         "mercado": "",
         "sub_mercado": "",
@@ -240,6 +243,8 @@ def parse_cs_positions(src) -> pd.DataFrame:
 
     print(f"✅ CS - TOTAL FINAL USD: {df['valor_mercado'].sum():,.2f} | linhas: {len(df)}")
     return df
+
+
 def parse_xp_positions(src) -> pd.DataFrame:
     resultado = []
     
