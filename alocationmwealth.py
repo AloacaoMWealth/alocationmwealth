@@ -7,6 +7,7 @@ import requests
 import json
 from pathlib import Path
 import positions as posmod
+import plotly.express as px
 
 try:
     import yfinance as yf
@@ -290,6 +291,7 @@ def equal_weights(tickers):
 # =============================================================================
 # Função de sugestão RV (exemplo simplificado - mantenha sua versão real)
 # =============================================================================
+
 def calcular_rv_yfinance(key, target_value, weights, moeda="BRL", add_sa_suffix=False):
     st.write(f"**Sugestão {key.upper()}** (alvo: {format_brl(target_value) if moeda=='BRL' else format_usd(target_value)})")
     data = []
@@ -406,6 +408,7 @@ with tab1:
 # =============================================================================
 # TAB 2 - Asset Allocation
 # =============================================================================
+
 with tab2:
     st.header("Asset Allocation - Cliente")
 
@@ -514,8 +517,6 @@ with tab2:
     }
     macro_df = pd.DataFrame(macro_data)
 
-    # Gráfico de pizza
-    import plotly.express as px
     fig = px.pie(macro_df, names="Categoria", values="Atual", 
                  title="Distribuição Atual do Patrimônio")
     st.plotly_chart(fig, use_container_width=True)
