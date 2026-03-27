@@ -408,7 +408,6 @@ with tab1:
 # =============================================================================
 # TAB 2 - Asset Allocation
 # =============================================================================
-
 with tab2:
     st.header("Asset Allocation - Cliente")
 
@@ -425,117 +424,72 @@ with tab2:
     pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
     pl_total = float(pos_cliente["valor_mercado"].sum())
 
-    # ===================== PERFIL AUTOMÁTICO =====================
+    # Perfil automático
     perfil_cliente = "Não identificado"
     if not df_contas.empty and "GRUPO GERAL" in df_contas.columns:
-        matching = df_contas[
-            df_contas["GRUPO GERAL"].astype(str).str.strip() == str(grupo_sel).strip()
-        ]
+        matching = df_contas[df_contas["GRUPO GERAL"].astype(str).str.strip() == str(grupo_sel).strip()]
         if not matching.empty:
-            perfis = matching["Perfil Carteira"].dropna().astype(str).str.strip()
-            if not perfis.empty:
-                perfil_cliente = perfis.iloc[0]
+            perfil_cliente = matching["Perfil Carteira"].iloc[0]
 
-    st.caption(f"**Perfil detectado na planilha Contas:** {perfil_cliente}")
+    st.caption(f"**Perfil detectado:** {perfil_cliente}")
 
-    # ===================== MAPEAMENTO PERFIL → MODELO =====================
+    # ===================== MODELO =====================
     pesos = load_pesos_xlsx()
-    modelos = list(pesos.keys())
-
     modelo_default = None
-    perfil_norm = perfil_cliente.strip().upper()
+    perfil_norm = perfil_cliente.upper()
+    if "ARROJADO RENDA CONSTRUÇÃO" in perfil_norm: modelo_default = "Arrojado Renda Construção"
+    elif "MODERADO RENDA CONSTRUÇÃO" in perfil_norm: modelo_default = "Moderado Renda Construção"
+    elif "CONSERVADOR RENDA CONSTRUÇÃO" in perfil_norm: modelo_default = "Conservador Renda Construção"
+    elif "MODERADO RENDA USUFRUTO" in perfil_norm: modelo_default = "Moderado Renda Usufruto"
+    elif "CONSERVADOR RENDA USUFRUTO" in perfil_norm: modelo_default = "Conservador Renda Usufruto"
+    elif "ARROJADO RENDA USUFRUTO" in perfil_norm: modelo_default = "Arrojado Renda Usufruto"
+    elif "ARROJADO" in perfil_norm: modelo_default = "Arrojado"
+    elif "MODERADO" in perfil_norm: modelo_default = "Moderado"
+    elif "CONSERVADOR" in perfil_norm: modelo_default = "Conservador"
+    elif "ULTRACONSERVADOR" in perfil_norm: modelo_default = "Ultraconservador"
 
-    if "ARROJADO RENDA CONSTRUÇÃO" in perfil_norm:
-        modelo_default = "Arrojado Renda Construção"
-    elif "MODERADO RENDA CONSTRUÇÃO" in perfil_norm:
-        modelo_default = "Moderado Renda Construção"
-    elif "CONSERVADOR RENDA CONSTRUÇÃO" in perfil_norm:
-        modelo_default = "Conservador Renda Construção"
-    elif "MODERADO RENDA USUFRUTO" in perfil_norm:
-        modelo_default = "Moderado Renda Usufruto"
-    elif "CONSERVADOR RENDA USUFRUTO" in perfil_norm:
-        modelo_default = "Conservador Renda Usufruto"
-    elif "ARROJADO RENDA USUFRUTO" in perfil_norm:
-        modelo_default = "Arrojado Renda Usufruto"
-    elif "ARROJADO" in perfil_norm:
-        modelo_default = "Arrojado"
-    elif "MODERADO" in perfil_norm:
-        modelo_default = "Moderado"
-    elif "CONSERVADOR" in perfil_norm:
-        modelo_default = "Conservador"
-    elif "ULTRACONSERVADOR" in perfil_norm:
-        modelo_default = "Ultraconservador"
-
-    if modelo_default and modelo_default in modelos:
-        default_idx = modelos.index(modelo_default)
-    else:
-        default_idx = 0
-        st.warning(f"Perfil '{perfil_cliente}' não mapeado. Usando '{modelos[0]}'.")
-
-    modelo = st.selectbox(
-        "Modelo de alocação (padrão = perfil do cliente)",
-        modelos,
-        index=default_idx,
-        help="Mapeado automaticamente da planilha Contas.xlsx."
-    )
-
+    default_idx = list(pesos.keys()).index(modelo_default) if modelo_default in pesos else 0
+    modelo = st.selectbox("Modelo de alocação", list(pesos.keys()), index=default_idx)
     p = pesos[modelo]
 
-    # ===================== CÁLCULO DE ALVOS =====================
-    try:
-        ptax, _ = get_ptax_usdbrl_last()
-    except:
-        ptax = 5.60
-
     rf_br_w, rv_br_w, intl_w, _, _ = macro_weights_from_neutro(p)
-
-    alvo_rf  = pl_total * rf_br_w
-    alvo_rv  = pl_total * rv_br_w
+    alvo_rf = pl_total * rf_br_w
+    alvo_rv = pl_total * rv_br_w
     alvo_int = pl_total * intl_w
 
-    # ===================== 1) VISÃO MACRO + GRÁFICO =====================
-    st.subheader("1) Visão Macro Geral")
+    # ===================== 1) VISÃO MACRO (RF primeiro) =====================
+    st.subheader("Visão Macro Geral")
 
     def classifica_macro(row):
         if row.get("corretora") == "CS":
             return "Internacional"
-        at = (str(row.get("asset_tipo", "")) + " " + 
-              str(row.get("mercado", "")) + " " + 
-              str(row.get("sub_mercado", ""))).upper()
-        if any(x in at for x in ["ACAO", "FII", "EQUITY", "ETF", "RV", "AÇÃO", "AÇÕES"]):
-            return "RV Brasil"
-        return "RF Brasil"
+        at = (str(row.get("asset_tipo","")) + " " + str(row.get("mercado",""))).upper()
+        return "RV Brasil" if any(x in at for x in ["ACAO","FII","EQUITY","ETF","RV","AÇÃO"]) else "RF Brasil"
 
     pos_cliente["macro"] = pos_cliente.apply(classifica_macro, axis=1)
     atual_macro = pos_cliente.groupby("macro")["valor_mercado"].sum()
 
-    macro_data = {
+    macro_df = pd.DataFrame({
         "Categoria": ["RF Brasil", "RV Brasil", "Internacional"],
         "Atual": [atual_macro.get(c, 0) for c in ["RF Brasil", "RV Brasil", "Internacional"]],
         "Alvo": [alvo_rf, alvo_rv, alvo_int],
-        "Diferença": [alvo - atual_macro.get(c, 0) for c, alvo in zip(["RF Brasil", "RV Brasil", "Internacional"], [alvo_rf, alvo_rv, alvo_int])]
-    }
-    macro_df = pd.DataFrame(macro_data)
+        "Diferença": [alvo - atual_macro.get(c, 0) for c, alvo in zip(["RF Brasil","RV Brasil","Internacional"], [alvo_rf, alvo_rv, alvo_int])]
+    })
 
-    fig = px.pie(macro_df, names="Categoria", values="Atual", 
-                 title="Distribuição Atual do Patrimônio")
+    fig = px.pie(macro_df, names="Categoria", values="Atual", title="Distribuição Atual")
+    fig.update_layout(height=420, margin=dict(l=20, r=20, t=40, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
     st.dataframe(
-        macro_df.style.format({
-            "Atual": format_brl,
-            "Alvo": format_brl,
-            "Diferença": format_brl
-        }).applymap(style_compra_venda, subset=["Diferença"]),
-        use_container_width=True,
-        hide_index=True
+        macro_df.style.format({"Atual": format_brl, "Alvo": format_brl, "Diferença": format_brl})
+        .applymap(style_compra_venda, subset=["Diferença"]),
+        use_container_width=True, hide_index=True
     )
 
     # ===================== 2) RV BRASIL =====================
-    with st.expander("2) RV Brasil - Dentro vs Fora da Estratégia", expanded=True):
+    with st.expander("Renda Variável Brasil", expanded=False):
         rv_real = pos_cliente[pos_cliente["macro"] == "RV Brasil"].copy()
 
-        # Escolhe lista recomendada conforme o modelo
         if "RENDA" in modelo.upper():
             recomendados = ACOES_COM_RENDA + FIIs_RECOMENDADOS
         else:
@@ -544,127 +498,95 @@ with tab2:
         dentro = rv_real[rv_real["asset_id"].isin(recomendados)].copy()
         fora = rv_real[~rv_real["asset_id"].isin(recomendados)].copy()
 
-        st.metric("Alvo Total RV Brasil", format_brl(alvo_rv))
+        st.metric("Alvo RV Brasil", format_brl(alvo_rv))
 
         col1, col2 = st.columns(2)
         col1.metric("Dentro da estratégia", format_brl(dentro["valor_mercado"].sum() if not dentro.empty else 0))
         col2.metric("Fora da estratégia", format_brl(fora["valor_mercado"].sum() if not fora.empty else 0))
 
         if not fora.empty:
-            st.warning("**Ativos fora da estratégia recomendada** (podem ser candidatos a venda/reallocação):")
-            st.dataframe(
-                fora[["asset_id", "asset_nome", "valor_mercado"]].style.format({"valor_mercado": format_brl}),
-                hide_index=True,
-                use_container_width=True
-            )
-
-        # Sugestão de alocação nos ativos recomendados
+            with st.expander("Ver ativos **fora da estratégia** (podem ser vendidos)"):
+                st.dataframe(fora[["asset_id", "asset_nome", "valor_mercado", "quantidade"]].style.format({"valor_mercado": format_brl}), hide_index=True, use_container_width=True)
         sugestao = []
         peso_por_ativo = alvo_rv / len(recomendados) if recomendados else 0
-
         for t in recomendados:
-            atual = dentro[dentro["asset_id"] == t]["valor_mercado"].sum() if not dentro.empty else 0.0
-            diff = peso_por_ativo - atual
-            sugestao.append([t, format_brl(atual), format_brl(peso_por_ativo), format_brl(diff)])
+            atual_val = dentro[dentro["asset_id"] == t]["valor_mercado"].sum() if not dentro.empty else 0
+            atual_qtd = dentro[dentro["asset_id"] == t]["quantidade"].sum() if not dentro.empty else 0
+            diff_val = peso_por_ativo - atual_val
+            sugestao.append([t, format_brl(atual_val), atual_qtd, format_brl(peso_por_ativo), format_brl(diff_val)])
 
-        rv_df = pd.DataFrame(sugestao, columns=["Ativo", "Atual (R$)", "Sugerido (R$)", "Diferença (R$)"])
-
+        rv_df = pd.DataFrame(sugestao, columns=["Ativo", "Atual (R$)", "Qtd Atual", "Sugerido (R$)", "Diferença (R$)"])
         st.dataframe(
             rv_df.style.applymap(style_compra_venda, subset=["Diferença (R$)"]),
-            use_container_width=True,
-            hide_index=True
+            use_container_width=True, hide_index=True
         )
-        st.caption("🟢 Positivo = comprar   🔴 Negativo = excesso (vender/reduzir)")
 
     # ===================== 3) RF BRASIL =====================
-    with st.expander("3) RF Brasil - Sub-Buckets", expanded=True):
+    with st.expander("Renda Fixa Brasl", expanded=True):
         pos_rf = pos_cliente[pos_cliente["macro"] == "RF Brasil"].copy()
-        
-        if pos_rf.empty:
-            st.info("Cliente sem posições em RF Brasil no momento.")
-        else:
-            def sub_bucket_rf_detalhado(row):
-                estr = (str(row.get("estrategia","")) + " " + 
-                        str(row.get("sub_mercado","")) + " " + 
-                        str(row.get("mercado","")) + " " + 
-                        str(row.get("asset_tipo",""))).upper()
-                
-                if any(x in estr for x in ["IMEDIATO","LIQUIDEZ","D+0","D+1"]): return "Imediato"
-                if any(x in estr for x in ["1 A 30","CURTO PRAZO"]): return "1 a 30 dias"
-                if any(x in estr for x in ["31 A 180"]): return "31 a 180 dias"
-                if any(x in estr for x in ["181 A 360"]): return "181 a 360 dias"
-                if any(x in estr for x in ["361+","LONGO PRAZO"]): return "361+ dias"
-                if "FIINFRA" in estr or "CETIPADO" in estr: return "FiInfra e Cetipados"
-                
-                if any(x in estr for x in ["BANCARIO PRE","BANCO PRE"]): return "Bancário Pré"
-                if any(x in estr for x in ["TESOURO PRE","NTN-F","LTN"]): return "Tesouro Pré"
-                
-                if any(x in estr for x in ["BANCARIO","BANCO"]): return "Bancário"
-                if any(x in estr for x in ["TESOURO","NTN-B","NTNB"]): return "Tesouro"
-                if "FIINFRA" in estr or "CETIPADO" in estr: return "FiInfra e Cetipado"
-                if any(x in estr for x in ["CREDITO PRIVADO","CRI","CRA","DEBENTURE"]): return "Crédito Privado"
-                
-                return "Outros"
 
-            pos_rf["sub_bucket"] = pos_rf.apply(sub_bucket_rf_detalhado, axis=1)
-            atual_rf = pos_rf.groupby("sub_bucket")["valor_mercado"].sum()
+        def sub_bucket_rf_detalhado(row):
+            estr = " ".join(str(v) for v in row.values).upper()
+            if any(x in estr for x in ["IMEDIATO","LIQUIDEZ","D+0","D+1"]): return "Imediato"
+            if any(x in estr for x in ["1 A 30","CURTO"]): return "1 a 30 dias"
+            if any(x in estr for x in ["31 A 180"]): return "31 a 180 dias"
+            if any(x in estr for x in ["181 A 360"]): return "181 a 360 dias"
+            if any(x in estr for x in ["361+","LONGO"]): return "361+ dias"
+            if "FIINFRA" in estr or "CETIPADO" in estr: return "FiInfra e Cetipados"
+            if any(x in estr for x in ["BANCARIO PRE","BANCO PRE"]): return "Bancário Pré"
+            if any(x in estr for x in ["TESOURO PRE","NTN-F","LTN"]): return "Tesouro Pré"
+            if any(x in estr for x in ["BANCARIO","BANCO"]): return "Bancário"
+            if any(x in estr for x in ["TESOURO","NTN-B","NTNB"]): return "Tesouro"
+            if "FIINFRA" in estr or "CETIPADO" in estr: return "FiInfra e Cetipado"
+            if any(x in estr for x in ["CREDITO PRIVADO","CRI","CRA","DEBENTURE"]): return "Crédito Privado"
+            return "Outros"
 
-            sub_keys = [
-                "Imediato","1 a 30 dias","31 a 180 dias","181 a 360 dias","361+ dias",
-                "FiInfra e Cetipados","Bancário Pré","Tesouro Pré",
-                "Bancário","Tesouro","FiInfra e Cetipado","Crédito Privado"
-            ]
-            
-            alvo_sub = {k: pl_total * float(p.get(k, 0.0)) for k in sub_keys}
+        pos_rf["sub_bucket"] = pos_rf.apply(sub_bucket_rf_detalhado, axis=1)
+        atual_rf = pos_rf.groupby("sub_bucket")["valor_mercado"].sum()
 
-            rf_detail = pd.DataFrame({
-                "Sub-Bucket": list(atual_rf.index),
-                "Atual (R$)": [format_brl(v) for v in atual_rf.values],
-                "Alvo (R$)": [format_brl(alvo_sub.get(k, 0)) for k in atual_rf.index],
-                "Diferença (R$)": [format_brl(alvo_sub.get(k, 0) - v) for k, v in atual_rf.items()]
-            })
+        sub_keys = ["Imediato","1 a 30 dias","31 a 180 dias","181 a 360 dias","361+ dias",
+                    "FiInfra e Cetipados","Bancário Pré","Tesouro Pré",
+                    "Bancário","Tesouro","FiInfra e Cetipado","Crédito Privado"]
+        alvo_sub = {k: pl_total * float(p.get(k, 0.0)) for k in sub_keys}
 
-            ordem = {name: i for i, name in enumerate(sub_keys)}
-            rf_detail = rf_detail.assign(ordem=rf_detail["Sub-Bucket"].map(ordem)).sort_values("ordem").drop(columns="ordem")
+        rf_detail = pd.DataFrame({
+            "Sub-Bucket": list(atual_rf.index),
+            "Atual (R$)": [format_brl(v) for v in atual_rf.values],
+            "Alvo (R$)": [format_brl(alvo_sub.get(k, 0)) for k in atual_rf.index],
+            "Diferença (R$)": [format_brl(alvo_sub.get(k, 0) - v) for k, v in atual_rf.items()]
+        }).assign(ordem=lambda x: x["Sub-Bucket"].map({n:i for i,n in enumerate(sub_keys)})) \
+          .sort_values("ordem").drop(columns="ordem")
 
+        st.dataframe(
+            rf_detail.style.applymap(style_compra_venda, subset=["Diferença (R$)"]),
+            use_container_width=True, hide_index=True
+        )
+        with st.expander("FI-Infra e Cetipados - Posição atual vs Alvo"):
+            fi_infra = pos_rf[pos_rf["sub_bucket"].str.contains("FiInfra", na=False)]
             st.dataframe(
-                rf_detail.style.applymap(style_compra_venda, subset=["Diferença (R$)"]),
-                use_container_width=True,
-                hide_index=True
+                fi_infra[["asset_id", "asset_nome", "valor_mercado", "quantidade"]]
+                .style.format({"valor_mercado": format_brl}),
+                hide_index=True, use_container_width=True
             )
 
-            # Fundos recomendados (mantido)
-            with st.expander("Fundos Recomendados por Categoria"):
-                for cat, fundos in FUNDOS_RECOMENDADOS.items():
-                    if cat.startswith("RF"):
-                        st.subheader(cat)
-                        df_f = pd.DataFrame(fundos)
-                        st.dataframe(df_f, hide_index=True, use_container_width=True)
-
     # ===================== 4) INTERNACIONAL =====================
-    with st.expander("4) Internacional (Charles Schwab)", expanded=True):
+    with st.expander("Internacional", expanded=True):
         intl_real = pos_cliente[pos_cliente["macro"] == "Internacional"].copy()
-
         rf_int = intl_real[intl_real["asset_tipo"].str.contains("Fixed|Bond|Treasury|Debenture", case=False, na=False)]
         rv_int = intl_real[~intl_real["asset_tipo"].str.contains("Fixed|Bond|Treasury|Debenture", case=False, na=False)]
 
-        total_intl_usd = intl_real["valor_mercado"].sum() / ptax
+        total_usd = intl_real["valor_mercado"].sum() / ptax
 
-        st.metric("Total Internacional Atual", f"US$ {total_intl_usd:,.2f}", 
-                  delta=f"Alvo: {format_brl(alvo_int)}")
+        st.metric("Total Internacional", f"US$ {total_usd:,.2f} (R$ {format_brl(total_usd*ptax)})")
 
         col1, col2 = st.columns(2)
-        col1.metric("RF Internacional", format_brl(rf_int["valor_mercado"].sum()))
-        col2.metric("RV Internacional", format_brl(rv_int["valor_mercado"].sum()))
+        col1.metric("RF Internacional", f"US$ {(rf_int['valor_mercado'].sum()/ptax):,.2f}")
+        col2.metric("RV Internacional", f"US$ {(rv_int['valor_mercado'].sum()/ptax):,.2f}")
 
-        st.write("**Lista completa de ativos internacionais:**")
-        st.dataframe(
-            intl_real[["asset_id", "asset_nome", "asset_tipo", "valor_mercado", "quantidade", "moeda"]]
-            .style.format({"valor_mercado": format_brl}),
-            hide_index=True,
-            use_container_width=True
-        )
-        
+        with st.expander("Lista RF Internacional"):
+            st.dataframe(rf_int[["asset_id","asset_nome","valor_mercado","quantidade"]].style.format({"valor_mercado": format_brl}), hide_index=True, use_container_width=True)
+        with st.expander("Lista RV Internacional"):
+            st.dataframe(rv_int[["asset_id","asset_nome","valor_mercado","quantidade"]].style.format({"valor_mercado": format_brl}), hide_index=True, use_container_width=True)
         
 # ===================== TAB CARTEIRA TEÓRICA (com sub-buckets) =====================
 
