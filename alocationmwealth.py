@@ -482,7 +482,7 @@ with tab2:
 
     st.dataframe(
         macro_df.style.format({"Atual": format_brl, "Alvo": format_brl, "Diferença": format_brl})
-        .applymap(style_compra_venda, subset=["Diferença"]),
+        .map(style_compra_venda, subset=["Diferença"]),
         use_container_width=True, hide_index=True
     )
 
@@ -517,7 +517,7 @@ with tab2:
 
         rv_df = pd.DataFrame(sugestao, columns=["Ativo", "Atual (R$)", "Qtd Atual", "Sugerido (R$)", "Diferença (R$)"])
         st.dataframe(
-            rv_df.style.applymap(style_compra_venda, subset=["Diferença (R$)"]),
+            rv_df.style.map(style_compra_venda, subset=["Diferença (R$)"]),
             use_container_width=True, hide_index=True
         )
 
@@ -558,7 +558,7 @@ with tab2:
           .sort_values("ordem").drop(columns="ordem")
 
         st.dataframe(
-            rf_detail.style.applymap(style_compra_venda, subset=["Diferença (R$)"]),
+            rf_detail.style.map(style_compra_venda, subset=["Diferença (R$)"]),
             use_container_width=True, hide_index=True
         )
         with st.expander("FI-Infra e Cetipados - Posição atual vs Alvo"):
