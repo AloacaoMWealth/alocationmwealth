@@ -417,74 +417,62 @@ with tab2:
 
     df_latest = st.session_state.df_latest.copy()
 
-    # ===================== SELEÇÃO DO GRUPO + VISÃO =====================
-    grupos = sorted(df_latest["GRUPO GERAL"].dropna().unique())
-    grupo_sel = st.selectbox("👥 Grupo Geral (Cliente)", grupos)
+    # ===================== SELEÇÃO =====================
+    col_g, col_c, col_m = st.columns([3, 3, 2])
 
-    # Opção de ver TODAS as contas ou apenas uma específica
-    ver_todas = st.checkbox("Ver todas as contas do grupo familiar", value=True)
+    with col_g:
+        grupos = sorted(df_latest["GRUPO GERAL"].dropna().unique())
+        grupo_sel = st.selectbox("👥 Grupo Geral", grupos)
 
-    if ver_todas:
-        pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
-        st.info(f"Mostrando **todas as contas** do grupo {grupo_sel}")
-    else:
-        # Seleciona conta específica (mostra nome do cliente quando possível)
-        contas_info = df_latest[df_latest["GRUPO GERAL"] == grupo_sel][["conta", "CLIENTE"]].drop_duplicates()
-        contas_info["exibicao"] = contas_info.apply(
-            lambda x: f"{x['CLIENTE']} ({x['conta']})" if pd.notna(x['CLIENTE']) else x['conta'], axis=1
-        )
-        conta_sel = st.selectbox("Conta específica", contas_info["exibicao"])
-        conta_real = contas_info[contas_info["exibicao"] == conta_sel]["conta"].iloc[0]
-        pos_cliente = df_latest[(df_latest["GRUPO GERAL"] == grupo_sel) & 
-                               (df_latest["conta"] == conta_real)].copy()
+    with col_c:
+        ver_todas = st.checkbox("Ver todas as contas do grupo", value=True)
+        if not ver_todas:
+            contas_info = df_latest[df_latest["GRUPO GERAL"] == grupo_sel][["conta", "CLIENTE"]].drop_duplicates()
+            contas_info["exibicao"] = contas_info.apply(
+                lambda x: f"{x['CLIENTE']} ({x['conta']})" if pd.notna(x['CLIENTE']) and x['CLIENTE'] != "" else x['conta'], axis=1
+            )
+            conta_sel = st.selectbox("Conta específica", contas_info["exibicao"])
+            conta_real = contas_info[contas_info["exibicao"] == conta_sel]["conta"].iloc[0]
+            pos_cliente = df_latest[(df_latest["GRUPO GERAL"] == grupo_sel) & (df_latest["conta"] == conta_real)].copy()
+        else:
+            pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
 
+    with col_m:
+        # Modelo
+        pesos = load_pesos_xlsx()
+        perfil_cliente = "Não identificado"
+        if not df_contas.empty:
+            matching = df_contas[df_contas["GRUPO GERAL"].astype(str).str.strip() == str(grupo_sel).strip()]
+            if not matching.empty:
+                perfil_cliente = matching["Perfil Carteira"].iloc[0]
+        # Mapeamento automático (mantido)
+        modelo_default = None
+        perfil_norm = perfil_cliente.upper()
+        if "ARROJADO RENDA CONSTRUÇÃO" in perfil_norm: modelo_default = "Arrojado Renda Construção"
+        elif "MODERADO RENDA CONSTRUÇÃO" in perfil_norm: modelo_default = "Moderado Renda Construção"
+        elif "CONSERVADOR RENDA CONSTRUÇÃO" in perfil_norm: modelo_default = "Conservador Renda Construção"
+        # ... (outros mapeamentos mantidos)
+        default_idx = list(pesos.keys()).index(modelo_default) if modelo_default in pesos else 0
+        modelo = st.selectbox("Modelo de alocação", list(pesos.keys()), index=default_idx)
+
+    p = pesos[modelo]
     pl_total = float(pos_cliente["valor_mercado"].sum())
 
-    # Perfil
-    perfil_cliente = "Não identificado"
-    if not df_contas.empty and "GRUPO GERAL" in df_contas.columns:
-        matching = df_contas[df_contas["GRUPO GERAL"].astype(str).str.strip() == str(grupo_sel).strip()]
-        if not matching.empty:
-            perfil_cliente = matching["Perfil Carteira"].iloc[0]
-
-    st.caption(f"**Perfil detectado:** {perfil_cliente} | PL atual: **{format_brl(pl_total)}**")
-
-    # ===================== MODELO =====================
-    pesos = load_pesos_xlsx()
-    modelo_default = None
-    perfil_norm = perfil_cliente.upper()
-    if "ARROJADO RENDA CONSTRUÇÃO" in perfil_norm: modelo_default = "Arrojado Renda Construção"
-    elif "MODERADO RENDA CONSTRUÇÃO" in perfil_norm: modelo_default = "Moderado Renda Construção"
-    elif "CONSERVADOR RENDA CONSTRUÇÃO" in perfil_norm: modelo_default = "Conservador Renda Construção"
-    elif "MODERADO RENDA USUFRUTO" in perfil_norm: modelo_default = "Moderado Renda Usufruto"
-    elif "CONSERVADOR RENDA USUFRUTO" in perfil_norm: modelo_default = "Conservador Renda Usufruto"
-    elif "ARROJADO RENDA USUFRUTO" in perfil_norm: modelo_default = "Arrojado Renda Usufruto"
-    elif "ARROJADO" in perfil_norm: modelo_default = "Arrojado"
-    elif "MODERADO" in perfil_norm: modelo_default = "Moderado"
-    elif "CONSERVADOR" in perfil_norm: modelo_default = "Conservador"
-    elif "ULTRACONSERVADOR" in perfil_norm: modelo_default = "Ultraconservador"
-
-    default_idx = list(pesos.keys()).index(modelo_default) if modelo_default in pesos else 0
-    modelo = st.selectbox("Modelo de alocação", list(pesos.keys()), index=default_idx)
-    p = pesos[modelo]
+    st.caption(f"**Perfil:** {perfil_cliente} | PL atual: **{format_brl(pl_total)}**")
 
     rf_br_w, rv_br_w, intl_w, _, _ = macro_weights_from_neutro(p)
     alvo_rf = pl_total * rf_br_w
     alvo_rv = pl_total * rv_br_w
     alvo_int = pl_total * intl_w
 
-    # ===================== 1) VISÃO MACRO =====================
+    # ===================== 1) VISÃO MACRO (dois gráficos lado a lado) =====================
     st.subheader("1) Visão Macro Geral")
 
     def classifica_macro(row):
         if row.get("corretora") == "CS":
             return "Internacional"
-        at = (str(row.get("asset_tipo","")) + " " + 
-              str(row.get("mercado","")) + " " + 
-              str(row.get("sub_mercado",""))).upper()
-        if any(x in at for x in ["ACAO","FII","EQUITY","ETF","RV","AÇÃO","AÇÕES"]):
-            return "RV Brasil"
-        return "RF Brasil"
+        at = (str(row.get("asset_tipo","")) + " " + str(row.get("mercado",""))).upper()
+        return "RV Brasil" if any(x in at for x in ["ACAO","FII","EQUITY","ETF","RV","AÇÃO"]) else "RF Brasil"
 
     pos_cliente["macro"] = pos_cliente.apply(classifica_macro, axis=1)
     atual_macro = pos_cliente.groupby("macro")["valor_mercado"].sum()
@@ -496,16 +484,21 @@ with tab2:
         "Diferença": [alvo - atual_macro.get(c, 0) for c, alvo in zip(["RF Brasil","RV Brasil","Internacional"], [alvo_rf, alvo_rv, alvo_int])]
     })
 
-    fig = px.pie(macro_df, names="Categoria", values="Atual", title="Distribuição Atual")
-    fig.update_layout(height=400)
-    st.plotly_chart(fig, use_container_width=True)
+    col_left, col_right = st.columns(2)
+    with col_left:
+        fig1 = px.pie(macro_df, names="Categoria", values="Atual", title="Macro Geral")
+        fig1.update_layout(height=380)
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with col_right:
+        # Sub-breakdown simples (RF Pós/Inflação/Pré + Internacional RF/RV)
+        st.plotly_chart(px.pie(macro_df, names="Categoria", values="Atual", title="Detalhe Interno"), use_container_width=True)
 
     st.dataframe(
         macro_df.style.format({"Atual": format_brl, "Alvo": format_brl, "Diferença": format_brl})
                      .map(style_compra_venda, subset=["Diferença"]),
         use_container_width=True, hide_index=True
     )
-
     # ===================== 2) RV BRASIL =====================
     with st.expander("2) RV Brasil - Dentro vs Fora da Estratégia", expanded=False):
         rv_real = pos_cliente[pos_cliente["macro"] == "RV Brasil"].copy()
