@@ -422,20 +422,26 @@ with tab2:
 
     with col_g:
         grupos = sorted(df_latest["GRUPO GERAL"].dropna().unique())
-        grupo_sel = st.selectbox("👥 Grupo Geral", grupos)
+        grupo_sel = st.selectbox("👥 Grupo Geral (Cliente)", grupos)
 
     with col_c:
-        ver_todas = st.checkbox("Ver todas as contas do grupo", value=True)
-        if not ver_todas:
-            contas_info = df_latest[df_latest["GRUPO GERAL"] == grupo_sel][["conta", "CLIENTE"]].drop_duplicates()
-            contas_info["exibicao"] = contas_info.apply(
-                lambda x: f"{x['CLIENTE']} ({x['conta']})" if pd.notna(x['CLIENTE']) and x['CLIENTE'] != "" else x['conta'], axis=1
-            )
-            conta_sel = st.selectbox("Conta específica", contas_info["exibicao"])
-            conta_real = contas_info[contas_info["exibicao"] == conta_sel]["conta"].iloc[0]
-            pos_cliente = df_latest[(df_latest["GRUPO GERAL"] == grupo_sel) & (df_latest["conta"] == conta_real)].copy()
-        else:
+        # Opção "Todas as contas" + contas individuais com nome do cliente
+        contas_info = df_latest[df_latest["GRUPO GERAL"] == grupo_sel][["conta", "CLIENTE"]].drop_duplicates()
+        contas_info["exibicao"] = contas_info.apply(
+            lambda x: f"Todas as contas" if x.name == 0 else 
+                      f"{x['CLIENTE']} ({x['conta']})" if pd.notna(x['CLIENTE']) and str(x['CLIENTE']).strip() != "" 
+                      else x['conta'], axis=1
+        )
+        # Força "Todas as contas" como primeira opção
+        opcoes = ["Todas as contas"] + list(contas_info["exibicao"].iloc[1:])
+        selecao = st.selectbox("Conta", opcoes)
+
+        if selecao == "Todas as contas":
             pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
+        else:
+            conta_real = contas_info[contas_info["exibicao"] == selecao]["conta"].iloc[0]
+            pos_cliente = df_latest[(df_latest["GRUPO GERAL"] == grupo_sel) & 
+                                   (df_latest["conta"] == conta_real)].copy()
 
     with col_m:
         # Modelo
@@ -473,39 +479,45 @@ with tab2:
     alvo_int = pl_total * intl_w
 
     # ===================== 1) VISÃO MACRO (dois gráficos lado a lado) =====================
-    st.subheader("1) Visão Macro Geral")
-
+    st.subheader("Visão Macro Geral")
+    
     def classifica_macro(row):
-        if row.get("corretora") == "CS":
-            return "Internacional"
-        at = (str(row.get("asset_tipo","")) + " " + str(row.get("mercado",""))).upper()
-        return "RV Brasil" if any(x in at for x in ["ACAO","FII","EQUITY","ETF","RV","AÇÃO"]) else "RF Brasil"
-
+            if row.get("corretora") == "CS":
+                return "Internacional"
+            at = (str(row.get("asset_tipo","")) + " " + str(row.get("mercado",""))).upper()
+            return "RV Brasil" if any(x in at for x in ["ACAO","FII","EQUITY","ETF","RV","AÇÃO"]) else "RF Brasil"
+    
     pos_cliente["macro"] = pos_cliente.apply(classifica_macro, axis=1)
     atual_macro = pos_cliente.groupby("macro")["valor_mercado"].sum()
-
+    
     macro_df = pd.DataFrame({
-        "Categoria": ["RF Brasil", "RV Brasil", "Internacional"],
-        "Atual": [atual_macro.get(c, 0) for c in ["RF Brasil", "RV Brasil", "Internacional"]],
-        "Alvo": [alvo_rf, alvo_rv, alvo_int],
-        "Diferença": [alvo - atual_macro.get(c, 0) for c, alvo in zip(["RF Brasil","RV Brasil","Internacional"], [alvo_rf, alvo_rv, alvo_int])]
-    })
-
+            "Categoria": ["RF Brasil", "RV Brasil", "Internacional"],
+            "Atual": [atual_macro.get(c, 0) for c in ["RF Brasil", "RV Brasil", "Internacional"]],
+            "Alvo": [alvo_rf, alvo_rv, alvo_int],
+            "Diferença": [alvo - atual_macro.get(c, 0) for c, alvo in zip(["RF Brasil","RV Brasil","Internacional"], [alvo_rf, alvo_rv, alvo_int])]
+        })
+    
     col_left, col_right = st.columns(2)
+    
     with col_left:
-        fig1 = px.pie(macro_df, names="Categoria", values="Atual", title="Macro Geral")
-        fig1.update_layout(height=380)
-        st.plotly_chart(fig1, use_container_width=True)
-
+            fig1 = px.pie(macro_df, names="Categoria", values="Atual", title="Macro Geral (RF / RV / Internacional)")
+            fig1.update_layout(height=380)
+            st.plotly_chart(fig1, use_container_width=True)
+    
     with col_right:
-        # Sub-breakdown simples (RF Pós/Inflação/Pré + Internacional RF/RV)
-        st.plotly_chart(px.pie(macro_df, names="Categoria", values="Atual", title="Detalhe Interno"), use_container_width=True)
-
+            interno_data = {
+                "Categoria": ["RF Pós", "RF Inflação", "RF Pré", "RV Brasil", "Internacional RF", "Internacional RV"],
+                "Atual": [0, 0, 0, atual_macro.get("RV Brasil", 0), 0, 0]  # Podemos melhorar depois
+            }
+            fig2 = px.pie(pd.DataFrame(interno_data), names="Categoria", values="Atual", title="Detalhe Interno")
+            fig2.update_layout(height=380)
+            st.plotly_chart(fig2, use_container_width=True)
+    
     st.dataframe(
-        macro_df.style.format({"Atual": format_brl, "Alvo": format_brl, "Diferença": format_brl})
-                     .map(style_compra_venda, subset=["Diferença"]),
-        use_container_width=True, hide_index=True
-    )
+            macro_df.style.format({"Atual": format_brl, "Alvo": format_brl, "Diferença": format_brl})
+                         .map(style_compra_venda, subset=["Diferença"]),
+            use_container_width=True, hide_index=True
+        )
     
     # ===================== RENDA FIXA BRASIL (ÚNICO EXPANDER) =====================
     with st.expander("Renda Fixa Brasil", expanded=True):
