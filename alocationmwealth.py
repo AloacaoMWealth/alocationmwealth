@@ -547,18 +547,32 @@ with tab2:
         pos_rf = pos_cliente[pos_cliente["macro"] == "RF Brasil"].copy()
 
         def sub_bucket_rf_detalhado(row):
-            estr = " ".join(str(v) for v in [row.get(c,"") for c in ["asset_tipo","mercado","sub_mercado","estrategia","asset_nome"]]).upper()
+            asset_id = str(row.get("asset_id", "")).upper().strip()
+            asset_nome = str(row.get("asset_nome", "")).upper().strip()
+            asset_tipo = str(row.get("asset_tipo", "")).upper().strip()
+            estr = (asset_id + " " + asset_nome + " " + asset_tipo).upper()
+
+            # === FI-Infra específicos (prioridade alta) ===
+            fi_infra_list = ["KNDI11", "CDII11", "IFRI11", "AZQI11", "KNCE11", "AZIN11", 
+                             "JURO11", "IFRA11", "KDIF11", "JGPI11", "BDIF11", "JMBI11", "CPTI11"]
+            if any(code in asset_id for code in fi_infra_list):
+                return "FiInfra e Cetipados"
+
+            # === Lógica geral ===
             if any(x in estr for x in ["IMEDIATO","LIQUIDEZ","D+0","D+1"]): return "Imediato"
             if any(x in estr for x in ["1 A 30","CURTO"]): return "1 a 30 dias"
             if any(x in estr for x in ["31 A 180"]): return "31 a 180 dias"
             if any(x in estr for x in ["181 A 360"]): return "181 a 360 dias"
             if any(x in estr for x in ["361+","LONGO"]): return "361+ dias"
-            if "FIINFRA" in estr or "CETIPADO" in estr: return "FiInfra e Cetipados"
+            if "FIINFRA" in estr or "CETIPADO" in estr or "INFRA" in estr: return "FiInfra e Cetipados"
+            
             if any(x in estr for x in ["BANCARIO PRE","BANCO PRE"]): return "Bancário Pré"
             if any(x in estr for x in ["TESOURO PRE","NTN-F","LTN"]): return "Tesouro Pré"
+            
             if any(x in estr for x in ["BANCARIO","BANCO"]): return "Bancário"
             if any(x in estr for x in ["TESOURO","NTN-B","NTNB"]): return "Tesouro"
             if any(x in estr for x in ["CREDITO PRIVADO","CRI","CRA","DEBENTURE"]): return "Crédito Privado"
+            
             return "Outros"
 
         pos_rf["sub_bucket"] = pos_rf.apply(sub_bucket_rf_detalhado, axis=1)
