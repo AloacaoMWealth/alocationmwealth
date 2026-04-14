@@ -421,7 +421,6 @@ with tab2:
     grupos = sorted(df_latest["GRUPO GERAL"].dropna().unique())
     grupo_sel = st.selectbox("👥 Grupo Geral (Cliente)", grupos)
 
-    # Seleciona conta individual dentro do grupo (muito útil quando tem várias contas)
     contas_do_grupo = df_latest[df_latest["GRUPO GERAL"] == grupo_sel]["conta"].unique()
     if len(contas_do_grupo) > 1:
         conta_sel = st.selectbox("Conta específica", contas_do_grupo)
@@ -497,7 +496,7 @@ with tab2:
     )
 
     # ===================== 2) RV BRASIL =====================
-    with st.expander("Renda Variável Brasil", expanded=False):
+    with st.expander("2) RV Brasil - Dentro vs Fora da Estratégia", expanded=False):
         rv_real = pos_cliente[pos_cliente["macro"] == "RV Brasil"].copy()
 
         if "RENDA" in modelo.upper():
@@ -517,6 +516,7 @@ with tab2:
         if not fora.empty:
             with st.expander("Ver ativos **fora da estratégia** (podem ser vendidos)"):
                 st.dataframe(fora[["asset_id", "asset_nome", "valor_mercado", "quantidade"]].style.format({"valor_mercado": format_brl}), hide_index=True, use_container_width=True)
+
         sugestao = []
         peso_por_ativo = alvo_rv / len(recomendados) if recomendados else 0
         for t in recomendados:
@@ -527,11 +527,11 @@ with tab2:
 
         rv_df = pd.DataFrame(sugestao, columns=["Ativo", "Atual (R$)", "Qtd Atual", "Sugerido (R$)", "Diferença (R$)"])
         st.dataframe(
-            rv_df.style.applymap(style_compra_venda, subset=["Diferença (R$)"]),
+            rv_df.style.map(style_compra_venda, subset=["Diferença (R$)"]),   # ← CORRIGIDO
             use_container_width=True, hide_index=True
         )
 
-# ===================== 3) RF BRASIL (com correção do erro) =====================
+    # ===================== 3) RF BRASIL =====================
     with st.expander("3) RF Brasil - Sub-Buckets", expanded=True):
         pos_rf = pos_cliente[pos_cliente["macro"] == "RF Brasil"].copy()
 
@@ -567,20 +567,20 @@ with tab2:
           .sort_values("ordem").drop(columns="ordem")
 
         st.dataframe(
-            rf_detail.style.map(style_compra_venda, subset=["Diferença (R$)"]),
+            rf_detail.style.map(style_compra_venda, subset=["Diferença (R$)"]),   # ← CORRIGIDO
             use_container_width=True, hide_index=True
         )
 
         with st.expander("FI-Infra e Cetipados - Posição atual vs Alvo"):
-            fi_infra = pos_rf[pos_rf["sub_bucket"].astype(str).str.contains("FiInfra", na=False)]  # ← CORRIGIDO
+            fi_infra = pos_rf[pos_rf["sub_bucket"].astype(str).str.contains("FiInfra", na=False)]
             st.dataframe(
                 fi_infra[["asset_id", "asset_nome", "valor_mercado", "quantidade"]]
                 .style.format({"valor_mercado": format_brl}),
                 hide_index=True, use_container_width=True
             )
-            
+
     # ===================== 4) INTERNACIONAL =====================
-    with st.expander("Internacional", expanded=True):
+    with st.expander("4) Internacional (Charles Schwab)", expanded=True):
         intl_real = pos_cliente[pos_cliente["macro"] == "Internacional"].copy()
         rf_int = intl_real[intl_real["asset_tipo"].str.contains("Fixed|Bond|Treasury|Debenture", case=False, na=False)]
         rv_int = intl_real[~intl_real["asset_tipo"].str.contains("Fixed|Bond|Treasury|Debenture", case=False, na=False)]
