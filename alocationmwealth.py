@@ -417,21 +417,29 @@ with tab2:
 
     df_latest = st.session_state.df_latest.copy()
 
-    # ===================== SELEÇÃO DO CLIENTE =====================
+    # ===================== SELEÇÃO DO CLIENTE + CONTA =====================
     grupos = sorted(df_latest["GRUPO GERAL"].dropna().unique())
     grupo_sel = st.selectbox("👥 Grupo Geral (Cliente)", grupos)
 
-    pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
+    # Seleciona conta individual dentro do grupo (muito útil quando tem várias contas)
+    contas_do_grupo = df_latest[df_latest["GRUPO GERAL"] == grupo_sel]["conta"].unique()
+    if len(contas_do_grupo) > 1:
+        conta_sel = st.selectbox("Conta específica", contas_do_grupo)
+        pos_cliente = df_latest[(df_latest["GRUPO GERAL"] == grupo_sel) & 
+                               (df_latest["conta"] == conta_sel)].copy()
+    else:
+        pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
+
     pl_total = float(pos_cliente["valor_mercado"].sum())
 
-    # Perfil automático
+    # Perfil
     perfil_cliente = "Não identificado"
     if not df_contas.empty and "GRUPO GERAL" in df_contas.columns:
         matching = df_contas[df_contas["GRUPO GERAL"].astype(str).str.strip() == str(grupo_sel).strip()]
         if not matching.empty:
             perfil_cliente = matching["Perfil Carteira"].iloc[0]
 
-    st.caption(f"**Perfil detectado:** {perfil_cliente}")
+    st.caption(f"**Perfil detectado:** {perfil_cliente} | PL atual: **{format_brl(pl_total)}**")
 
     # ===================== MODELO =====================
     pesos = load_pesos_xlsx()
@@ -457,14 +465,16 @@ with tab2:
     alvo_rv = pl_total * rv_br_w
     alvo_int = pl_total * intl_w
 
-    # ===================== 1) VISÃO MACRO (RF primeiro) =====================
-    st.subheader("Visão Macro Geral")
+    # ===================== 1) VISÃO MACRO =====================
+    st.subheader("1) Visão Macro Geral")
 
     def classifica_macro(row):
         if row.get("corretora") == "CS":
             return "Internacional"
-        at = (str(row.get("asset_tipo","")) + " " + str(row.get("mercado",""))).upper()
-        return "RV Brasil" if any(x in at for x in ["ACAO","FII","EQUITY","ETF","RV","AÇÃO"]) else "RF Brasil"
+        at = (str(row.get("asset_tipo","")) + " " + str(row.get("mercado","")) + " " + str(row.get("sub_mercado",""))).upper()
+        if any(x in at for x in ["ACAO","FII","EQUITY","ETF","RV","AÇÃO","AÇÕES"]):
+            return "RV Brasil"
+        return "RF Brasil"
 
     pos_cliente["macro"] = pos_cliente.apply(classifica_macro, axis=1)
     atual_macro = pos_cliente.groupby("macro")["valor_mercado"].sum()
@@ -477,12 +487,12 @@ with tab2:
     })
 
     fig = px.pie(macro_df, names="Categoria", values="Atual", title="Distribuição Atual")
-    fig.update_layout(height=420, margin=dict(l=20, r=20, t=40, b=20))
+    fig.update_layout(height=400)
     st.plotly_chart(fig, use_container_width=True)
 
     st.dataframe(
         macro_df.style.format({"Atual": format_brl, "Alvo": format_brl, "Diferença": format_brl})
-        .map(style_compra_venda, subset=["Diferença"]),
+                     .map(style_compra_venda, subset=["Diferença"]),
         use_container_width=True, hide_index=True
     )
 
@@ -517,12 +527,12 @@ with tab2:
 
         rv_df = pd.DataFrame(sugestao, columns=["Ativo", "Atual (R$)", "Qtd Atual", "Sugerido (R$)", "Diferença (R$)"])
         st.dataframe(
-            rv_df.style.map(style_compra_venda, subset=["Diferença (R$)"]),
+            rv_df.style.applymap(style_compra_venda, subset=["Diferença (R$)"]),
             use_container_width=True, hide_index=True
         )
 
-    # ===================== 3) RF BRASIL =====================
-    with st.expander("Renda Fixa Brasl", expanded=True):
+# ===================== 3) RF BRASIL (com correção do erro) =====================
+    with st.expander("3) RF Brasil - Sub-Buckets", expanded=True):
         pos_rf = pos_cliente[pos_cliente["macro"] == "RF Brasil"].copy()
 
         def sub_bucket_rf_detalhado(row):
@@ -537,7 +547,6 @@ with tab2:
             if any(x in estr for x in ["TESOURO PRE","NTN-F","LTN"]): return "Tesouro Pré"
             if any(x in estr for x in ["BANCARIO","BANCO"]): return "Bancário"
             if any(x in estr for x in ["TESOURO","NTN-B","NTNB"]): return "Tesouro"
-            if "FIINFRA" in estr or "CETIPADO" in estr: return "FiInfra e Cetipado"
             if any(x in estr for x in ["CREDITO PRIVADO","CRI","CRA","DEBENTURE"]): return "Crédito Privado"
             return "Outros"
 
@@ -561,14 +570,15 @@ with tab2:
             rf_detail.style.map(style_compra_venda, subset=["Diferença (R$)"]),
             use_container_width=True, hide_index=True
         )
+
         with st.expander("FI-Infra e Cetipados - Posição atual vs Alvo"):
-            fi_infra = pos_rf[pos_rf["sub_bucket"].str.contains("FiInfra", na=False)]
+            fi_infra = pos_rf[pos_rf["sub_bucket"].astype(str).str.contains("FiInfra", na=False)]  # ← CORRIGIDO
             st.dataframe(
                 fi_infra[["asset_id", "asset_nome", "valor_mercado", "quantidade"]]
                 .style.format({"valor_mercado": format_brl}),
                 hide_index=True, use_container_width=True
             )
-
+            
     # ===================== 4) INTERNACIONAL =====================
     with st.expander("Internacional", expanded=True):
         intl_real = pos_cliente[pos_cliente["macro"] == "Internacional"].copy()
