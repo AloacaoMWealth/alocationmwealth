@@ -285,7 +285,6 @@ with tab2:
         grupo_sel = st.selectbox("👥 Grupo Geral (Cliente)", grupos)
 
     with col_c:
-        # Opções: "Todas as contas" + contas individuais com nome do cliente
         contas_info = df_latest[df_latest["GRUPO GERAL"] == grupo_sel][["conta", "CLIENTE"]].drop_duplicates()
         opcoes = ["Todas as contas"]
         for _, row in contas_info.iterrows():
@@ -298,7 +297,6 @@ with tab2:
         if selecao == "Todas as contas":
             pos_cliente = df_latest[df_latest["GRUPO GERAL"] == grupo_sel].copy()
         else:
-            # Extrai o número da conta da string exibida
             conta_real = selecao.split("(")[-1].strip(")")
             pos_cliente = df_latest[(df_latest["GRUPO GERAL"] == grupo_sel) & 
                                    (df_latest["conta"] == conta_real)].copy()
@@ -311,7 +309,6 @@ with tab2:
             if not matching.empty:
                 perfil_cliente = matching["Perfil Carteira"].iloc[0]
 
-        # Mapeamento de modelo
         modelo_default = None
         perfil_norm = perfil_cliente.upper()
         if "ARROJADO RENDA CONSTRUÇÃO" in perfil_norm: modelo_default = "Arrojado Renda Construção"
@@ -333,7 +330,7 @@ with tab2:
 
     st.caption(f"**Perfil:** {perfil_cliente} | PL atual: **{format_brl(pl_total)}**")
 
-    rf_br_w, rv_br_w, intl_w, _, _ = macro_weights_from_neutro(p)
+    rf_br_w, rv_br_w, intl_w = macro_weights_from_neutro(p)
     alvo_rf = pl_total * rf_br_w
     alvo_rv = pl_total * rv_br_w
     alvo_int = pl_total * intl_w
@@ -365,7 +362,6 @@ with tab2:
         st.plotly_chart(fig_atual, use_container_width=True)
 
     with col_right:
-        # Gráfico da alocação ideal
         ideal_df = pd.DataFrame({
             "Categoria": ["RF Brasil", "RV Brasil", "Internacional"],
             "Valor Ideal": [alvo_rf, alvo_rv, alvo_int]
@@ -381,6 +377,7 @@ with tab2:
     )
 
     # ===================== 2) RENDA FIXA BRASIL (ÚNICO EXPANDER) =====================
+    
     with st.expander("Renda Fixa Brasil", expanded=True):
         st.subheader("Distribuição por Sub-Estratégia")
 
@@ -446,6 +443,7 @@ with tab2:
                 st.info("Nenhuma posição em FI-Infra encontrada.")
 
     # ===================== 3) RV BRASIL =====================
+    
     with st.expander("3) Renda Variável Brasil", expanded=False):
         rv_real = pos_cliente[pos_cliente["macro"] == "RV Brasil"].copy()
 
