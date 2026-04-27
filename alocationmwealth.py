@@ -376,10 +376,10 @@ with tab2:
         use_container_width=True, hide_index=True
     )
 
-    # ===================== 2) RENDA FIXA BRASIL (ÚNICO EXPANDER) =====================
+    # ===================== 2) RENDA FIXA BRASIL - MELHORADA =====================
     
-    with st.expander("Renda Fixa Brasil", expanded=True):
-        st.subheader("Distribuição por Sub-Estratégia")
+    with st.expander("Renda Fixa Brasil - Detalhada", expanded=True):
+        st.subheader("Distribuição por Estratégia Macro")
 
         pos_rf = pos_cliente[pos_cliente["macro"] == "RF Brasil"].copy()
 
@@ -389,58 +389,90 @@ with tab2:
             tipo = str(row.get("asset_tipo", "")).upper()
             estr = f"{asset_id} {nome} {tipo}"
 
-            # FI-Infra
-            if any(code in asset_id for code in ["KNDI11","CDII11","IFRI11","AZQI11","KNCE11","AZIN11","JURO11","IFRA11","KDIF11","JGPI11","BDIF11","JMBI11","CPTI11"]):
+            # === SALDO EM CONTA (muito importante) ===
+            if any(x in estr for x in ["SALDO", "FINANCEIRO", "CONTA CORRENTE", "CC", "CUSTODIA REMUNERADA", "LIQUIDEZ"]):
+                return "Saldo em Conta"
+
+            # === FI-INFRA ===
+            if any(code in asset_id for code in ["KNDI11","CDII11","IFRI11","AZQI11","KNCE11","AZIN11",
+                                                 "JURO11","IFRA11","KDIF11","JGPI11","BDIF11","JMBI11","CPTI11"]):
                 return "FiInfra e Cetipados"
 
-            # Fundos de Investimento
-            if any(x in estr for x in ["FIC","FIA","FIDC","FIM","DI","SKY","MATCH","TIVIO","ABSOLUTE","SAFRA","BNP","BRADESCO","XP CDI","SOLIS","JIVE","KINEA"]):
+            # === FUNDOS DE INVESTIMENTO ===
+            if any(x in estr for x in ["FIC","FIA","FIDC","FIM","DI","SKY","MATCH","TIVIO","ABSOLUTE",
+                                       "SAFRA","BNP","BRADESCO","XP CDI","SOLIS","JIVE","KINEA","VALORE","RIZA"]):
                 return "Fundos de Investimento"
 
-            if any(x in estr for x in ["IMEDIATO","LIQUIDEZ","D+0","D+1"]): return "Imediato"
-            if any(x in estr for x in ["1 A 30","CURTO"]): return "1 a 30 dias"
-            if any(x in estr for x in ["31 A 180"]): return "31 a 180 dias"
-            if any(x in estr for x in ["181 A 360"]): return "181 a 360 dias"
-            if any(x in estr for x in ["361+","LONGO"]): return "361+ dias"
+            # === PRAZOS RF PÓS ===
+            if any(x in estr for x in ["IMEDIATO","D+0","D+1","LIQUIDEZ"]): return "Pós - Imediato"
+            if any(x in estr for x in ["1 A 30","CURTO"]): return "Pós - 1 a 30 dias"
+            if any(x in estr for x in ["31 A 180"]): return "Pós - 31 a 180 dias"
+            if any(x in estr for x in ["181 A 360"]): return "Pós - 181 a 360 dias"
+            if any(x in estr for x in ["361+","LONGO"]): return "Pós - 361+ dias"
 
-            if any(x in estr for x in ["BANCARIO PRE","BANCO PRE"]): return "Bancário Pré"
-            if any(x in estr for x in ["TESOURO PRE","NTN-F","LTN"]): return "Tesouro Pré"
+            # === RF PRÉ ===
+            if any(x in estr for x in ["BANCARIO PRE","BANCO PRE","NTN-F","LTN"]): return "Pré - Bancário"
+            if any(x in estr for x in ["TESOURO PRE"]): return "Pré - Tesouro"
 
-            if any(x in estr for x in ["BANCARIO","BANCO"]): return "Bancário"
-            if any(x in estr for x in ["TESOURO","NTN-B","NTNB"]): return "Tesouro"
-            if any(x in estr for x in ["CREDITO PRIVADO","CRI","CRA","DEBENTURE"]): return "Crédito Privado"
+            # === RF INFLAÇÃO ===
+            if any(x in estr for x in ["NTN-B","NTNB","IPCA","INFLA"]):
+                return "Inflação - Tesouro" if "TESOURO" in estr else "Inflação - Bancário"
+
+            if any(x in estr for x in ["CREDITO PRIVADO","CRI","CRA","DEBENTURE"]):
+                return "Crédito Privado"
 
             return "Outros"
 
         pos_rf["sub_bucket"] = pos_rf.apply(sub_bucket_rf_detalhado, axis=1)
-        atual_rf = pos_rf.groupby("sub_bucket")["valor_mercado"].sum()
+        atual_rf = pos_rf.groupby("sub_bucket")["valor_mercado"].sum().round(2)
 
-        sub_keys = ["Fundos de Investimento", "Imediato", "1 a 30 dias", "31 a 180 dias", "181 a 360 dias", "361+ dias",
-                    "FiInfra e Cetipados", "Bancário Pré", "Tesouro Pré", "Bancário", "Tesouro", "Crédito Privado"]
-        alvo_sub = {k: pl_total * float(p.get(k, 0.0)) for k in sub_keys}
+        # Alvos baseados no modelo escolhido
+        sub_keys = ["Saldo em Conta", "Fundos de Investimento", "Pós - Imediato", "Pós - 1 a 30 dias",
+                    "Pós - 31 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias",
+                    "FiInfra e Cetipados", "Pré - Bancário", "Pré - Tesouro",
+                    "Inflação - Tesouro", "Inflação - Bancário", "Crédito Privado"]
 
+        alvo_sub = {k: pl_total * float(p.get(k.replace("Pós - ", "RF Pós ").replace("Pré - ", "RF Pré ").replace("Inflação - ", "RF Inflação "), 0.0)) 
+                    for k in sub_keys}
+
+        # Tabela principal
         rf_detail = pd.DataFrame({
-            "Sub-Bucket": list(atual_rf.index),
-            "Atual (R$)": [format_brl(v) for v in atual_rf.values],
-            "Alvo (R$)": [format_brl(alvo_sub.get(k, 0)) for k in atual_rf.index],
-            "Diferença (R$)": [format_brl(alvo_sub.get(k, 0) - v) for k, v in atual_rf.items()]
+            "Estratégia": sub_keys,
+            "Atual (R$)": [format_brl(atual_rf.get(k, 0)) for k in sub_keys],
+            "Alvo (R$)": [format_brl(alvo_sub.get(k, 0)) for k in sub_keys],
+            "Diferença (R$)": [format_brl(alvo_sub.get(k, 0) - atual_rf.get(k, 0)) for k in sub_keys]
         })
 
         st.dataframe(
             rf_detail.style.map(style_compra_venda, subset=["Diferença (R$)"]),
-            use_container_width=True, hide_index=True
+            use_container_width=True, 
+            hide_index=True
         )
 
-        with st.expander("FI-Infra e Cetipados - Posição Atual vs Alvo"):
-            fi_infra = pos_rf[pos_rf["sub_bucket"].astype(str).str.contains("FiInfra", na=False)]
-            if not fi_infra.empty:
+        # === DETALHE FI-INFRA (com alvo e sugestão) ===
+        with st.expander("🔍 Detalhe Fi-Infra e Cetipados - Compra/Venda"):
+            fi_infra_pos = pos_rf[pos_rf["sub_bucket"] == "FiInfra e Cetipados"].copy()
+            alvo_fi_infra = alvo_sub.get("FiInfra e Cetipados", 0)
+
+            if not fi_infra_pos.empty:
+                fi_infra_pos = fi_infra_pos[["asset_id", "asset_nome", "valor_mercado", "quantidade"]].copy()
+                fi_infra_pos["Alvo Total"] = format_brl(alvo_fi_infra)
+                fi_infra_pos["Diferença"] = format_brl(alvo_fi_infra - fi_infra_pos["valor_mercado"].sum())
+                
                 st.dataframe(
-                    fi_infra[["asset_id", "asset_nome", "valor_mercado", "quantidade"]]
-                    .style.format({"valor_mercado": format_brl}),
-                    hide_index=True, use_container_width=True
+                    fi_infra_pos.style.format({"valor_mercado": format_brl})
+                                     .map(style_compra_venda, subset=["Diferença"]),
+                    hide_index=True, 
+                    use_container_width=True
                 )
             else:
-                st.info("Nenhuma posição em FI-Infra encontrada.")
+                st.info(f"Não há posição em Fi-Infra. Alvo: **{format_brl(alvo_fi_infra)}** → precisa comprar.")
+
+        # === SALDO EM CONTA (destaque) ===
+        saldo_atual = atual_rf.get("Saldo em Conta", 0)
+        st.metric("Saldo em Conta (pronto para aplicar)", 
+                  format_brl(saldo_atual), 
+                  delta=f"Alvo aproximado: {format_brl(alvo_sub.get('Saldo em Conta', 0))}")
 
     # ===================== 3) RV BRASIL =====================
     
