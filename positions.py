@@ -1,377 +1,278 @@
 from __future__ import annotations
 
 import json
-import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from datetime import timedelta
-import pandas as pd
+from typing import Any
+
 import numpy as np
-import streamlit as st
+import pandas as pd
 import requests
-
-def force_numeric(df: pd.DataFrame, cols: list[str]):
-    """Força colunas numéricas (proteção parquet)"""
-    for col in cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-
-@st.cache_data(ttl=3600)
-def get_ptax():
-    base = "https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarPeriodo"
-    hoje = datetime.now().date()
-    ini = (hoje - timedelta(days=10)).strftime('%m-%d-%Y')
-    fim = hoje.strftime('%m-%d-%Y')
-    url = f"{base}(dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@dataInicial='{ini}'&@dataFinalCotacao='{fim}'&$format=json&$select=cotacaoVenda&$orderby=dataHoraCotacao desc&$top=1"
-    try:
-        r = requests.get(url, timeout=20)
-        r.raise_for_status()
-        value = r.json().get('value', [])
-        if value:
-            return float(value[0]['cotacaoVenda'])
-    except Exception as e:
-        print(f"Aviso: falha ao obter PTAX automática; usando fallback 5.60. Erro: {e}")
-    return 5.60
-
-
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 DATA_DIR = BASE_DIR / "data"
-LATEST_PARQUET = DATA_DIR / "positions_latest.parquet"
+POS_DIR = BASE_DIR / "posicoes"
 LATEST_PICKLE = DATA_DIR / "positions_latest.pkl"
-LATEST_META = DATA_DIR / "positions_meta.json"
-CONTROL_PARQUET = DATA_DIR / "control_accounts_latest.parquet"
 CONTROL_PICKLE = DATA_DIR / "control_accounts_latest.pkl"
-
-REPO_POS_DIR = BASE_DIR / "posicoes"
-
-def _find_repo_file(filename: str) -> Path:
-    """Procura primeiro em /posicoes e depois ao lado do script.
-    Isso permite rodar localmente com os arquivos na raiz e, no deploy, com os arquivos dentro de posicoes/.
-    """
-    candidates = [REPO_POS_DIR / filename, BASE_DIR / filename, Path(filename)]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return REPO_POS_DIR / filename
-
-REPO_CONTROL_XLSX = _find_repo_file("Contas.xlsx")
-REPO_XP_XLSX = _find_repo_file("XP.xlsx")
-REPO_BTG_XLSX = _find_repo_file("BTG.xlsx")
-REPO_CS_CSV = _find_repo_file("CSProdutos.csv")
-
+LATEST_META = DATA_DIR / "positions_meta.json"
 BTG_ACCOUNT_WIDTH = 8
 
 
-# ---------- helpers ----------
-def _sha256_bytes(b: bytes) -> str:
-    return hashlib.sha256(b).hexdigest()
+def find_repo_file(filename: str) -> Path:
+    """Procura o arquivo no padrão do deploy e no padrão de teste local."""
+    candidates = [POS_DIR / filename, BASE_DIR / filename, Path(filename)]
+    for p in candidates:
+        if p.exists():
+            return p
+    return POS_DIR / filename
 
 
-def _normalize_broker(x: str) -> str:
-    s = (x or "").strip().upper()
-    if "SCHWAB" in s or "CHARLES" in s or s in {"CS"}:
+def repo_files() -> dict[str, Path]:
+    return {
+        "Contas": find_repo_file("Contas.xlsx"),
+        "XP": find_repo_file("XP.xlsx"),
+        "BTG": find_repo_file("BTG.xlsx"),
+        "CS": find_repo_file("CSProdutos.csv"),
+    }
+
+
+def source_signature() -> dict[str, Any]:
+    sig: dict[str, Any] = {}
+    for name, path in repo_files().items():
+        if path.exists():
+            stat = path.stat()
+            sig[name] = {
+                "path": str(path),
+                "mtime": stat.st_mtime,
+                "size": stat.st_size,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+            }
+        else:
+            sig[name] = {"path": str(path), "missing": True}
+    return sig
+
+
+def missing_repo_files() -> list[str]:
+    return [str(p) for p in repo_files().values() if not p.exists()]
+
+
+def _normalize_broker(x: Any) -> str:
+    s = str(x or "").strip().upper()
+    if "SCHWAB" in s or "CHARLES" in s or s == "CS":
         return "CS"
-    if "XP" in s or s in {"XP"}:
+    if "XP" in s:
         return "XP"
-    if "BTG" in s or s in {"BTG"}:
+    if "BTG" in s:
         return "BTG"
     return s
 
 
-def _normalize_account(x) -> str:
-    """
-    Normalização base (comum a todas as corretoras):
-    - converte para string
-    - remove '.0' de números vindos do Excel
-    - tira espaços
-    """
+def _normalize_account(x: Any) -> str:
     if pd.isna(x):
         return ""
     s = str(x).strip()
     if s.endswith(".0"):
         s = s[:-2]
-    s = s.replace(" ", "")
-    return s
+    return s.replace(" ", "")
 
 
 def _only_digits(s: str) -> str:
-    return "".join(ch for ch in (s or "") if ch.isdigit())
+    return "".join(ch for ch in str(s or "") if ch.isdigit())
 
 
-def _normalize_btg_account_8(x) -> str:
-    """
-    BTG: padroniza conta para 8 dígitos (zeros à esquerda).
-    Mantém apenas dígitos.
-    """
-    s = _normalize_account(x)
-    d = _only_digits(s)
-    return d.zfill(BTG_ACCOUNT_WIDTH) if d != "" else ""
-
-def _pad_btg_to_8(conta: str) -> str:
-    """Força BTG para exatamente 8 dígitos (zeros à esquerda)."""
-    d = _only_digits(conta)
-    return d[-8:].zfill(8) if len(d) >= 8 else d.zfill(8)
-
-
-
-def _exists_all_repo_files() -> tuple[bool, list[str]]:
-    missing = []
-    for p in [REPO_CONTROL_XLSX, REPO_XP_XLSX, REPO_BTG_XLSX, REPO_CS_CSV]:
-        if not p.exists():
-            missing.append(str(p))
-    return (len(missing) == 0, missing)
-
-
-def _safe_sum(series) -> float:
-    return float(pd.to_numeric(series, errors="coerce").fillna(0.0).sum())
+def _normalize_btg_account(x: Any) -> str:
+    d = _only_digits(_normalize_account(x))
+    if not d:
+        return ""
+    return d[-BTG_ACCOUNT_WIDTH:].zfill(BTG_ACCOUNT_WIDTH)
 
 
 def _pick_existing(cols: list[str], *names: str) -> str | None:
+    norm_map = {str(c).strip().upper(): c for c in cols}
     for n in names:
         if n in cols:
             return n
+        key = str(n).strip().upper()
+        if key in norm_map:
+            return norm_map[key]
     return None
 
 
-def _save_table(df: pd.DataFrame, parquet_path: Path, pickle_path: Path) -> None:
-    """Salva em parquet quando possível; se faltar pyarrow/fastparquet, usa pickle.
-    Isso evita que o app quebre em máquinas onde o ambiente não instalou o engine de parquet.
-    """
-    DATA_DIR.mkdir(exist_ok=True)
+def force_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    df = df.copy()
+    for col in cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    return df
+
+
+def get_ptax(fallback: float = 5.60) -> float:
+    base = "https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoDolarPeriodo"
+    hoje = datetime.now().date()
+    ini = (hoje - timedelta(days=10)).strftime("%m-%d-%Y")
+    fim = hoje.strftime("%m-%d-%Y")
+    url = (
+        f"{base}(dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)"
+        f"?@dataInicial='{ini}'&@dataFinalCotacao='{fim}'"
+        f"&$format=json&$select=cotacaoVenda&$orderby=dataHoraCotacao desc&$top=1"
+    )
     try:
-        df.to_parquet(parquet_path, index=False)
-    except Exception as e:
-        print(f"Aviso: não consegui salvar parquet ({e}). Salvando pickle em {pickle_path}.")
-        df.to_pickle(pickle_path)
+        r = requests.get(url, timeout=8)
+        r.raise_for_status()
+        value = r.json().get("value", [])
+        if value:
+            return float(value[0]["cotacaoVenda"])
+    except Exception as exc:
+        print(f"Aviso: falha ao obter PTAX. Usando fallback {fallback}. Erro: {exc}")
+    return fallback
 
 
-def _load_table(parquet_path: Path, pickle_path: Path) -> pd.DataFrame | None:
-    """Lê parquet com fallback para pickle."""
-    if parquet_path.exists():
-        try:
-            return pd.read_parquet(parquet_path)
-        except Exception as e:
-            print(f"Aviso: não consegui ler parquet ({e}). Tentando pickle.")
-    if pickle_path.exists():
-        return pd.read_pickle(pickle_path)
-    return None
-
-
-# ---------- loaders/parsers ----------
-
-def load_control_accounts(src=None) -> pd.DataFrame:
-    """
-    src pode ser:
-    - None: tenta ler do repo (posicoes/Contas.xlsx); se não existir, usa cache parquet
-    - path/str: lê xlsx desse caminho
-    - file-like (uploader): lê xlsx do objeto
-    """
-    DATA_DIR.mkdir(exist_ok=True)
-
+def load_control_accounts(src: str | Path | None = None) -> pd.DataFrame:
     if src is None:
-        if REPO_CONTROL_XLSX.exists():
-            src = REPO_CONTROL_XLSX
-        elif CONTROL_PARQUET.exists() or CONTROL_PICKLE.exists():
-            cached = _load_table(CONTROL_PARQUET, CONTROL_PICKLE)
-            if cached is not None:
-                return cached
-        else:
-            raise FileNotFoundError("Controle de contas não encontrado (repo/cache).")
+        src = find_repo_file("Contas.xlsx")
+        if not src.exists() and CONTROL_PICKLE.exists():
+            return pd.read_pickle(CONTROL_PICKLE)
+    src = Path(src)
+    if not src.exists():
+        raise FileNotFoundError(f"Controle de contas não encontrado: {src}")
 
     df = pd.read_excel(src)
     df.columns = [str(c).strip() for c in df.columns]
-    
-    # Descobrir nomes reais das colunas no Excel
-    col_broker = _pick_existing(df.columns, "CORRETORA", "Corretora", "corretora", "Broker", "BROKER")
-    col_account = _pick_existing(df.columns, "NÚMERO DA CONTA", "NMERO DA CONTA", "Numero da Conta", "Número da Conta")
-    
+    col_broker = _pick_existing(df.columns.tolist(), "CORRETORA", "Corretora", "Broker", "BROKER")
+    col_account = _pick_existing(df.columns.tolist(), "NÚMERO DA CONTA", "NMERO DA CONTA", "Numero da Conta", "Número da Conta", "Conta")
     if col_broker is None:
-        raise ValueError(f"Controle: não encontrei coluna de corretora. Colunas: {list(df.columns)}")
+        raise ValueError(f"Contas.xlsx: não encontrei coluna de corretora. Colunas: {list(df.columns)}")
     if col_account is None:
-        raise ValueError("Controle: não encontrei coluna NÚMERO DA CONTA (ou variações).")
-    
-    # Renomeia para nomes internos padronizados
+        raise ValueError(f"Contas.xlsx: não encontrei coluna de conta. Colunas: {list(df.columns)}")
+
     df = df.rename(columns={col_broker: "corretora", col_account: "conta"})
-    
     df["corretora"] = df["corretora"].apply(_normalize_broker)
     df["conta"] = df["conta"].apply(_normalize_account)
-    
     m = df["corretora"].eq("BTG")
-    df.loc[m, "conta"] = df.loc[m, "conta"].apply(_normalize_btg_account_8)
+    df.loc[m, "conta"] = df.loc[m, "conta"].apply(_normalize_btg_account)
 
     keep = [
         "GRUPO GERAL", "corretora", "conta", "CLIENTE", "TIPO DE MARCAÇÃO ",
         "CLIENTE - CORRETORA", "Perfil Carteira"
     ]
-    keep = [c for c in keep if c in df.columns] + ["corretora", "conta"]
+    keep = [c for c in keep if c in df.columns]
     df = df.loc[:, list(dict.fromkeys(keep))].copy()
 
-    _save_table(df, CONTROL_PARQUET, CONTROL_PICKLE)
+    DATA_DIR.mkdir(exist_ok=True)
+    df.to_pickle(CONTROL_PICKLE)
     return df
 
-def parse_cs_positions(src) -> pd.DataFrame:
-    import io
 
-    if isinstance(src, (str, Path)):
-        text = Path(src).read_text(encoding="utf-8", errors="ignore")
-    else:
-        b = src.read()
-        text = b if isinstance(b, str) else b.decode("utf-8", errors="ignore")
-
+def parse_cs_positions(src: str | Path) -> pd.DataFrame:
+    path = Path(src)
+    text = path.read_text(encoding="utf-8", errors="ignore")
     lines = text.splitlines()
     header_idx = None
-
     for i, ln in enumerate(lines):
-        if "Account," in ln and "Market Value" in ln:
+        low = ln.lower()
+        if low.startswith("account,") or ("account," in low and "market value" in low):
             header_idx = i
             break
     if header_idx is None:
-        for i, ln in enumerate(lines):
-            if ln.strip().lower().startswith("account,"):
-                header_idx = i
-                break
-    if header_idx is None:
-        raise ValueError("CS: não encontrei linha de header com 'Account,' e 'Market Value'.")
+        raise ValueError("CSProdutos.csv: não encontrei header com Account e Market Value.")
 
-    csv_data = "\n".join(lines[header_idx:])
-    raw = pd.read_csv(io.StringIO(csv_data), sep=",", engine="python", quotechar='"')
-
+    import io
+    raw = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])), sep=",", engine="python", quotechar='"')
     raw.columns = [str(c).strip() for c in raw.columns]
+    if "Market Value" not in raw.columns:
+        raise ValueError(f"CSProdutos.csv: coluna Market Value não encontrada. Colunas: {list(raw.columns)}")
 
-    # === Valor de Mercado ===
-    market_col = "Market Value"
-    if market_col not in raw.columns:
-        raise ValueError(f"CS: coluna '{market_col}' não encontrada.")
-
-    s = raw[market_col].astype(str).str.replace("$", "", regex=False).str.strip()
-    s = s.str.replace(",", "", regex=False)
-    s = s.str.replace(r"[^0-9.]", "", regex=True)
-    raw[market_col] = pd.to_numeric(s, errors="coerce").fillna(0.0)
-
-    # === Quantity da CS (nome exato que você passou) ===
-    quantity_col = None
-    for possible in ["Quantity", "Qty", "Quantidade", "quantity"]:
-        if possible in raw.columns:
-            quantity_col = possible
-            break
-
-    def clean_qty(val):
-        if pd.isna(val):
-            return 0.0
-        try:
-            s = str(val).strip().replace(",", "")
-            s = ''.join(c for c in s if c.isdigit() or c == '.')
-            return float(s) if s else 0.0
-        except:
-            return 0.0
-
-    if quantity_col:
-        raw["quantidade"] = raw[quantity_col].apply(clean_qty)
+    mv = raw["Market Value"].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False)
+    mv = mv.str.replace(r"[^0-9.\-]", "", regex=True)
+    raw["Market Value"] = pd.to_numeric(mv, errors="coerce").fillna(0.0)
+    qty_col = _pick_existing(raw.columns.tolist(), "Quantity", "Qty", "Quantidade")
+    if qty_col:
+        qty = raw[qty_col].astype(str).str.replace(",", "", regex=False).str.replace(r"[^0-9.\-]", "", regex=True)
+        quantidade = pd.to_numeric(qty, errors="coerce").fillna(0.0)
     else:
-        raw["quantidade"] = 0.0
+        quantidade = pd.Series([0.0] * len(raw))
 
-    print(f"✅ CS - SOMA BRUTA USD: {raw[market_col].sum():,.2f} | linhas: {len(raw)}")
+    sym_col = _pick_existing(raw.columns.tolist(), "Symbol/CUSIP", "Symbol", "CUSIP")
+    name_col = _pick_existing(raw.columns.tolist(), "Name", "Description")
+    type_col = _pick_existing(raw.columns.tolist(), "Security Type", "Type")
 
-    # === DataFrame final ===
-    df = pd.DataFrame({
+    return pd.DataFrame({
         "corretora": "CS",
-        "conta": raw["Account"].apply(_normalize_account),
-        "asset_id": raw.get("Symbol/CUSIP", raw.get("Symbol", pd.Series([""]*len(raw)))).astype(str).str.strip(),
-        "asset_nome": raw.get("Name", pd.Series([""]*len(raw))).astype(str).str.strip(),
-        "asset_tipo": raw.get("Security Type", pd.Series([""]*len(raw))).astype(str).str.strip(),
-        "valor_mercado": raw[market_col],
-        "quantidade": raw["quantidade"],
+        "conta": raw.get("Account", pd.Series([""] * len(raw))).apply(_normalize_account),
+        "asset_id": raw.get(sym_col, pd.Series([""] * len(raw))).astype(str).str.strip() if sym_col else "",
+        "asset_nome": raw.get(name_col, pd.Series([""] * len(raw))).astype(str).str.strip() if name_col else "",
+        "asset_tipo": raw.get(type_col, pd.Series([""] * len(raw))).astype(str).str.strip() if type_col else "",
+        "valor_mercado": raw["Market Value"],
+        "quantidade": quantidade,
         "moeda": "USD",
-        "mercado": "",
+        "mercado": "Internacional",
         "sub_mercado": "",
         "estrategia": "",
     })
 
-    print(f"✅ CS - TOTAL FINAL USD: {df['valor_mercado'].sum():,.2f} | linhas: {len(df)}")
-    return df
 
-
-def parse_xp_positions(src) -> pd.DataFrame:
-    resultado = []
-    
-    MAPA_XP_ABAS = {
-        'Custódia Remunerada': {'ativo': 'CodigoAtivo', 'valor': 'ValorTotal', 'qtd': 'QuantidadeAtivo', 'conta': 'CodigoCliente', 'estrategia': None},
-        'Ações': {'ativo': 'CodigoAtivo', 'valor': 'ValorAtual', 'qtd': 'QuantidadeTotalComGarantias', 'conta': 'CodigoCliente', 'estrategia': None},
-        'Fundos Imobiliários': {'ativo': 'CodigoAtivo', 'valor': 'ValorAtual', 'qtd': 'QuantidadeTotalAtual', 'conta': 'CodigoCliente', 'estrategia': None},
-        'Opções Flexíveis': {'ativo': 'CodigoInstrumento', 'valor': 'Posicao', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Opções Flexívies': {'ativo': 'CodigoInstrumento', 'valor': 'Posicao', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Fundos': {'ativo': 'NomeFundo', 'valor': 'ValorAtual', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Tesouro Direto': {'ativo': 'NomeTitulo', 'valor': 'ValorBruto', 'qtd': 'QuantidadeTotal', 'conta': 'CodigoCliente', 'estrategia': None},
-        'Previdência': {'ativo': 'NomeFundo', 'valor': 'ValorReservaAcamulada', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Proventos': {'ativo': 'CodigoAtivo', 'valor': 'PrecoAtual', 'qtd': 'QuantidadeProvisionada', 'conta': 'CodigoCliente', 'estrategia': None},
-        'Proventos Fundo Imob': {'ativo': 'CodigoAtivo', 'valor': 'PrecoAtual', 'qtd': 'QuantidadeProvisionada', 'conta': 'CodigoCliente', 'estrategia': None},
-        'Provisão Evento RF': {'ativo': 'Evento', 'valor': 'Valor', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Coe': {'ativo': 'NomeAtivo', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Renda Fixa': {'ativo': 'NickName', 'valor': 'ValorFinanceiroBruto', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
-        'Financeiro': {'ativo': 'ValorTotal', 'valor': 'ValorDisponivel', 'qtd': 'QuantidadeDiasDevedor', 'conta': 'CodigoCliente', 'estrategia': None}
+def parse_xp_positions(src: str | Path) -> pd.DataFrame:
+    resultado: list[dict[str, Any]] = []
+    mapa = {
+        "Custódia Remunerada": {"ativo": "CodigoAtivo", "valor": "ValorTotal", "qtd": "QuantidadeAtivo", "conta": "CodigoCliente"},
+        "Ações": {"ativo": "CodigoAtivo", "valor": "ValorAtual", "qtd": "QuantidadeTotalComGarantias", "conta": "CodigoCliente"},
+        "Fundos Imobiliários": {"ativo": "CodigoAtivo", "valor": "ValorAtual", "qtd": "QuantidadeTotalAtual", "conta": "CodigoCliente"},
+        "Opções Flexíveis": {"ativo": "CodigoInstrumento", "valor": "Posicao", "qtd": None, "conta": "CodigoCliente"},
+        "Opções Flexívies": {"ativo": "CodigoInstrumento", "valor": "Posicao", "qtd": None, "conta": "CodigoCliente"},
+        "Fundos": {"ativo": "NomeFundo", "valor": "ValorAtual", "qtd": None, "conta": "CodigoCliente"},
+        "Tesouro Direto": {"ativo": "NomeTitulo", "valor": "ValorBruto", "qtd": "QuantidadeTotal", "conta": "CodigoCliente"},
+        "Previdência": {"ativo": "NomeFundo", "valor": "ValorReservaAcamulada", "qtd": None, "conta": "CodigoCliente"},
+        "Proventos": {"ativo": "CodigoAtivo", "valor": "PrecoAtual", "qtd": "QuantidadeProvisionada", "conta": "CodigoCliente"},
+        "Proventos Fundo Imob": {"ativo": "CodigoAtivo", "valor": "PrecoAtual", "qtd": "QuantidadeProvisionada", "conta": "CodigoCliente"},
+        "Provisão Evento RF": {"ativo": "Evento", "valor": "Valor", "qtd": None, "conta": "CodigoCliente"},
+        "Coe": {"ativo": "NomeAtivo", "valor": "ValorFinanceiroBruto", "qtd": None, "conta": "CodigoCliente"},
+        "Renda Fixa": {"ativo": "NickName", "valor": "ValorFinanceiroBruto", "qtd": None, "conta": "CodigoCliente"},
+        "Financeiro": {"ativo": None, "valor": "ValorDisponivel", "qtd": None, "conta": "CodigoCliente"},
     }
-    
     xls = pd.ExcelFile(src)
-    print(f"📂 XP abas encontradas: {[a for a in xls.sheet_names if a in MAPA_XP_ABAS]}")
-    
-    for aba, config in MAPA_XP_ABAS.items():
-        if aba in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=aba, header=0)
-            df.columns = df.columns.str.strip()
-            
-            if aba == "Financeiro" and "DataAtualizacao" in df.columns:
-                df = df.drop(columns=["DataAtualizacao"]).reset_index(drop=True)
-
-            if len(df) == 0:
+    for aba, cfg in mapa.items():
+        if aba not in xls.sheet_names:
+            continue
+        df = pd.read_excel(xls, sheet_name=aba)
+        df.columns = [str(c).strip() for c in df.columns]
+        if cfg["valor"] not in df.columns or cfg["conta"] not in df.columns:
+            continue
+        valores = pd.to_numeric(df[cfg["valor"]], errors="coerce").fillna(0.0)
+        for i, valor_atual in valores.items():
+            if float(valor_atual) <= 0:
                 continue
-                
-            if config['valor'] not in df.columns:
-                continue
-                
-            valor = pd.to_numeric(df[config['valor']], errors='coerce').fillna(0)
-            
-            for i in df.index:
-                valor_atual = valor.iloc[i]
-                if pd.isna(valor_atual) or valor_atual <= 0:
-                    continue
-                
-                if aba == "Financeiro":
-                    codigo_cliente = str(df.iloc[i]['CodigoCliente']).strip()
-                    ativo = "Saldo Financeiro"
-                    asset_nome = f"Saldo em Conta XP - Cliente {codigo_cliente}"
-                else:
-                    ativo = (str(df.iloc[i][config['ativo']]) 
-                            if config['ativo'] and config['ativo'] in df.columns 
-                            else f"{aba}")
-                
-                resultado.append({
-                    'corretora': 'XP',
-                    'conta': str(df.iloc[i]['CodigoCliente']),
-                    'asset_id': ativo[:12] if isinstance(ativo, str) else "Saldo Financeiro",
-                    'asset_nome': asset_nome[:30] if 'asset_nome' in locals() else ativo[:30],
-                    'asset_tipo': aba,
-                    'valor_mercado': float(valor_atual),
-                    'quantidade': float(df.get(config['qtd'], pd.Series([1.0]*len(df)))[i]) if config['qtd'] else 1.0,
-                    'moeda': 'BRL',
-                    'mercado': aba,
-                    'sub_mercado': aba[:10],
-                    'estrategia': 'HOLD'
-                })
-    
-    df_final = pd.DataFrame(resultado)
-    print(f"XP TOTAL: {len(df_final)} posições, R${df_final['valor_mercado'].sum():,.0f}")
-    return df_final
+            conta = _normalize_account(df.at[i, cfg["conta"]])
+            if aba == "Financeiro":
+                ativo = "Saldo Financeiro"
+                nome = f"Saldo em Conta XP - Cliente {conta}"
+            else:
+                ativo_col = cfg["ativo"]
+                ativo = str(df.at[i, ativo_col]).strip() if ativo_col and ativo_col in df.columns else aba
+                nome = ativo
+            qtd_col = cfg.get("qtd")
+            qtd = pd.to_numeric(df.at[i, qtd_col], errors="coerce") if qtd_col and qtd_col in df.columns else 0.0
+            if pd.isna(qtd):
+                qtd = 0.0
+            resultado.append({
+                "corretora": "XP",
+                "conta": conta,
+                "asset_id": str(ativo).strip()[:60],
+                "asset_nome": str(nome).strip()[:160],
+                "asset_tipo": aba,
+                "valor_mercado": float(valor_atual),
+                "quantidade": float(qtd),
+                "moeda": "BRL",
+                "mercado": aba,
+                "sub_mercado": aba,
+                "estrategia": "",
+            })
+    return pd.DataFrame(resultado)
 
-def parse_btg_positions(src) -> pd.DataFrame:
-    """
-    BTG.xlsx (esperado):
-    Conta, Mercado, Sub Mercado/Mercado/Sub Mercado, Produto, Quantidade, Valor Bruto, Estratégia
-    """
+
+def parse_btg_positions(src: str | Path) -> pd.DataFrame:
     df0 = pd.read_excel(src)
     df0.columns = [str(c).strip() for c in df0.columns]
-    cols = list(df0.columns)
-
+    cols = df0.columns.tolist()
     col_account = _pick_existing(cols, "Conta", "CONTA")
     col_prod = _pick_existing(cols, "Produto", "Ativo/Produto", "AtivoProduto")
     col_val = _pick_existing(cols, "Valor Bruto", "ValorBruto", "Valor")
@@ -379,210 +280,115 @@ def parse_btg_positions(src) -> pd.DataFrame:
     col_merc = _pick_existing(cols, "Mercado")
     col_subm = _pick_existing(cols, "Sub Mercado", "SubMercado", "Mercado/Sub Mercado")
     col_estr = _pick_existing(cols, "Estratégia", "Estrategia", "Estratégia ")
-
-    if col_account is None:
-        raise ValueError("BTG: não encontrei coluna Conta/CONTA.")
-    if col_prod is None or col_val is None:
-        raise ValueError("BTG: não encontrei colunas mínimas (Produto e Valor Bruto/Valor).")
-
+    if col_account is None or col_prod is None or col_val is None:
+        raise ValueError(f"BTG.xlsx: colunas mínimas não encontradas. Colunas: {cols}")
     produto = df0[col_prod].astype(str).str.strip()
-
     out = pd.DataFrame({
         "corretora": "BTG",
-        "conta": df0[col_account].apply(_normalize_account),
+        "conta": df0[col_account].apply(_normalize_btg_account),
         "asset_id": produto,
         "asset_nome": produto,
-        "asset_tipo": (df0[col_merc].astype(str).str.strip() if col_merc else "BTG"),
-        "mercado": (df0[col_merc].astype(str).str.strip() if col_merc else ""),
-        "sub_mercado": (df0[col_subm].astype(str).str.strip() if col_subm else ""),
-        "estrategia": (df0[col_estr].astype(str).str.strip() if col_estr else ""),
+        "asset_tipo": df0[col_merc].astype(str).str.strip() if col_merc else "BTG",
+        "mercado": df0[col_merc].astype(str).str.strip() if col_merc else "",
+        "sub_mercado": df0[col_subm].astype(str).str.strip() if col_subm else "",
+        "estrategia": df0[col_estr].astype(str).str.strip() if col_estr else "",
         "valor_mercado": pd.to_numeric(df0[col_val], errors="coerce").fillna(0.0),
         "quantidade": pd.to_numeric(df0[col_qty], errors="coerce").fillna(0.0) if col_qty else 0.0,
         "moeda": "BRL",
     })
-
-    return out
-
-
-# ---------- diagnostics ----------
-def diagnose_positions(df: pd.DataFrame, control_df: pd.DataFrame | None = None, label: str = "") -> dict:
-    d: dict = {}
-    d["label"] = label
-    d["total_rows"] = int(len(df))
-    d["columns"] = list(df.columns)
-
-    if "corretora" in df.columns:
-        d["rows_by_broker"] = df["corretora"].value_counts(dropna=False).to_dict()
-
-    for b in ["XP", "BTG", "CS"]:
-        if "corretora" in df.columns and (df["corretora"] == b).any():
-            sub = df[df["corretora"] == b].copy()
-            d[f"{b}_rows"] = int(len(sub))
-            d[f"{b}_cols"] = list(sub.columns)
-
-            if "conta" in sub.columns:
-                d[f"{b}_unique_accounts"] = int(sub["conta"].nunique(dropna=True))
-            if "asset_id" in sub.columns:
-                d[f"{b}_unique_assets"] = int(sub["asset_id"].astype(str).nunique(dropna=True))
-            if "valor_mercado" in sub.columns:
-                d[f"{b}_sum_valor_mercado"] = _safe_sum(sub["valor_mercado"])
-
-            keep = [c for c in [
-                "corretora","conta","asset_id","asset_nome","asset_tipo",
-                "valor_mercado","quantidade","moeda","mercado","sub_mercado","estrategia"
-            ] if c in sub.columns]
-            d[f"{b}_sample"] = sub[keep].head(20).to_dict(orient="records")
-
-            if "conta" in sub.columns:
-                top = sub.groupby("conta").size().sort_values(ascending=False).head(20)
-                d[f"{b}_top_accounts_by_rows"] = top.to_dict()
-
-    if control_df is not None and {"corretora", "conta"}.issubset(df.columns) and {"corretora", "conta"}.issubset(control_df.columns):
-        keys_ctrl = control_df[["corretora", "conta"]].drop_duplicates()
-        check = df.merge(keys_ctrl, how="left", on=["corretora", "conta"], indicator=True)
-
-        d["unmatched_rows"] = int((check["_merge"] == "left_only").sum())
-        d["unmatched_by_broker"] = check.loc[check["_merge"] == "left_only", "corretora"].value_counts(dropna=False).to_dict()
-
-        examples = (
-            check.loc[check["_merge"] == "left_only", ["corretora", "conta"]]
-            .drop_duplicates()
-            .head(30)
-        )
-        d["unmatched_examples"] = examples.to_dict(orient="records")
-
-    return d
+    return out[out["valor_mercado"].fillna(0) != 0].copy()
 
 
-# ---------- pipeline ----------
-def classify_bucket_estrategia(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["bucket_estrategia"] = "HOLD_MONITOR"
-    df.loc[df["asset_id"].astype(str).str.strip().eq(""), "bucket_estrategia"] = "UNKNOWN"
-    return df
-
-
-def build_and_save_latest(
-    control_df: pd.DataFrame,
-    xp_df: pd.DataFrame,
-    btg_df: pd.DataFrame,
-    cs_df: pd.DataFrame,
-    meta: dict
-) -> pd.DataFrame:
-    DATA_DIR.mkdir(exist_ok=True)
-
-    pos = pd.concat([xp_df, btg_df, cs_df], ignore_index=True)
-
-    pos["corretora"] = pos["corretora"].apply(_normalize_broker)
-    def _pad_btg_to_8(conta: str) -> str:
-        """Força BTG para 8 dígitos (zeros à esquerda), mesmo se tiver 9."""
-        d = _only_digits(conta)
-        return d[-8:].zfill(8) if len(d) >= 8 else d.zfill(8)
-    
-    mask_btg = pos["corretora"] == "BTG"
-    pos.loc[mask_btg, "conta"] = pos.loc[mask_btg, "conta"].apply(_pad_btg_to_8)
-    control_df.loc[control_df["corretora"] == "BTG", "conta"] = control_df.loc[control_df["corretora"] == "BTG", "conta"].apply(_pad_btg_to_8)
-
-
-    merged = pos.merge(
-        control_df,
-        how="left",
-        left_on=["corretora", "conta"],
-        right_on=["corretora", "conta"],
-        suffixes=("", "_ctrl"),
-    )
-
-    merged["valor_mercado"] = pd.to_numeric(merged["valor_mercado"], errors="coerce").fillna(0.0)
-    ptax = get_ptax()
-    merged['valor_original'] = merged['valor_mercado'].copy()
-    merged['valor_mercado'] = np.where(
-        merged['corretora'] == 'CS',
-        merged['valor_mercado'] * ptax,      
-        merged['valor_mercado']              
-    )
-
-    merged["dt_posicao"] = meta.get("dt_posicao", datetime.now().date().isoformat())
-    merged = classify_bucket_estrategia(merged)
-
-    _save_table(merged, LATEST_PARQUET, LATEST_PICKLE)
-    try:
-        with open(LATEST_META, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-    except Exception as json_err:
-        print(f"Erro ao salvar meta JSON: {json_err}")
-
-    return merged
-
-def load_latest_positions() -> pd.DataFrame | None:
-    if not LATEST_PARQUET.exists() and not LATEST_PICKLE.exists():
-        return None
-    df = _load_table(LATEST_PARQUET, LATEST_PICKLE)
-    if df is None:
-        return None
-    meta = {"dt_posicao": datetime.now().isoformat(), "diagnostics": {}}
-    try:
-        with open(LATEST_META, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-    except Exception as e:
-        print(f"JSON meta corrompido/inexistente, usando default: {e}")
-
-    df.attrs["meta"] = meta
-    
-    return df
+def diagnose_unmatched(pos: pd.DataFrame, control: pd.DataFrame) -> dict[str, Any]:
+    if pos.empty or control.empty:
+        return {}
+    keys = control[["corretora", "conta"]].drop_duplicates()
+    check = pos.merge(keys, on=["corretora", "conta"], how="left", indicator=True)
+    missing = check[check["_merge"].eq("left_only")]
+    return {
+        "unmatched_rows": int(len(missing)),
+        "unmatched_by_broker": missing["corretora"].value_counts(dropna=False).to_dict(),
+        "unmatched_examples": missing[["corretora", "conta"]].drop_duplicates().head(50).to_dict("records"),
+    }
 
 
 def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
-    ok, missing = _exists_all_repo_files()
-    if not ok:
-        raise FileNotFoundError("Faltando arquivos em posicoes/: " + ", ".join(missing))
+    missing = missing_repo_files()
+    if missing:
+        raise FileNotFoundError("Arquivos não encontrados: " + ", ".join(missing))
 
-    control_df = load_control_accounts(REPO_CONTROL_XLSX)
+    files = repo_files()
+    control = load_control_accounts(files["Contas"])
+    xp = force_numeric(parse_xp_positions(files["XP"]), ["valor_mercado", "quantidade"])
+    btg = force_numeric(parse_btg_positions(files["BTG"]), ["valor_mercado", "quantidade"])
+    cs = force_numeric(parse_cs_positions(files["CS"]), ["valor_mercado", "quantidade"])
 
-    xp_df = parse_xp_positions(REPO_XP_XLSX)
-    btg_df = parse_btg_positions(REPO_BTG_XLSX)
-    cs_df = parse_cs_positions(REPO_CS_CSV)
-    
-    cs_df["quantidade"] = pd.to_numeric(cs_df["quantidade"], errors="coerce").fillna(0.0)
-    cs_df["valor_mercado"] = pd.to_numeric(cs_df["valor_mercado"], errors="coerce").fillna(0.0)
-    print(f"🔧 CS após coerce: {cs_df['quantidade'].dtype} | NaN qty: {(cs_df['quantidade'].isna()).sum()}")
-    
-    force_numeric(xp_df, ["quantidade", "valor_mercado"])
-    force_numeric(btg_df, ["quantidade", "valor_mercado"])
-    force_numeric(cs_df, ["quantidade", "valor_mercado"])
-    
-    pos = pd.concat([xp_df, btg_df, cs_df], ignore_index=True)
+    pos = pd.concat([xp, btg, cs], ignore_index=True)
+    if pos.empty:
+        raise ValueError("Nenhuma posição foi carregada dos arquivos fonte.")
 
+    pos["corretora"] = pos["corretora"].apply(_normalize_broker)
+    pos["conta"] = pos["conta"].apply(_normalize_account)
+    m = pos["corretora"].eq("BTG")
+    pos.loc[m, "conta"] = pos.loc[m, "conta"].apply(_normalize_btg_account)
+    m = control["corretora"].eq("BTG")
+    control.loc[m, "conta"] = control.loc[m, "conta"].apply(_normalize_btg_account)
+
+    merged = pos.merge(control, how="left", on=["corretora", "conta"], suffixes=("", "_ctrl"))
+    ptax = get_ptax()
+    merged["valor_original"] = pd.to_numeric(merged["valor_mercado"], errors="coerce").fillna(0.0)
+    merged["valor_mercado"] = np.where(merged["corretora"].eq("CS"), merged["valor_original"] * ptax, merged["valor_original"])
+    merged["dt_posicao"] = dt_posicao or datetime.now().date().isoformat()
+
+    DATA_DIR.mkdir(exist_ok=True)
+    merged.to_pickle(LATEST_PICKLE)
     meta = {
-        "dt_posicao": dt_posicao or datetime.now().date().isoformat(),
-        "source": "repo",
-        "btg_account_width": BTG_ACCOUNT_WIDTH,
+        "dt_posicao": merged["dt_posicao"].iloc[0],
+        "built_at": datetime.now().isoformat(timespec="seconds"),
+        "ptax": ptax,
+        "rows": int(len(merged)),
+        "pl_total": float(merged["valor_mercado"].sum()),
+        "source_signature": source_signature(),
+        "diagnostics": {
+            "xp_rows": int(len(xp)),
+            "btg_rows": int(len(btg)),
+            "cs_rows": int(len(cs)),
+            "unmatched": diagnose_unmatched(pos, control),
+        },
     }
-    meta["diagnostics"] = {
-        "xp_df": diagnose_positions(xp_df, control_df, label="xp_df"),
-        "btg_df": diagnose_positions(btg_df, control_df, label="btg_df"),
-        "cs_df": diagnose_positions(cs_df, control_df, label="cs_df"),
-    }
-    btg_pos_accounts = (
-        btg_df[["corretora", "conta"]]
-        .drop_duplicates()
-        .sort_values(["corretora", "conta"])
-    )
-    btg_ctrl_accounts = (
-        control_df[control_df["corretora"] == "BTG"][["corretora", "conta"]]
-        .drop_duplicates()
-        .sort_values(["corretora", "conta"])
-    )
+    with open(LATEST_META, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    merged.attrs["meta"] = meta
+    return merged
 
-    pos_set = set(btg_pos_accounts["conta"])
-    ctrl_set = set(btg_ctrl_accounts["conta"])
 
-    meta["diagnostics"]["btg_match_debug"] = {
-        "pos_accounts": list(sorted(pos_set))[:50],
-        "ctrl_accounts": list(sorted(ctrl_set))[:50],
-        "pos_count": len(pos_set),
-        "ctrl_count": len(ctrl_set),
-        "intersection_count": len(pos_set & ctrl_set),
-        "only_in_pos_sample": list(pos_set - ctrl_set)[:20],
-        "only_in_ctrl_sample": list(ctrl_set - pos_set)[:20],
-    }
-    return build_and_save_latest(control_df, xp_df, btg_df, cs_df, meta)
+def load_latest_positions() -> pd.DataFrame | None:
+    if not LATEST_PICKLE.exists():
+        return None
+    df = pd.read_pickle(LATEST_PICKLE)
+    meta = {}
+    if LATEST_META.exists():
+        try:
+            meta = json.loads(LATEST_META.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    df.attrs["meta"] = meta
+    return df
+
+
+def latest_is_stale() -> bool:
+    if not LATEST_PICKLE.exists() or not LATEST_META.exists():
+        return True
+    try:
+        meta = json.loads(LATEST_META.read_text(encoding="utf-8"))
+        old = meta.get("source_signature", {})
+        new = source_signature()
+        for k, v in new.items():
+            if v.get("missing"):
+                return True
+            old_v = old.get(k, {})
+            if old_v.get("size") != v.get("size") or abs(float(old_v.get("mtime", 0)) - float(v.get("mtime", 0))) > 0.001:
+                return True
+        return False
+    except Exception:
+        return True
