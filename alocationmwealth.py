@@ -190,7 +190,8 @@ def acao_por_diff(diff: float, tolerancia: float = 100.0) -> str:
 
 
 def safe_cols(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    return df[[c for c in cols if c in df.columns]].copy()
+    clean = df.loc[:, ~df.columns.duplicated()].copy()
+    return clean[[c for c in cols if c in clean.columns]].copy()
 
 
 @st.cache_data(ttl=3600)
@@ -395,30 +396,55 @@ def classify_position(row: pd.Series) -> pd.Series:
 
 
 def enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adiciona as colunas de classificação usadas pelo app.
+
+    Importante: essa função pode ser chamada mais de uma vez durante o fluxo
+    do Streamlit. Por isso, antes de recalcular, removemos classificações
+    antigas e eliminamos colunas duplicadas. Sem isso, o pandas pode retornar
+    um DataFrame quando acessamos df["subbucket"], gerando o erro:
+    ValueError: Cannot index with multidimensional key.
+    """
     df = df.copy()
+
+    # Proteção contra colunas duplicadas vindas de concat/merge/cache/session_state
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    # Recalcula sempre as colunas derivadas, evitando duplicidade
+    derived_cols = ["classe_macro", "subclasse", "subbucket"]
+    df = df.drop(columns=[c for c in derived_cols if c in df.columns], errors="ignore")
+
     for c in ["valor_mercado", "quantidade"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+
     if "asset_id" in df.columns:
         df["asset_id"] = df["asset_id"].astype(str).str.strip()
+
     cols = df.apply(classify_position, axis=1)
-    cols.columns = ["classe_macro", "subclasse", "subbucket"]
+    cols.columns = derived_cols
     df = pd.concat([df, cols], axis=1)
-    return df
+    return df.loc[:, ~df.columns.duplicated()].copy()
 
 
 def get_latest_positions_auto(force: bool = False) -> tuple[pd.DataFrame | None, str]:
-    """Carrega a última posição automaticamente e reconstrói quando os arquivos fonte são mais novos."""
-    latest_path = DATA_DIR / "positions_latest.parquet"
+    """Carrega a última posição automaticamente e reconstrói quando os arquivos fonte são mais novos.
+
+    Compatível com parquet e pickle. O pickle é fallback para máquinas onde pyarrow/fastparquet
+    não foi instalado corretamente.
+    """
+    latest_parquet = DATA_DIR / "positions_latest.parquet"
+    latest_pickle = DATA_DIR / "positions_latest.pkl"
+    latest_candidates = [p for p in [latest_parquet, latest_pickle] if p.exists()]
     source_files = [find_file("Contas.xlsx"), find_file("XP.xlsx"), find_file("BTG.xlsx"), find_file("CSProdutos.csv")]
 
     try:
-        if force or not latest_path.exists():
+        if force or not latest_candidates:
             df = posmod.build_latest_from_repo()
             return df, "rebuild"
 
-        parquet_mtime = latest_path.stat().st_mtime
-        sources_newer = [p for p in source_files if p.exists() and p.stat().st_mtime > parquet_mtime]
+        latest_mtime = max(p.stat().st_mtime for p in latest_candidates)
+        sources_newer = [p for p in source_files if p.exists() and p.stat().st_mtime > latest_mtime]
         if sources_newer:
             df = posmod.build_latest_from_repo()
             return df, "rebuild_new_sources"
@@ -628,7 +654,7 @@ with tab1:
     st.session_state["df_latest"] = df_latest
 
     if load_mode == "cache":
-        st.success("Base carregada do parquet mais recente. Nenhum arquivo fonte novo foi detectado.")
+        st.success("Base carregada do cache mais recente. Nenhum arquivo fonte novo foi detectado.")
     elif load_mode.startswith("rebuild"):
         st.success("Base reconstruída automaticamente a partir dos arquivos do repositório.")
 
@@ -719,8 +745,9 @@ with tab2:
             st.stop()
         st.session_state["df_latest"] = enrich_positions(df_latest)
 
-    df_latest = st.session_state["df_latest"].copy()
-    df_latest = enrich_positions(df_latest) if "subbucket" not in df_latest.columns else df_latest
+    # Sempre reclassifica para limpar qualquer coluna duplicada que tenha vindo de cache/session_state.
+    df_latest = enrich_positions(st.session_state["df_latest"].copy())
+    st.session_state["df_latest"] = df_latest
 
     col_g, col_c, col_m = st.columns([3, 3, 2])
     with col_g:

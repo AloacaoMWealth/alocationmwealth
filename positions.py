@@ -23,16 +23,25 @@ def get_ptax():
     ini = (hoje - timedelta(days=10)).strftime('%m-%d-%Y')
     fim = hoje.strftime('%m-%d-%Y')
     url = f"{base}(dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@dataInicial='{ini}'&@dataFinalCotacao='{fim}'&$format=json&$select=cotacaoVenda&$orderby=dataHoraCotacao desc&$top=1"
-    r = requests.get(url)
-    return float(r.json()['value'][0]['cotacaoVenda'])
+    try:
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        value = r.json().get('value', [])
+        if value:
+            return float(value[0]['cotacaoVenda'])
+    except Exception as e:
+        print(f"Aviso: falha ao obter PTAX automática; usando fallback 5.60. Erro: {e}")
+    return 5.60
 
 
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 DATA_DIR = BASE_DIR / "data"
 LATEST_PARQUET = DATA_DIR / "positions_latest.parquet"
+LATEST_PICKLE = DATA_DIR / "positions_latest.pkl"
 LATEST_META = DATA_DIR / "positions_meta.json"
 CONTROL_PARQUET = DATA_DIR / "control_accounts_latest.parquet"
+CONTROL_PICKLE = DATA_DIR / "control_accounts_latest.pkl"
 
 REPO_POS_DIR = BASE_DIR / "posicoes"
 
@@ -125,6 +134,30 @@ def _pick_existing(cols: list[str], *names: str) -> str | None:
     return None
 
 
+def _save_table(df: pd.DataFrame, parquet_path: Path, pickle_path: Path) -> None:
+    """Salva em parquet quando possível; se faltar pyarrow/fastparquet, usa pickle.
+    Isso evita que o app quebre em máquinas onde o ambiente não instalou o engine de parquet.
+    """
+    DATA_DIR.mkdir(exist_ok=True)
+    try:
+        df.to_parquet(parquet_path, index=False)
+    except Exception as e:
+        print(f"Aviso: não consegui salvar parquet ({e}). Salvando pickle em {pickle_path}.")
+        df.to_pickle(pickle_path)
+
+
+def _load_table(parquet_path: Path, pickle_path: Path) -> pd.DataFrame | None:
+    """Lê parquet com fallback para pickle."""
+    if parquet_path.exists():
+        try:
+            return pd.read_parquet(parquet_path)
+        except Exception as e:
+            print(f"Aviso: não consegui ler parquet ({e}). Tentando pickle.")
+    if pickle_path.exists():
+        return pd.read_pickle(pickle_path)
+    return None
+
+
 # ---------- loaders/parsers ----------
 
 def load_control_accounts(src=None) -> pd.DataFrame:
@@ -139,8 +172,10 @@ def load_control_accounts(src=None) -> pd.DataFrame:
     if src is None:
         if REPO_CONTROL_XLSX.exists():
             src = REPO_CONTROL_XLSX
-        elif CONTROL_PARQUET.exists():
-            return pd.read_parquet(CONTROL_PARQUET)
+        elif CONTROL_PARQUET.exists() or CONTROL_PICKLE.exists():
+            cached = _load_table(CONTROL_PARQUET, CONTROL_PICKLE)
+            if cached is not None:
+                return cached
         else:
             raise FileNotFoundError("Controle de contas não encontrado (repo/cache).")
 
@@ -172,7 +207,7 @@ def load_control_accounts(src=None) -> pd.DataFrame:
     keep = [c for c in keep if c in df.columns] + ["corretora", "conta"]
     df = df.loc[:, list(dict.fromkeys(keep))].copy()
 
-    df.to_parquet(CONTROL_PARQUET, index=False)
+    _save_table(df, CONTROL_PARQUET, CONTROL_PICKLE)
     return df
 
 def parse_cs_positions(src) -> pd.DataFrame:
@@ -469,7 +504,7 @@ def build_and_save_latest(
     merged["dt_posicao"] = meta.get("dt_posicao", datetime.now().date().isoformat())
     merged = classify_bucket_estrategia(merged)
 
-    merged.to_parquet(LATEST_PARQUET, index=False)
+    _save_table(merged, LATEST_PARQUET, LATEST_PICKLE)
     try:
         with open(LATEST_META, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
@@ -479,9 +514,11 @@ def build_and_save_latest(
     return merged
 
 def load_latest_positions() -> pd.DataFrame | None:
-    if not LATEST_PARQUET.exists():
+    if not LATEST_PARQUET.exists() and not LATEST_PICKLE.exists():
         return None
-    df = pd.read_parquet(LATEST_PARQUET)
+    df = _load_table(LATEST_PARQUET, LATEST_PICKLE)
+    if df is None:
+        return None
     meta = {"dt_posicao": datetime.now().isoformat(), "diagnostics": {}}
     try:
         with open(LATEST_META, "r", encoding="utf-8") as f:
