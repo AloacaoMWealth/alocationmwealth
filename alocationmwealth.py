@@ -636,23 +636,34 @@ except Exception:
 st.title("M Wealth - Asset Allocation")
 st.caption("Consolidação de posições, diagnóstico operacional e alocação ideal por carteira.")
 
-tab1, tab2, tab3 = st.tabs(["📌 Posições", "🎯 Asset Allocation", "📄 Carteira Teórica"])
+# Navegação lazy: evita que todas as abas sejam recalculadas a cada clique.
+# st.tabs renderiza/executa todo o conteúdo de todas as abas em cada rerun;
+# com radio, somente a página escolhida é executada. Isso reduz travamentos/tela branca.
+with st.sidebar:
+    lp = logo_path()
+    if lp:
+        st.image(str(lp), use_container_width=True)
+    page = st.radio(
+        "Navegação",
+        ["📌 Posições", "🎯 Asset Allocation", "📄 Carteira Teórica"],
+        index=0,
+    )
 
 # =============================================================================
 # TAB 1 — POSIÇÕES
 # =============================================================================
-with tab1:
+if page == "📌 Posições":
     st.header("Painel de Posições Consolidadas")
     col_a, col_b = st.columns([1, 4])
     force = col_a.button("Forçar atualização", type="primary")
+    if force:
+        st.cache_data.clear()
     df_latest, load_mode = get_latest_positions_auto(force=force)
 
     if df_latest is None or df_latest.empty:
         st.stop()
 
     df_latest = enrich_positions(df_latest)
-    st.session_state["df_latest"] = df_latest
-
     if load_mode == "cache":
         st.success("Base carregada do cache mais recente. Nenhum arquivo fonte novo foi detectado.")
     elif load_mode.startswith("rebuild"):
@@ -736,18 +747,15 @@ with tab1:
 # =============================================================================
 # TAB 2 — ASSET ALLOCATION
 # =============================================================================
-with tab2:
+if page == "🎯 Asset Allocation":
     st.header("Asset Allocation - Cliente / Grupo Familiar")
-    if "df_latest" not in st.session_state:
-        df_latest, _ = get_latest_positions_auto(force=False)
-        if df_latest is None or df_latest.empty:
-            st.warning("Não foi possível carregar a base de posições.")
-            st.stop()
-        st.session_state["df_latest"] = enrich_positions(df_latest)
+    df_latest, _ = get_latest_positions_auto(force=False)
+    if df_latest is None or df_latest.empty:
+        st.warning("Não foi possível carregar a base de posições. Entre na página 'Posições' e clique em Forçar atualização.")
+        st.stop()
 
-    # Sempre reclassifica para limpar qualquer coluna duplicada que tenha vindo de cache/session_state.
-    df_latest = enrich_positions(st.session_state["df_latest"].copy())
-    st.session_state["df_latest"] = df_latest
+    # Sempre reclassifica para limpar qualquer coluna duplicada que tenha vindo de cache/salvamento.
+    df_latest = enrich_positions(df_latest.copy())
 
     col_g, col_c, col_m = st.columns([3, 3, 2])
     with col_g:
@@ -884,7 +892,7 @@ with tab2:
 # =============================================================================
 # TAB 3 — CARTEIRA TEÓRICA
 # =============================================================================
-with tab3:
+if page == "📄 Carteira Teórica":
     st.header("Carteira Teórica - Simulador para Visualização")
     st.caption("Ferramenta para o consultor entender como ficaria uma carteira de determinado valor em uma estratégia. A estratégia permanece fixa no código/gestão.")
 
