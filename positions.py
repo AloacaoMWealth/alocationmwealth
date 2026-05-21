@@ -28,16 +28,28 @@ def get_ptax():
 
 
 
-DATA_DIR = Path("data")
+BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+DATA_DIR = BASE_DIR / "data"
 LATEST_PARQUET = DATA_DIR / "positions_latest.parquet"
 LATEST_META = DATA_DIR / "positions_meta.json"
 CONTROL_PARQUET = DATA_DIR / "control_accounts_latest.parquet"
 
-REPO_POS_DIR = Path("posicoes")
-REPO_CONTROL_XLSX = REPO_POS_DIR / "Contas.xlsx"
-REPO_XP_XLSX = REPO_POS_DIR / "XP.xlsx"
-REPO_BTG_XLSX = REPO_POS_DIR / "BTG.xlsx"
-REPO_CS_CSV = REPO_POS_DIR / "CSProdutos.csv"
+REPO_POS_DIR = BASE_DIR / "posicoes"
+
+def _find_repo_file(filename: str) -> Path:
+    """Procura primeiro em /posicoes e depois ao lado do script.
+    Isso permite rodar localmente com os arquivos na raiz e, no deploy, com os arquivos dentro de posicoes/.
+    """
+    candidates = [REPO_POS_DIR / filename, BASE_DIR / filename, Path(filename)]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return REPO_POS_DIR / filename
+
+REPO_CONTROL_XLSX = _find_repo_file("Contas.xlsx")
+REPO_XP_XLSX = _find_repo_file("XP.xlsx")
+REPO_BTG_XLSX = _find_repo_file("BTG.xlsx")
+REPO_CS_CSV = _find_repo_file("CSProdutos.csv")
 
 BTG_ACCOUNT_WIDTH = 8
 
@@ -253,6 +265,7 @@ def parse_xp_positions(src) -> pd.DataFrame:
         'Ações': {'ativo': 'CodigoAtivo', 'valor': 'ValorAtual', 'qtd': 'QuantidadeTotalComGarantias', 'conta': 'CodigoCliente', 'estrategia': None},
         'Fundos Imobiliários': {'ativo': 'CodigoAtivo', 'valor': 'ValorAtual', 'qtd': 'QuantidadeTotalAtual', 'conta': 'CodigoCliente', 'estrategia': None},
         'Opções Flexíveis': {'ativo': 'CodigoInstrumento', 'valor': 'Posicao', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
+        'Opções Flexívies': {'ativo': 'CodigoInstrumento', 'valor': 'Posicao', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
         'Fundos': {'ativo': 'NomeFundo', 'valor': 'ValorAtual', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
         'Tesouro Direto': {'ativo': 'NomeTitulo', 'valor': 'ValorBruto', 'qtd': 'QuantidadeTotal', 'conta': 'CodigoCliente', 'estrategia': None},
         'Previdência': {'ativo': 'NomeFundo', 'valor': 'ValorReservaAcamulada', 'qtd': None, 'conta': 'CodigoCliente', 'estrategia': None},
