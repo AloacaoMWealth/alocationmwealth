@@ -58,7 +58,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "3.2 PDF/FiInfra"
+APP_VERSION = "3.2"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -799,8 +799,6 @@ with st.sidebar:
     page = st.radio("Navegação", ["Controle de Saldo", "Asset Allocation", "Carteira Teórica"], index=0)
 
 st.title("M Wealth - Balanceamento de Carteiras")
-st.caption("Aplicativo focado em controle de saldo, asset allocation e carteira teórica para uso operacional.")
-
 
 # =============================================================================
 # Página 1 - Controle de saldo
