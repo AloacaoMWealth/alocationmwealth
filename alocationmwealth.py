@@ -796,7 +796,7 @@ with st.sidebar:
     if lp:
         st.image(str(lp), use_container_width=True)
     st.caption(f"Versão {APP_VERSION}")
-    page = st.radio("Navegação", ["💰 Controle de Saldo", "🎯 Asset Allocation", "📄 Carteira Teórica"], index=0)
+    page = st.radio("Navegação", ["Controle de Saldo", "Asset Allocation", "Carteira Teórica"], index=0)
 
 st.title("M Wealth - Balanceamento de Carteiras")
 st.caption("Aplicativo focado em controle de saldo, asset allocation e carteira teórica para uso operacional.")
