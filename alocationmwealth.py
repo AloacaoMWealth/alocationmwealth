@@ -6,6 +6,7 @@ import unicodedata
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
 import pandas as pd
@@ -21,21 +22,51 @@ try:
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
     from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
     HAS_REPORTLAB = True
 except Exception:
     HAS_REPORTLAB = False
+
+PDF_FONT_REGULAR = "Helvetica"
+PDF_FONT_BOLD = "Helvetica-Bold"
+
+
+def register_pdf_fonts() -> tuple[str, str]:
+    """Usa fonte Unicode do ambiente para preservar acentos no PDF."""
+    global PDF_FONT_REGULAR, PDF_FONT_BOLD
+    if not HAS_REPORTLAB:
+        return PDF_FONT_REGULAR, PDF_FONT_BOLD
+    candidates = [
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        ("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
+    ]
+    for regular, bold in candidates:
+        if Path(regular).exists() and Path(bold).exists():
+            try:
+                pdfmetrics.registerFont(TTFont("MWRegular", regular))
+                pdfmetrics.registerFont(TTFont("MWBold", bold))
+                PDF_FONT_REGULAR = "MWRegular"
+                PDF_FONT_BOLD = "MWBold"
+                break
+            except Exception:
+                pass
+    return PDF_FONT_REGULAR, PDF_FONT_BOLD
+
 
 st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_icon="📊")
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "3.1 operacional"
+APP_VERSION = "3.2 PDF/FiInfra"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
 ACOES_COM_RENDA = ["CPLE3", "EGIE3", "AXIA3", "ITUB3", "VALE3", "ALOS3", "FLRY3", "ABEV3", "PRIO3", "WEGE3"]
 FIIS_RECOMENDADOS = ["KNRI11", "XPML11", "HGLG11", "PVBI11", "HGRU11", "KNCR11", "KNIP11", "KNCA11"]
 FI_INFRA_TICKERS = ["KNDI11", "CDII11", "IFRI11", "AZQI11", "KNCE11", "AZIN11", "JURO11", "IFRA11", "KDIF11", "JGPI11", "BDIF11", "JMBI11", "CPTI11"]
+FI_INFRA_POS_TICKERS = ["KNDI11", "CDII11", "IFRI11", "AZQI11", "KNCE11", "AZIN11"]
+FI_INFRA_INFLACAO_TICKERS = ["JURO11", "IFRA11", "KDIF11", "JGPI11", "BDIF11", "JMBI11", "CPTI11"]
 
 # Mantém ordem operacional das tabelas.
 SUBBUCKET_ORDER = [
@@ -442,16 +473,23 @@ def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float,
 
 
 def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float) -> pd.DataFrame:
-    alvo_total = pl * (peso_get(p, "FiInfra e Cetipados") + peso_get(p, "FiInfra e Cetipado"))
-    alvo_ativo = alvo_total / len(FI_INFRA_TICKERS) if FI_INFRA_TICKERS else 0
     rows = []
-    for t in FI_INFRA_TICKERS:
-        mask = pos_cliente["ticker_norm"].eq(ticker_clean(t))
-        atual = float(pos_cliente.loc[mask, "valor_mercado"].sum())
-        qtd = float(pos_cliente.loc[mask, "quantidade"].sum())
-        diff = alvo_ativo - atual
-        rows.append(["FiInfra e Cetipados", t, qtd, atual, alvo_ativo, diff, status_por_diff(diff, alvo_ativo), acao_por_diff(diff)])
-    return pd.DataFrame(rows, columns=["Subbucket", "Ativo", "Qtd Atual", "Valor Atual", "Valor Ideal", "Diferença", "Status", "Ação"])
+    grupos = [
+        ("Infraestrutura pós-fixada", peso_get(p, "FiInfra e Cetipados"), FI_INFRA_POS_TICKERS),
+        ("Infraestrutura indexada à inflação", peso_get(p, "FiInfra e Cetipado"), FI_INFRA_INFLACAO_TICKERS),
+    ]
+    for nome, peso_total, tickers in grupos:
+        alvo_total = pl * peso_total
+        if alvo_total <= 0 or not tickers:
+            continue
+        alvo_ativo = alvo_total / len(tickers)
+        for t in tickers:
+            mask = pos_cliente["ticker_norm"].eq(ticker_clean(t))
+            atual = float(pos_cliente.loc[mask, "valor_mercado"].sum())
+            qtd = float(pos_cliente.loc[mask, "quantidade"].sum())
+            diff = alvo_ativo - atual
+            rows.append([nome, t, qtd, atual, alvo_ativo, diff, status_por_diff(diff, alvo_ativo), acao_por_diff(diff)])
+    return pd.DataFrame(rows, columns=["Estratégia", "Ativo", "Qtd Atual", "Valor Atual", "Valor Ideal", "Diferença", "Status", "Ação"])
 
 
 def action_summary(pos_cliente: pd.DataFrame, sub_df: pd.DataFrame, pl: float) -> tuple[pd.DataFrame, float, float]:
@@ -510,6 +548,16 @@ def friendly_group_for_weight(key: str) -> tuple[str | None, str | None]:
     if k == "TESOURO":
         return "Renda fixa indexada à inflação", "Tesouro indexado à inflação"
     if "FIINFRA" in k or "CETIP" in k:
+        # Na planilha existem duas alocações estratégicas diferentes.
+        # Mantemos as duas separadas para não duplicar a carteira no PDF/teórica.
+        if "CETIPADOS" in k:
+            return "Fundos de infraestrutura e crédito incentivado", "Infraestrutura pós-fixada"
+        if "CETIPADO" in k:
+            return "Fundos de infraestrutura e crédito incentivado", "Infraestrutura indexada à inflação"
+        if "POS" in k or "PÓS" in k:
+            return "Fundos de infraestrutura e crédito incentivado", "Infraestrutura pós-fixada"
+        if "INFL" in k or "IPCA" in k:
+            return "Fundos de infraestrutura e crédito incentivado", "Infraestrutura indexada à inflação"
         return "Fundos de infraestrutura e crédito incentivado", "Fundos de infraestrutura e crédito incentivado"
     if "CREDITO PRIVADO" in k or "CRÉDITO PRIVADO" in k:
         return "Crédito privado", "Crédito privado"
@@ -532,6 +580,10 @@ def component_explanation(group: str, component: str) -> str:
     if group == "Renda fixa indexada à inflação":
         return "Componente voltado à proteção de poder de compra."
     if group == "Fundos de infraestrutura e crédito incentivado":
+        if "pós" in component.lower():
+            return "Parcela voltada a instrumentos de infraestrutura com comportamento mais próximo ao CDI e foco em geração de renda."
+        if "inflação" in component.lower():
+            return "Parcela voltada a instrumentos de infraestrutura indexados à inflação, buscando proteção de poder de compra."
         return "Seleção estratégica de instrumentos ligados a infraestrutura e crédito incentivado."
     if group == "Ações brasileiras":
         return "Carteira estratégica de empresas brasileiras definida pela gestão."
@@ -549,6 +601,15 @@ def display_order_group(group: str) -> int:
         "Fundos imobiliários", "Investimentos internacionais", "Outros instrumentos"
     ]
     return order.index(group) if group in order else 999
+
+
+def fiinfra_tickers_for_component(component: str) -> list[str]:
+    c = norm(component)
+    if "POS" in c or "PÓS" in c:
+        return FI_INFRA_POS_TICKERS
+    if "INFL" in c or "IPCA" in c:
+        return FI_INFRA_INFLACAO_TICKERS
+    return FI_INFRA_TICKERS
 
 
 def theoretical_portfolio(p: dict[str, float], valor: float, modelo: str) -> pd.DataFrame:
@@ -579,14 +640,16 @@ def theoretical_portfolio(p: dict[str, float], valor: float, modelo: str) -> pd.
             for t in tickers:
                 rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(tickers) if tickers else 0, "Valor": valor * w / len(tickers) if tickers else 0, "Explicação": "Fundo imobiliário da carteira estratégica."})
         elif group == "Fundos de infraestrutura e crédito incentivado":
-            for t in FI_INFRA_TICKERS:
-                rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(FI_INFRA_TICKERS), "Valor": valor * w / len(FI_INFRA_TICKERS), "Explicação": "Instrumento selecionado pela estratégia de infraestrutura e crédito incentivado."})
+            tickers = fiinfra_tickers_for_component(component)
+            for t in tickers:
+                rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(tickers) if tickers else 0, "Valor": valor * w / len(tickers) if tickers else 0, "Explicação": "Instrumento selecionado pela estratégia de infraestrutura e crédito incentivado."})
 
     df = pd.DataFrame(rows, columns=["Grupo", "Composição", "Nível", "Ativo", "Peso", "Valor", "Explicação"])
     if df.empty:
         return df
     df["_ord"] = df["Grupo"].apply(display_order_group)
-    return df.sort_values(["_ord", "Nível", "Composição", "Ativo"]).drop(columns="_ord").reset_index(drop=True)
+    df["_nivel_ord"] = df["Nível"].map({"Composição": 0, "Ativo": 1}).fillna(9)
+    return df.sort_values(["_ord", "Composição", "_nivel_ord", "Ativo"]).drop(columns=["_ord", "_nivel_ord"]).reset_index(drop=True)
 
 
 def portfolio_macro_cliente(df_teor: pd.DataFrame) -> pd.DataFrame:
@@ -599,16 +662,54 @@ def portfolio_macro_cliente(df_teor: pd.DataFrame) -> pd.DataFrame:
     return macro.rename(columns={"Grupo": "Classe de investimento", "Peso": "Peso sugerido", "Valor": "Valor sugerido"})
 
 
-def table_for_pdf(rows: list[list[str]], col_widths: list[float], header_bg="#172b4d", font_size=7.2) -> Table:
-    tbl = Table(rows, colWidths=[w * cm for w in col_widths], repeatRows=1)
+def pdf_paragraph(value, style_name="Cell", font_size=7.1, bold=False, color="#222222", align=0) -> Paragraph:
+    """Cria células com quebra de linha real no ReportLab, evitando texto sobreposto no PDF."""
+    font = PDF_FONT_BOLD if bold else PDF_FONT_REGULAR
+    txt = escape("" if value is None else str(value)).replace("\n", "<br/>")
+    return Paragraph(
+        txt,
+        ParagraphStyle(
+            name=style_name,
+            fontName=font,
+            fontSize=font_size,
+            leading=font_size + 2.2,
+            textColor=colors.HexColor(color),
+            alignment=align,
+            wordWrap="CJK",
+        ),
+    )
+
+
+def table_for_pdf(rows: list[list[str]], col_widths: list[float], header_bg="#172b4d", font_size=7.1, numeric_cols: list[int] | None = None) -> Table:
+    """Tabela segura para PDF: todas as células são Paragraph, com wrap e padding."""
+    numeric_cols = numeric_cols or []
+    wrapped = []
+    for ri, row in enumerate(rows):
+        new_row = []
+        for ci, cell in enumerate(row):
+            is_header = ri == 0
+            align = 1 if is_header else (2 if ci in numeric_cols else 0)
+            new_row.append(
+                pdf_paragraph(
+                    cell,
+                    style_name=f"PDFTable_{ri}_{ci}",
+                    font_size=font_size if not is_header else max(font_size, 7.2),
+                    bold=is_header,
+                    color="#FFFFFF" if is_header else "#222222",
+                    align=align,
+                )
+            )
+        wrapped.append(new_row)
+
+    tbl = Table(wrapped, colWidths=[w * cm for w in col_widths], repeatRows=1, splitByRow=1)
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (-1,0), colors.HexColor(header_bg)),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE", (0,0), (-1,-1), font_size),
         ("GRID", (0,0), (-1,-1), .2, colors.HexColor("#d9dde5")),
         ("VALIGN", (0,0), (-1,-1), "TOP"),
-        ("ALIGN", (2,1), (-1,-1), "RIGHT"),
+        ("LEFTPADDING", (0,0), (-1,-1), 5),
+        ("RIGHTPADDING", (0,0), (-1,-1), 5),
+        ("TOPPADDING", (0,0), (-1,-1), 4),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
         ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f7f8fb")]),
     ]))
     return tbl
@@ -617,14 +718,15 @@ def table_for_pdf(rows: list[list[str]], col_widths: list[float], header_bg="#17
 def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente: str = "") -> BytesIO:
     if not HAS_REPORTLAB:
         raise RuntimeError("ReportLab não está instalado.")
+    register_pdf_fonts()
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.25 * cm, leftMargin=1.25 * cm, topMargin=1.0 * cm, bottomMargin=1.0 * cm)
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="MWTitle", parent=styles["Title"], fontSize=18, alignment=TA_CENTER, leading=22, textColor=colors.HexColor("#111111")))
-    styles.add(ParagraphStyle(name="MWSub", parent=styles["Normal"], fontSize=9, alignment=TA_CENTER, textColor=colors.HexColor("#555555")))
-    styles.add(ParagraphStyle(name="MWSection", parent=styles["Heading2"], fontSize=12, leading=15, textColor=colors.HexColor("#172b4d"), spaceBefore=8, spaceAfter=4))
-    styles.add(ParagraphStyle(name="MWText", parent=styles["Normal"], fontSize=8.2, leading=10.5, textColor=colors.HexColor("#333333")))
-    styles.add(ParagraphStyle(name="MWSmall", parent=styles["Normal"], fontSize=7.2, leading=9, textColor=colors.HexColor("#555555")))
+    styles.add(ParagraphStyle(name="MWTitle", parent=styles["Title"], fontName=PDF_FONT_BOLD, fontSize=18, alignment=TA_CENTER, leading=22, textColor=colors.HexColor("#111111")))
+    styles.add(ParagraphStyle(name="MWSub", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=9, alignment=TA_CENTER, textColor=colors.HexColor("#555555")))
+    styles.add(ParagraphStyle(name="MWSection", parent=styles["Heading2"], fontName=PDF_FONT_BOLD, fontSize=12, leading=15, textColor=colors.HexColor("#172b4d"), spaceBefore=8, spaceAfter=4))
+    styles.add(ParagraphStyle(name="MWText", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=8.2, leading=10.5, textColor=colors.HexColor("#333333")))
+    styles.add(ParagraphStyle(name="MWSmall", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=7.2, leading=9, textColor=colors.HexColor("#555555")))
     story = []
     lp = logo_pdf_path()
     if lp:
@@ -638,7 +740,7 @@ def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente:
     story.append(Table(info, colWidths=[4.0 * cm, 12.5 * cm], style=[
         ("GRID", (0,0), (-1,-1), .25, colors.HexColor("#d9dde5")),
         ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#eef1f6")),
-        ("FONTNAME", (0,0), (0,-1), "Helvetica-Bold"),
+        ("FONTNAME", (0,0), (0,-1), PDF_FONT_BOLD),
         ("FONTSIZE", (0,0), (-1,-1), 8),
         ("VALIGN", (0,0), (-1,-1), "TOP"),
     ]))
@@ -649,7 +751,7 @@ def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente:
     for _, r in macro.iterrows():
         data.append([r["Classe de investimento"], fmt_pct(r["Peso sugerido"]), format_brl(r["Valor sugerido"])])
     story.append(Paragraph("Resumo da alocação sugerida", styles["MWSection"]))
-    story.append(table_for_pdf(data, [8.8, 3.4, 4.5], font_size=8))
+    story.append(table_for_pdf(data, [8.2, 3.0, 4.0], font_size=7.8, numeric_cols=[1, 2]))
     story.append(Spacer(1, .25 * cm))
 
     for group in macro["Classe de investimento"].tolist():
@@ -661,13 +763,18 @@ def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente:
         data = [["Composição", "Peso", "Valor", "Explicação"]]
         for _, r in comp.iterrows():
             data.append([r["Composição"], fmt_pct(r["Peso"]), format_brl(r["Valor"]), r["Explicação"]])
-        story.append(table_for_pdf(data, [4.8, 2.0, 3.2, 6.7], font_size=6.8))
+        story.append(table_for_pdf(data, [4.5, 2.1, 3.1, 7.0], font_size=6.9, numeric_cols=[1, 2]))
         if not ativos.empty:
             story.append(Spacer(1, .12 * cm))
-            data = [["Ativo", "Peso", "Valor"]]
-            for _, r in ativos.iterrows():
-                data.append([r["Ativo"], fmt_pct(r["Peso"]), format_brl(r["Valor"])])
-            story.append(table_for_pdf(data, [6.0, 3.0, 4.0], font_size=7))
+            for component_name, ativos_component in ativos.groupby("Composição", sort=False):
+                if len(ativos["Composição"].dropna().unique()) > 1:
+                    story.append(Paragraph(f"Ativos — {component_name}", styles["MWSmall"]))
+                    story.append(Spacer(1, .06 * cm))
+                data = [["Ativo", "Peso", "Valor"]]
+                for _, r in ativos_component.iterrows():
+                    data.append([r["Ativo"], fmt_pct(r["Peso"]), format_brl(r["Valor"])])
+                story.append(table_for_pdf(data, [6.0, 3.0, 4.0], font_size=7.0, numeric_cols=[1, 2]))
+                story.append(Spacer(1, .10 * cm))
         story.append(Spacer(1, .18 * cm))
 
     story.append(Spacer(1, .3 * cm))
@@ -939,12 +1046,22 @@ if page == "📄 Carteira Teórica":
             )
             if not ativos.empty:
                 st.markdown("**Ativos utilizados na carteira modelo**")
-                tabela_ativos = ativos.rename(columns={"Peso": "Peso sugerido", "Valor": "Valor sugerido"})[["Ativo", "Peso sugerido", "Valor sugerido"]]
-                st.dataframe(
-                    prepare_display(tabela_ativos, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                if ativos["Composição"].nunique() > 1:
+                    for comp_nome, ativos_comp in ativos.groupby("Composição", sort=False):
+                        st.markdown(f"_{comp_nome}_")
+                        tabela_ativos = ativos_comp.rename(columns={"Peso": "Peso sugerido", "Valor": "Valor sugerido"})[["Ativo", "Peso sugerido", "Valor sugerido"]]
+                        st.dataframe(
+                            prepare_display(tabela_ativos, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                else:
+                    tabela_ativos = ativos.rename(columns={"Peso": "Peso sugerido", "Valor": "Valor sugerido"})[["Ativo", "Peso sugerido", "Valor sugerido"]]
+                    st.dataframe(
+                        prepare_display(tabela_ativos, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
     st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
     st.subheader("Gerar material para cliente")
