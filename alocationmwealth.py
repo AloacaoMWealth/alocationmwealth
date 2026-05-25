@@ -29,7 +29,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "3.0 operacional"
+APP_VERSION = "3.1 operacional"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -74,6 +74,14 @@ def find_file(filename: str) -> Path:
 
 def logo_path() -> Path | None:
     for p in [BASE_DIR / "Logo-M-Wealth.png", POS_DIR / "Logo-M-Wealth.png", Path.cwd() / "Logo-M-Wealth.png"]:
+        if p.exists():
+            return p
+    return None
+
+
+def logo_pdf_path() -> Path | None:
+    """Logo específica para PDF em fundo claro."""
+    for p in [BASE_DIR / "Logo-M-Wealth-Preta.png", POS_DIR / "Logo-M-Wealth-Preta.png", Path.cwd() / "Logo-M-Wealth-Preta.png", BASE_DIR / "Logo-M-Wealth.png"]:
         if p.exists():
             return p
     return None
@@ -460,67 +468,211 @@ def action_summary(pos_cliente: pd.DataFrame, sub_df: pd.DataFrame, pl: float) -
     return acao, saldo, fora_liquidez
 
 
+
+PARENT_WEIGHT_KEYS = {
+    "RF POS", "RF PÓS", "FUNDOS DE INVEST.", "FUNDOS DE INVEST", "RF PRE", "RF PRÉ",
+    "RF INFLACAO", "RF INFLAÇÃO", "RV BRASIL", "INTERNACIONAL"
+}
+
+GROUP_DESCRIPTIONS = {
+    "Renda fixa pós-fixada": "Parcela voltada para liquidez, estabilidade e acompanhamento das taxas de juros. Em geral, utiliza instrumentos atrelados ao CDI ou à Selic, distribuídos por prazo de resgate.",
+    "Renda fixa prefixada": "Parcela com taxa conhecida no momento da aplicação. Pode ajudar a travar juros quando o cenário for favorável, respeitando o prazo e o perfil do cliente.",
+    "Renda fixa indexada à inflação": "Parcela que busca preservar poder de compra ao longo do tempo, combinando uma taxa real com a variação da inflação.",
+    "Fundos de infraestrutura e crédito incentivado": "Parcela destinada a instrumentos ligados a infraestrutura e crédito incentivado, com potencial de diversificação e geração de renda.",
+    "Crédito privado": "Parcela destinada a títulos emitidos por empresas ou estruturas de crédito, buscando retorno adicional mediante análise de risco.",
+    "Ações brasileiras": "Parcela de crescimento da carteira, composta por empresas listadas na bolsa brasileira conforme a estratégia definida pela gestão.",
+    "Fundos imobiliários": "Parcela de renda variável voltada ao mercado imobiliário, com potencial de geração de renda e diversificação setorial.",
+    "Investimentos internacionais": "Parcela voltada à diversificação geográfica e cambial, reduzindo a dependência exclusiva do mercado brasileiro.",
+    "Outros instrumentos": "Parcela complementar para instrumentos específicos, quando aplicável à estratégia selecionada.",
+}
+
+
+def friendly_group_for_weight(key: str) -> tuple[str | None, str | None]:
+    k = norm(key)
+    if k in PARENT_WEIGHT_KEYS:
+        return None, None
+    if k == "IMEDIATO":
+        return "Renda fixa pós-fixada", "Liquidez imediata"
+    if "1 A 30" in k:
+        return "Renda fixa pós-fixada", "Resgate entre 1 e 30 dias"
+    if "31 A 180" in k:
+        return "Renda fixa pós-fixada", "Resgate entre 31 e 180 dias"
+    if "181 A 360" in k:
+        return "Renda fixa pós-fixada", "Resgate entre 181 e 360 dias"
+    if "361" in k:
+        return "Renda fixa pós-fixada", "Resgate acima de 361 dias"
+    if "BANCARIO PRE" in k or "BANCÁRIO PRÉ" in k or "BANCARIO PRÉ" in k:
+        return "Renda fixa prefixada", "Títulos bancários prefixados"
+    if "TESOURO PRE" in k or "TESOURO PRÉ" in k:
+        return "Renda fixa prefixada", "Tesouro prefixado"
+    if k == "BANCARIO" or k == "BANCÁRIO":
+        return "Renda fixa indexada à inflação", "Títulos bancários indexados à inflação"
+    if k == "TESOURO":
+        return "Renda fixa indexada à inflação", "Tesouro indexado à inflação"
+    if "FIINFRA" in k or "CETIP" in k:
+        return "Fundos de infraestrutura e crédito incentivado", "Fundos de infraestrutura e crédito incentivado"
+    if "CREDITO PRIVADO" in k or "CRÉDITO PRIVADO" in k:
+        return "Crédito privado", "Crédito privado"
+    if "ACOES" in k or "AÇÕES" in k or k == "ACOES" or k == "AÇÕES":
+        return "Ações brasileiras", "Carteira de ações brasileiras"
+    if "FII" in k:
+        return "Fundos imobiliários", "Fundos imobiliários"
+    if k == "RENDA FIXA":
+        return "Investimentos internacionais", "Renda fixa internacional"
+    if k == "RENDA VARIAVEL" or k == "RENDA VARIÁVEL":
+        return "Investimentos internacionais", "Renda variável internacional"
+    return "Outros instrumentos", str(key).strip()
+
+
+def component_explanation(group: str, component: str) -> str:
+    if group == "Renda fixa pós-fixada":
+        return "Componente de liquidez e estabilidade, organizado conforme o prazo de disponibilidade dos recursos."
+    if group == "Renda fixa prefixada":
+        return "Componente com taxa definida no início da aplicação."
+    if group == "Renda fixa indexada à inflação":
+        return "Componente voltado à proteção de poder de compra."
+    if group == "Fundos de infraestrutura e crédito incentivado":
+        return "Seleção estratégica de instrumentos ligados a infraestrutura e crédito incentivado."
+    if group == "Ações brasileiras":
+        return "Carteira estratégica de empresas brasileiras definida pela gestão."
+    if group == "Fundos imobiliários":
+        return "Carteira estratégica de fundos imobiliários definida pela gestão."
+    if group == "Investimentos internacionais":
+        return "Exposição internacional para diversificação geográfica e cambial."
+    return "Componente complementar da estratégia."
+
+
+def display_order_group(group: str) -> int:
+    order = [
+        "Renda fixa pós-fixada", "Renda fixa prefixada", "Renda fixa indexada à inflação",
+        "Fundos de infraestrutura e crédito incentivado", "Crédito privado", "Ações brasileiras",
+        "Fundos imobiliários", "Investimentos internacionais", "Outros instrumentos"
+    ]
+    return order.index(group) if group in order else 999
+
+
 def theoretical_portfolio(p: dict[str, float], valor: float, modelo: str) -> pd.DataFrame:
     rows = []
-    sub = subbucket_targets_from_model(p, valor)
-    order = {b: i for i, b in enumerate(SUBBUCKET_ORDER)}
-    sub["_ord"] = sub["Subbucket"].map(order).fillna(999)
-    sub = sub.sort_values(["Classe", "_ord"])
-    for _, r in sub.iterrows():
-        classe, bucket, w, val = r["Classe"], r["Subbucket"], r["Peso Ideal"], r["Valor Ideal"]
-        rows.append([classe, bucket, "Subbucket", "", w, val, ""]) 
-        if bucket in ["Ações", "FIIs"]:
-            tickers = rv_universe(modelo).get(bucket, [])
+    for key, weight in p.items():
+        w = float(weight or 0)
+        if w <= 0:
+            continue
+        group, component = friendly_group_for_weight(key)
+        if not group or not component:
+            continue
+        rows.append({
+            "Grupo": group,
+            "Composição": component,
+            "Nível": "Composição",
+            "Ativo": "",
+            "Peso": w,
+            "Valor": valor * w,
+            "Explicação": component_explanation(group, component),
+        })
+
+        if group == "Ações brasileiras":
+            tickers = rv_universe(modelo).get("Ações", [])
             for t in tickers:
-                rows.append([classe, bucket, "Ativo", t, w / len(tickers) if tickers else 0, val / len(tickers) if tickers else 0, "Carteira estratégica"])
-        if bucket == "FiInfra e Cetipados":
+                rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(tickers) if tickers else 0, "Valor": valor * w / len(tickers) if tickers else 0, "Explicação": "Empresa brasileira da carteira estratégica."})
+        elif group == "Fundos imobiliários":
+            tickers = rv_universe(modelo).get("FIIs", [])
+            for t in tickers:
+                rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(tickers) if tickers else 0, "Valor": valor * w / len(tickers) if tickers else 0, "Explicação": "Fundo imobiliário da carteira estratégica."})
+        elif group == "Fundos de infraestrutura e crédito incentivado":
             for t in FI_INFRA_TICKERS:
-                rows.append([classe, bucket, "Ativo", t, w / len(FI_INFRA_TICKERS), val / len(FI_INFRA_TICKERS), "Lista estratégica"])
-    return pd.DataFrame(rows, columns=["Classe", "Subbucket", "Nível", "Ativo", "Peso", "Valor", "Observação"])
+                rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(FI_INFRA_TICKERS), "Valor": valor * w / len(FI_INFRA_TICKERS), "Explicação": "Instrumento selecionado pela estratégia de infraestrutura e crédito incentivado."})
+
+    df = pd.DataFrame(rows, columns=["Grupo", "Composição", "Nível", "Ativo", "Peso", "Valor", "Explicação"])
+    if df.empty:
+        return df
+    df["_ord"] = df["Grupo"].apply(display_order_group)
+    return df.sort_values(["_ord", "Nível", "Composição", "Ativo"]).drop(columns="_ord").reset_index(drop=True)
+
+
+def portfolio_macro_cliente(df_teor: pd.DataFrame) -> pd.DataFrame:
+    base = df_teor[df_teor["Nível"].eq("Composição")].copy()
+    if base.empty:
+        return pd.DataFrame(columns=["Classe de investimento", "Peso sugerido", "Valor sugerido"])
+    macro = base.groupby("Grupo", as_index=False).agg(Peso=("Peso", "sum"), Valor=("Valor", "sum"))
+    macro["_ord"] = macro["Grupo"].apply(display_order_group)
+    macro = macro.sort_values("_ord").drop(columns="_ord")
+    return macro.rename(columns={"Grupo": "Classe de investimento", "Peso": "Peso sugerido", "Valor": "Valor sugerido"})
+
+
+def table_for_pdf(rows: list[list[str]], col_widths: list[float], header_bg="#172b4d", font_size=7.2) -> Table:
+    tbl = Table(rows, colWidths=[w * cm for w in col_widths], repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor(header_bg)),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("FONTSIZE", (0,0), (-1,-1), font_size),
+        ("GRID", (0,0), (-1,-1), .2, colors.HexColor("#d9dde5")),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("ALIGN", (2,1), (-1,-1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f7f8fb")]),
+    ]))
+    return tbl
 
 
 def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente: str = "") -> BytesIO:
     if not HAS_REPORTLAB:
         raise RuntimeError("ReportLab não está instalado.")
     buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.2 * cm, leftMargin=1.2 * cm, topMargin=1 * cm, bottomMargin=1 * cm)
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.25 * cm, leftMargin=1.25 * cm, topMargin=1.0 * cm, bottomMargin=1.0 * cm)
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="MWTitle", parent=styles["Title"], fontSize=17, alignment=TA_CENTER, leading=21))
-    styles.add(ParagraphStyle(name="MWSmall", parent=styles["Normal"], fontSize=7.5, leading=9))
+    styles.add(ParagraphStyle(name="MWTitle", parent=styles["Title"], fontSize=18, alignment=TA_CENTER, leading=22, textColor=colors.HexColor("#111111")))
+    styles.add(ParagraphStyle(name="MWSub", parent=styles["Normal"], fontSize=9, alignment=TA_CENTER, textColor=colors.HexColor("#555555")))
+    styles.add(ParagraphStyle(name="MWSection", parent=styles["Heading2"], fontSize=12, leading=15, textColor=colors.HexColor("#172b4d"), spaceBefore=8, spaceAfter=4))
+    styles.add(ParagraphStyle(name="MWText", parent=styles["Normal"], fontSize=8.2, leading=10.5, textColor=colors.HexColor("#333333")))
+    styles.add(ParagraphStyle(name="MWSmall", parent=styles["Normal"], fontSize=7.2, leading=9, textColor=colors.HexColor("#555555")))
     story = []
-    lp = logo_path()
+    lp = logo_pdf_path()
     if lp:
-        story.append(Image(str(lp), width=5 * cm, height=1.6 * cm, kind="proportional"))
+        story.append(Image(str(lp), width=5.8 * cm, height=1.8 * cm, kind="proportional"))
         story.append(Spacer(1, .2 * cm))
-    story.append(Paragraph("Estudo de Carteira Teórica", styles["MWTitle"]))
-    story.append(Paragraph(f"M Wealth • {datetime.now().strftime('%d/%m/%Y')}", styles["Normal"]))
-    story.append(Spacer(1, .35 * cm))
-    info = [["Modelo", modelo], ["Valor simulado", format_brl(valor)]]
-    if cliente.strip():
-        info.insert(0, ["Cliente", cliente.strip()])
-    story.append(Table(info, colWidths=[4 * cm, 12 * cm], style=[("GRID", (0,0), (-1,-1), .25, colors.grey), ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#eef1f6")), ("FONTSIZE", (0,0), (-1,-1), 8)]))
-    story.append(Spacer(1, .35 * cm))
-    sub = df_teor[df_teor["Nível"].eq("Subbucket")].copy()
-    data = [["Classe", "Subbucket", "Peso", "Valor"]]
-    for _, r in sub.iterrows():
-        data.append([r["Classe"], r["Subbucket"], fmt_pct(r["Peso"]), format_brl(r["Valor"])])
-    tbl = Table(data, colWidths=[3.2 * cm, 7.0 * cm, 2.2 * cm, 4.0 * cm], repeatRows=1)
-    tbl.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), colors.HexColor("#172b4d")), ("TEXTCOLOR", (0,0), (-1,0), colors.white), ("FONTSIZE", (0,0), (-1,-1), 7), ("GRID", (0,0), (-1,-1), .2, colors.lightgrey), ("ALIGN", (2,1), (-1,-1), "RIGHT")]))
-    story.append(Paragraph("Abertura por Subbucket", styles["Heading2"]))
-    story.append(tbl)
-    ativos = df_teor[df_teor["Nível"].eq("Ativo")].copy()
-    if not ativos.empty:
-        story.append(PageBreak())
-        story.append(Paragraph("Carteira Teórica por Ativo", styles["Heading2"]))
-        data = [["Subbucket", "Ativo", "Peso", "Valor", "Observação"]]
-        for _, r in ativos.iterrows():
-            data.append([r["Subbucket"], r["Ativo"], fmt_pct(r["Peso"]), format_brl(r["Valor"]), r["Observação"]])
-        tbl = Table(data, colWidths=[5.1 * cm, 3.0 * cm, 2.0 * cm, 3.4 * cm, 3.2 * cm], repeatRows=1)
-        tbl.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), colors.HexColor("#172b4d")), ("TEXTCOLOR", (0,0), (-1,0), colors.white), ("FONTSIZE", (0,0), (-1,-1), 6.8), ("GRID", (0,0), (-1,-1), .2, colors.lightgrey), ("ALIGN", (2,1), (3,-1), "RIGHT")]))
-        story.append(tbl)
+    story.append(Paragraph("Estudo de Alocação Teórica", styles["MWTitle"]))
+    story.append(Paragraph("Simulação ilustrativa de carteira por perfil de investimento", styles["MWSub"]))
     story.append(Spacer(1, .4 * cm))
-    story.append(Paragraph("Disclaimer", styles["Heading3"]))
-    story.append(Paragraph("Este material é meramente informativo e apresenta uma simulação de carteira teórica com base em parâmetros internos de alocação. Não constitui promessa de rentabilidade, garantia de resultado, oferta pública ou recomendação individualizada sem análise de suitability.", styles["MWSmall"]))
+
+    info = [["Cliente", cliente.strip() or "Não informado"], ["Perfil utilizado", modelo], ["Valor simulado", format_brl(valor)], ["Data", datetime.now().strftime("%d/%m/%Y")]]
+    story.append(Table(info, colWidths=[4.0 * cm, 12.5 * cm], style=[
+        ("GRID", (0,0), (-1,-1), .25, colors.HexColor("#d9dde5")),
+        ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#eef1f6")),
+        ("FONTNAME", (0,0), (0,-1), "Helvetica-Bold"),
+        ("FONTSIZE", (0,0), (-1,-1), 8),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+    ]))
+    story.append(Spacer(1, .35 * cm))
+
+    macro = portfolio_macro_cliente(df_teor)
+    data = [["Classe de investimento", "Peso sugerido", "Valor sugerido"]]
+    for _, r in macro.iterrows():
+        data.append([r["Classe de investimento"], fmt_pct(r["Peso sugerido"]), format_brl(r["Valor sugerido"])])
+    story.append(Paragraph("Resumo da alocação sugerida", styles["MWSection"]))
+    story.append(table_for_pdf(data, [8.8, 3.4, 4.5], font_size=8))
+    story.append(Spacer(1, .25 * cm))
+
+    for group in macro["Classe de investimento"].tolist():
+        comp = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Composição"))].copy()
+        ativos = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Ativo"))].copy()
+        story.append(Paragraph(group, styles["MWSection"]))
+        story.append(Paragraph(GROUP_DESCRIPTIONS.get(group, "Componente da estratégia de alocação."), styles["MWText"]))
+        story.append(Spacer(1, .12 * cm))
+        data = [["Composição", "Peso", "Valor", "Explicação"]]
+        for _, r in comp.iterrows():
+            data.append([r["Composição"], fmt_pct(r["Peso"]), format_brl(r["Valor"]), r["Explicação"]])
+        story.append(table_for_pdf(data, [4.8, 2.0, 3.2, 6.7], font_size=6.8))
+        if not ativos.empty:
+            story.append(Spacer(1, .12 * cm))
+            data = [["Ativo", "Peso", "Valor"]]
+            for _, r in ativos.iterrows():
+                data.append([r["Ativo"], fmt_pct(r["Peso"]), format_brl(r["Valor"])])
+            story.append(table_for_pdf(data, [6.0, 3.0, 4.0], font_size=7))
+        story.append(Spacer(1, .18 * cm))
+
+    story.append(Spacer(1, .3 * cm))
+    story.append(Paragraph("Disclaimer", styles["MWSection"]))
+    story.append(Paragraph("Este material é meramente informativo e apresenta uma simulação baseada em parâmetros internos de alocação. A composição final da carteira depende da análise individual do investidor, de sua política de suitability, disponibilidade de produtos, condições de mercado e avaliação da equipe responsável. Rentabilidade passada não representa garantia de rentabilidade futura.", styles["MWSmall"]))
     doc.build(story)
     buf.seek(0)
     return buf
@@ -537,7 +689,7 @@ with st.sidebar:
     if lp:
         st.image(str(lp), use_container_width=True)
     st.caption(f"Versão {APP_VERSION}")
-    page = st.radio("Navegação", ["💰 Controle de Saldo", "🎯 Asset Allocation", "📄 Carteira Teórica", "🛠️ Diagnóstico"], index=0)
+    page = st.radio("Navegação", ["💰 Controle de Saldo", "🎯 Asset Allocation", "📄 Carteira Teórica"], index=0)
 
 st.title("M Wealth - Balanceamento de Carteiras")
 st.caption("Aplicativo focado em controle de saldo, asset allocation e carteira teórica para uso operacional.")
@@ -722,62 +874,93 @@ if page == "🎯 Asset Allocation":
 # Página 3 - Carteira Teórica
 # =============================================================================
 if page == "📄 Carteira Teórica":
-    st.header("Carteira Teórica - Simulador Comercial")
+    st.header("Carteira Teórica - Simulador para Cliente")
+    st.markdown(
+        '<div class="mw-muted">Visualização da carteira modelo de forma simples, organizada e apresentável para o cliente final.</div>',
+        unsafe_allow_html=True,
+    )
     modelos = list(pesos.keys())
     if not modelos:
         st.error("Pesos-alocacao.xlsx não foi encontrado ou não pôde ser lido.")
         st.stop()
+
     c1, c2, c3 = st.columns([2, 1.2, 2])
     with c1:
-        modelo = st.selectbox("Modelo", modelos)
+        modelo = st.selectbox("Perfil de carteira", modelos)
     with c2:
-        valor = st.number_input("Patrimônio simulado", min_value=0.0, value=1_000_000.0, step=100_000.0, format="%.2f")
+        valor = st.number_input("Valor simulado", min_value=0.0, value=1_000_000.0, step=100_000.0, format="%.2f")
     with c3:
         cliente = st.text_input("Nome do cliente no PDF (opcional)")
+
     df_teor = theoretical_portfolio(pesos[modelo], valor, modelo)
-    macro = df_teor[df_teor["Nível"].eq("Subbucket")].groupby("Classe", as_index=False)["Valor"].sum()
-    macro["Peso"] = np.where(valor > 0, macro["Valor"] / valor, 0)
+    if df_teor.empty:
+        st.warning("Não encontrei componentes válidos para essa carteira. Verifique a planilha de pesos.")
+        st.stop()
+
+    macro = portfolio_macro_cliente(df_teor)
+    renda_fixa = macro[macro["Classe de investimento"].str.contains("Renda fixa|infraestrutura|Crédito privado", case=False, na=False)]["Valor sugerido"].sum()
+    renda_variavel = macro[macro["Classe de investimento"].str.contains("Ações|Fundos imobiliários", case=False, na=False)]["Valor sugerido"].sum()
+    internacional = macro[macro["Classe de investimento"].str.contains("internacionais", case=False, na=False)]["Valor sugerido"].sum()
+
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Valor", format_brl(valor))
-    k2.metric("RF Brasil", format_brl(macro.loc[macro["Classe"].eq("RF Brasil"), "Valor"].sum()))
-    k3.metric("RV Brasil", format_brl(macro.loc[macro["Classe"].eq("RV Brasil"), "Valor"].sum()))
-    k4.metric("Internacional", format_brl(macro.loc[macro["Classe"].eq("Internacional"), "Valor"].sum()))
-    c1, c2 = st.columns(2)
-    with c1:
-        fig = px.pie(macro, names="Classe", values="Valor", title="Alocação Teórica", hole=.45)
-        fig.update_layout(height=300, margin=dict(l=8, r=8, t=45, b=8))
+    k1.metric("Valor simulado", format_brl(valor))
+    k2.metric("Renda fixa no Brasil", format_brl(renda_fixa))
+    k3.metric("Renda variável no Brasil", format_brl(renda_variavel))
+    k4.metric("Investimentos internacionais", format_brl(internacional))
+
+    col_a, col_b = st.columns([1.05, 1.2])
+    with col_a:
+        fig = px.pie(macro, names="Classe de investimento", values="Valor sugerido", title="Distribuição sugerida", hole=.48)
+        fig.update_layout(height=330, margin=dict(l=8, r=8, t=45, b=8), legend_title_text="")
         st.plotly_chart(fig, use_container_width=True)
-    with c2:
-        sub = df_teor[df_teor["Nível"].eq("Subbucket")].sort_values("Valor", ascending=True)
-        fig = px.bar(sub, x="Valor", y="Subbucket", orientation="h", title="Abertura por Subbucket")
-        fig.update_layout(height=300, margin=dict(l=8, r=8, t=45, b=8))
-        st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(prepare_display(df_teor, money_cols=["Valor"], pct_cols=["Peso"]), use_container_width=True, hide_index=True)
+    with col_b:
+        st.subheader("Resumo da alocação")
+        st.dataframe(
+            prepare_display(macro, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
+    st.subheader("Composição por classe de investimento")
+
+    for group in macro["Classe de investimento"].tolist():
+        comp = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Composição"))].copy()
+        ativos = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Ativo"))].copy()
+        total_group = float(comp["Valor"].sum())
+        peso_group = float(comp["Peso"].sum())
+        with st.expander(f"{group} — {fmt_pct(peso_group)} | {format_brl(total_group)}", expanded=True):
+            st.markdown(f'<div class="mw-muted">{GROUP_DESCRIPTIONS.get(group, "Componente da estratégia de alocação.")}</div>', unsafe_allow_html=True)
+            tabela_comp = comp.rename(columns={"Peso": "Peso sugerido", "Valor": "Valor sugerido"})[["Composição", "Peso sugerido", "Valor sugerido", "Explicação"]]
+            st.dataframe(
+                prepare_display(tabela_comp, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+            if not ativos.empty:
+                st.markdown("**Ativos utilizados na carteira modelo**")
+                tabela_ativos = ativos.rename(columns={"Peso": "Peso sugerido", "Valor": "Valor sugerido"})[["Ativo", "Peso sugerido", "Valor sugerido"]]
+                st.dataframe(
+                    prepare_display(tabela_ativos, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+    st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
+    st.subheader("Gerar material para cliente")
+    st.markdown('<div class="mw-muted">O PDF usa a logo preta em fundo claro e evita abreviações técnicas para ficar mais apresentável ao cliente final.</div>', unsafe_allow_html=True)
     try:
         pdf = build_pdf_teorico(df_teor, modelo, valor, cliente)
-        st.download_button("Baixar PDF", data=pdf, file_name=f"carteira_teorica_mwealth_{modelo.lower().replace(' ', '_')}.pdf", mime="application/pdf", type="primary")
+        st.download_button(
+            "Baixar PDF da carteira teórica",
+            data=pdf,
+            file_name=f"carteira_teorica_mwealth_{modelo.lower().replace(' ', '_')}.pdf",
+            mime="application/pdf",
+            type="primary",
+        )
     except Exception as e:
         st.info(f"PDF indisponível: {e}")
 
 
-# =============================================================================
-# Diagnóstico leve
-# =============================================================================
-if page == "🛠️ Diagnóstico":
-    st.header("Diagnóstico Técnico")
-    sig = posmod.source_signature()
-    diag_rows = []
-    for nome, info in sig.items():
-        diag_rows.append({"Arquivo": nome, "Caminho": info.get("path"), "Existe": not info.get("missing", False), "Tamanho": info.get("size", 0), "Modificado": info.get("modified", "")})
-    st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
-    st.write({"latest_is_stale": posmod.latest_is_stale(), "latest_pickle": str(posmod.LATEST_PICKLE), "exists": posmod.LATEST_PICKLE.exists(), "meta": str(posmod.LATEST_META)})
-    if posmod.LATEST_META.exists():
-        try:
-            st.json(json.loads(posmod.LATEST_META.read_text(encoding="utf-8")))
-        except Exception as e:
-            st.warning(f"Não consegui ler meta: {e}")
-    if st.button("Limpar cache do Streamlit"):
-        st.cache_data.clear()
-        st.success("Cache limpo. Recarregue a página.")
 
 st.caption("M Wealth Asset Allocation")
