@@ -19,8 +19,7 @@ BTG_ACCOUNT_WIDTH = 8
 
 
 def find_repo_file(filename: str) -> Path:
-    """Procura o arquivo no padrão do deploy e no padrão de teste local."""
-    candidates = [POS_DIR / filename, BASE_DIR / filename, Path(filename)]
+    candidates = [POS_DIR / filename, BASE_DIR / filename, Path.cwd() / filename, Path(filename)]
     for p in candidates:
         if p.exists():
             return p
@@ -76,7 +75,7 @@ def _normalize_account(x: Any) -> str:
     return s.replace(" ", "")
 
 
-def _only_digits(s: str) -> str:
+def _only_digits(s: Any) -> str:
     return "".join(ch for ch in str(s or "") if ch.isdigit())
 
 
@@ -96,6 +95,22 @@ def _pick_existing(cols: list[str], *names: str) -> str | None:
         if key in norm_map:
             return norm_map[key]
     return None
+
+
+def _safe_col(df: pd.DataFrame, col: str | None, default: Any = "") -> pd.Series:
+    if col and col in df.columns:
+        return df[col]
+    return pd.Series([default] * len(df), index=df.index)
+
+
+def _money_to_float(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.replace("R$", "", regex=False).str.replace("$", "", regex=False).str.strip()
+    # Detecta formato brasileiro quando há vírgula como decimal.
+    br_mask = s.str.contains(",", regex=False) & s.str.contains(r"\.\d{3}", regex=True)
+    s = np.where(br_mask, pd.Series(s).str.replace(".", "", regex=False).str.replace(",", ".", regex=False), s)
+    s = pd.Series(s, index=series.index).str.replace(",", "", regex=False)
+    s = s.str.replace(r"[^0-9.\-]", "", regex=True)
+    return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
 
 def force_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
@@ -151,6 +166,11 @@ def load_control_accounts(src: str | Path | None = None) -> pd.DataFrame:
     m = df["corretora"].eq("BTG")
     df.loc[m, "conta"] = df.loc[m, "conta"].apply(_normalize_btg_account)
 
+    # Padroniza nome da coluna Perfil Carteira, mesmo quando vier com espaço no final.
+    for c in list(df.columns):
+        if str(c).strip().upper() == "PERFIL CARTEIRA":
+            df = df.rename(columns={c: "Perfil Carteira"})
+
     keep = [
         "GRUPO GERAL", "corretora", "conta", "CLIENTE", "TIPO DE MARCAÇÃO ",
         "CLIENTE - CORRETORA", "Perfil Carteira"
@@ -182,52 +202,54 @@ def parse_cs_positions(src: str | Path) -> pd.DataFrame:
     if "Market Value" not in raw.columns:
         raise ValueError(f"CSProdutos.csv: coluna Market Value não encontrada. Colunas: {list(raw.columns)}")
 
-    mv = raw["Market Value"].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False)
-    mv = mv.str.replace(r"[^0-9.\-]", "", regex=True)
-    raw["Market Value"] = pd.to_numeric(mv, errors="coerce").fillna(0.0)
+    raw["Market Value"] = _money_to_float(raw["Market Value"])
     qty_col = _pick_existing(raw.columns.tolist(), "Quantity", "Qty", "Quantidade")
-    if qty_col:
-        qty = raw[qty_col].astype(str).str.replace(",", "", regex=False).str.replace(r"[^0-9.\-]", "", regex=True)
-        quantidade = pd.to_numeric(qty, errors="coerce").fillna(0.0)
-    else:
-        quantidade = pd.Series([0.0] * len(raw))
+    quantidade = _money_to_float(raw[qty_col]) if qty_col else pd.Series([0.0] * len(raw), index=raw.index)
 
     sym_col = _pick_existing(raw.columns.tolist(), "Symbol/CUSIP", "Symbol", "CUSIP")
     name_col = _pick_existing(raw.columns.tolist(), "Name", "Description")
     type_col = _pick_existing(raw.columns.tolist(), "Security Type", "Type")
 
-    return pd.DataFrame({
+    df = pd.DataFrame({
         "corretora": "CS",
-        "conta": raw.get("Account", pd.Series([""] * len(raw))).apply(_normalize_account),
-        "asset_id": raw.get(sym_col, pd.Series([""] * len(raw))).astype(str).str.strip() if sym_col else "",
-        "asset_nome": raw.get(name_col, pd.Series([""] * len(raw))).astype(str).str.strip() if name_col else "",
-        "asset_tipo": raw.get(type_col, pd.Series([""] * len(raw))).astype(str).str.strip() if type_col else "",
+        "conta": _safe_col(raw, "Account").apply(_normalize_account),
+        "asset_id": _safe_col(raw, sym_col).astype(str).str.strip(),
+        "asset_nome": _safe_col(raw, name_col).astype(str).str.strip(),
+        "asset_tipo": _safe_col(raw, type_col).astype(str).str.strip(),
         "valor_mercado": raw["Market Value"],
         "quantidade": quantidade,
         "moeda": "USD",
         "mercado": "Internacional",
         "sub_mercado": "",
         "estrategia": "",
+        "indexador": "",
+        "liquidez": "",
+        "vencimento": "",
+        "emissor": "",
+        "taxa": "",
     })
+    return df[df["valor_mercado"].fillna(0) != 0].copy()
 
 
 def parse_xp_positions(src: str | Path) -> pd.DataFrame:
     resultado: list[dict[str, Any]] = []
     mapa = {
+        "Financeiro": {"ativo": None, "valor": "ValorDisponivel", "qtd": None, "conta": "CodigoCliente"},
+        "Ações": {"ativo": "CodigoAtivo", "nome": "NomeEmpresaEmitente", "valor": "ValorAtual", "qtd": "QuantidadeTotalComGarantias", "conta": "CodigoCliente"},
+        "Fundos Imobiliários": {"ativo": "CodigoAtivo", "nome": "NomeEmpresaEmitente", "valor": "ValorAtual", "qtd": "QuantidadeTotalAtual", "conta": "CodigoCliente"},
         "Custódia Remunerada": {"ativo": "CodigoAtivo", "valor": "ValorTotal", "qtd": "QuantidadeAtivo", "conta": "CodigoCliente"},
-        "Ações": {"ativo": "CodigoAtivo", "valor": "ValorAtual", "qtd": "QuantidadeTotalComGarantias", "conta": "CodigoCliente"},
-        "Fundos Imobiliários": {"ativo": "CodigoAtivo", "valor": "ValorAtual", "qtd": "QuantidadeTotalAtual", "conta": "CodigoCliente"},
-        "Opções Flexíveis": {"ativo": "CodigoInstrumento", "valor": "Posicao", "qtd": None, "conta": "CodigoCliente"},
-        "Opções Flexívies": {"ativo": "CodigoInstrumento", "valor": "Posicao", "qtd": None, "conta": "CodigoCliente"},
-        "Fundos": {"ativo": "NomeFundo", "valor": "ValorAtual", "qtd": None, "conta": "CodigoCliente"},
+        "Fundos": {"ativo": "NomeFundo", "valor": "ValorAtual", "qtd": "QuantidadeCotas", "conta": "CodigoCliente"},
         "Tesouro Direto": {"ativo": "NomeTitulo", "valor": "ValorBruto", "qtd": "QuantidadeTotal", "conta": "CodigoCliente"},
-        "Previdência": {"ativo": "NomeFundo", "valor": "ValorReservaAcamulada", "qtd": None, "conta": "CodigoCliente"},
+        "Previdência": {"ativo": "NomeFundo", "nome": "NomePlanoResumido", "valor": "ValorReservaAcumulada", "qtd": "QuantidadeCotas", "conta": "CodigoCliente"},
+        "Previdência ": {"ativo": "NomeFundo", "nome": "NomePlanoResumido", "valor": "ValorReservaAcumulada", "qtd": "QuantidadeCotas", "conta": "CodigoCliente"},
+        "Coe": {"ativo": "NomeAtivo", "valor": "ValorFinanceiroBruto", "qtd": "QuantidadeTotal", "conta": "CodigoCliente"},
+        "Renda Fixa": {"ativo": "NickName", "nome": "NomeAtivo", "valor": "ValorFinanceiroBruto", "qtd": "QuantidadeTotal", "conta": "CodigoCliente"},
         "Proventos": {"ativo": "CodigoAtivo", "valor": "PrecoAtual", "qtd": "QuantidadeProvisionada", "conta": "CodigoCliente"},
         "Proventos Fundo Imob": {"ativo": "CodigoAtivo", "valor": "PrecoAtual", "qtd": "QuantidadeProvisionada", "conta": "CodigoCliente"},
         "Provisão Evento RF": {"ativo": "Evento", "valor": "Valor", "qtd": None, "conta": "CodigoCliente"},
-        "Coe": {"ativo": "NomeAtivo", "valor": "ValorFinanceiroBruto", "qtd": None, "conta": "CodigoCliente"},
-        "Renda Fixa": {"ativo": "NickName", "valor": "ValorFinanceiroBruto", "qtd": None, "conta": "CodigoCliente"},
-        "Financeiro": {"ativo": None, "valor": "ValorDisponivel", "qtd": None, "conta": "CodigoCliente"},
+        "Opções Flexíveis": {"ativo": "CodigoInstrumento", "valor": "Posicao", "qtd": None, "conta": "CodigoCliente"},
+        "Opções Flexívies": {"ativo": "CodigoInstrumento", "valor": "Posicao", "qtd": None, "conta": "CodigoCliente"},
+        "Opções Flexívies ": {"ativo": "CodigoInstrumento", "valor": "Posicao", "qtd": None, "conta": "CodigoCliente"},
     }
     xls = pd.ExcelFile(src)
     for aba, cfg in mapa.items():
@@ -235,20 +257,23 @@ def parse_xp_positions(src: str | Path) -> pd.DataFrame:
             continue
         df = pd.read_excel(xls, sheet_name=aba)
         df.columns = [str(c).strip() for c in df.columns]
-        if cfg["valor"] not in df.columns or cfg["conta"] not in df.columns:
+        valor_col = cfg.get("valor")
+        conta_col = cfg.get("conta")
+        if valor_col not in df.columns or conta_col not in df.columns:
             continue
-        valores = pd.to_numeric(df[cfg["valor"]], errors="coerce").fillna(0.0)
+        valores = pd.to_numeric(df[valor_col], errors="coerce").fillna(0.0)
         for i, valor_atual in valores.items():
-            if float(valor_atual) <= 0:
+            if float(valor_atual) == 0:
                 continue
-            conta = _normalize_account(df.at[i, cfg["conta"]])
+            conta = _normalize_account(df.at[i, conta_col])
             if aba == "Financeiro":
                 ativo = "Saldo Financeiro"
                 nome = f"Saldo em Conta XP - Cliente {conta}"
             else:
-                ativo_col = cfg["ativo"]
-                ativo = str(df.at[i, ativo_col]).strip() if ativo_col and ativo_col in df.columns else aba
-                nome = ativo
+                ativo_col = cfg.get("ativo")
+                nome_col = cfg.get("nome")
+                ativo = str(df.at[i, ativo_col]).strip() if ativo_col and ativo_col in df.columns else aba.strip()
+                nome = str(df.at[i, nome_col]).strip() if nome_col and nome_col in df.columns and pd.notna(df.at[i, nome_col]) else ativo
             qtd_col = cfg.get("qtd")
             qtd = pd.to_numeric(df.at[i, qtd_col], errors="coerce") if qtd_col and qtd_col in df.columns else 0.0
             if pd.isna(qtd):
@@ -256,15 +281,20 @@ def parse_xp_positions(src: str | Path) -> pd.DataFrame:
             resultado.append({
                 "corretora": "XP",
                 "conta": conta,
-                "asset_id": str(ativo).strip()[:60],
-                "asset_nome": str(nome).strip()[:160],
-                "asset_tipo": aba,
+                "asset_id": str(ativo).strip(),
+                "asset_nome": str(nome).strip(),
+                "asset_tipo": aba.strip(),
                 "valor_mercado": float(valor_atual),
                 "quantidade": float(qtd),
                 "moeda": "BRL",
-                "mercado": aba,
-                "sub_mercado": aba,
-                "estrategia": "",
+                "mercado": aba.strip(),
+                "sub_mercado": str(df.at[i, "Categoria"]).strip() if "Categoria" in df.columns and pd.notna(df.at[i, "Categoria"]) else aba.strip(),
+                "estrategia": str(df.at[i, "TipoDeAtivo"]).strip() if "TipoDeAtivo" in df.columns and pd.notna(df.at[i, "TipoDeAtivo"]) else "",
+                "indexador": str(df.at[i, "NomeIndexador"]).strip() if "NomeIndexador" in df.columns and pd.notna(df.at[i, "NomeIndexador"]) else "",
+                "liquidez": str(df.at[i, "TipoLiquidez"]).strip() if "TipoLiquidez" in df.columns and pd.notna(df.at[i, "TipoLiquidez"]) else (str(df.at[i, "PeriodoCotizacaoResgate"]).strip() if "PeriodoCotizacaoResgate" in df.columns and pd.notna(df.at[i, "PeriodoCotizacaoResgate"]) else ""),
+                "vencimento": str(df.at[i, "DataVencimento"]).strip() if "DataVencimento" in df.columns and pd.notna(df.at[i, "DataVencimento"]) else "",
+                "emissor": str(df.at[i, "NomeEmissor"]).strip() if "NomeEmissor" in df.columns and pd.notna(df.at[i, "NomeEmissor"]) else "",
+                "taxa": str(df.at[i, "TaxaCompleta"]).strip() if "TaxaCompleta" in df.columns and pd.notna(df.at[i, "TaxaCompleta"]) else (str(df.at[i, "Taxa"]).strip() if "Taxa" in df.columns and pd.notna(df.at[i, "Taxa"]) else ""),
             })
     return pd.DataFrame(resultado)
 
@@ -274,27 +304,35 @@ def parse_btg_positions(src: str | Path) -> pd.DataFrame:
     df0.columns = [str(c).strip() for c in df0.columns]
     cols = df0.columns.tolist()
     col_account = _pick_existing(cols, "Conta", "CONTA")
+    col_asset = _pick_existing(cols, "Ativo", "Ticker", "Código", "Codigo")
     col_prod = _pick_existing(cols, "Produto", "Ativo/Produto", "AtivoProduto")
     col_val = _pick_existing(cols, "Valor Bruto", "ValorBruto", "Valor")
     col_qty = _pick_existing(cols, "Quantidade", "Qtd", "Qtde")
     col_merc = _pick_existing(cols, "Mercado")
     col_subm = _pick_existing(cols, "Sub Mercado", "SubMercado", "Mercado/Sub Mercado")
     col_estr = _pick_existing(cols, "Estratégia", "Estrategia", "Estratégia ")
-    if col_account is None or col_prod is None or col_val is None:
+    if col_account is None or col_val is None:
         raise ValueError(f"BTG.xlsx: colunas mínimas não encontradas. Colunas: {cols}")
-    produto = df0[col_prod].astype(str).str.strip()
+    produto = _safe_col(df0, col_prod, "").astype(str).str.strip()
+    ativo = _safe_col(df0, col_asset, "").astype(str).str.strip()
+    asset_id = np.where(ativo.str.len() > 0, ativo, produto)
     out = pd.DataFrame({
         "corretora": "BTG",
         "conta": df0[col_account].apply(_normalize_btg_account),
-        "asset_id": produto,
+        "asset_id": pd.Series(asset_id, index=df0.index).astype(str).str.strip(),
         "asset_nome": produto,
-        "asset_tipo": df0[col_merc].astype(str).str.strip() if col_merc else "BTG",
-        "mercado": df0[col_merc].astype(str).str.strip() if col_merc else "",
-        "sub_mercado": df0[col_subm].astype(str).str.strip() if col_subm else "",
-        "estrategia": df0[col_estr].astype(str).str.strip() if col_estr else "",
+        "asset_tipo": _safe_col(df0, col_merc, "BTG").astype(str).str.strip(),
+        "mercado": _safe_col(df0, col_merc, "").astype(str).str.strip(),
+        "sub_mercado": _safe_col(df0, col_subm, "").astype(str).str.strip(),
+        "estrategia": _safe_col(df0, col_estr, "").astype(str).str.strip(),
         "valor_mercado": pd.to_numeric(df0[col_val], errors="coerce").fillna(0.0),
-        "quantidade": pd.to_numeric(df0[col_qty], errors="coerce").fillna(0.0) if col_qty else 0.0,
+        "quantidade": pd.to_numeric(_safe_col(df0, col_qty, 0.0), errors="coerce").fillna(0.0) if col_qty else 0.0,
         "moeda": "BRL",
+        "indexador": _safe_col(df0, col_estr, "").astype(str).str.strip(),
+        "liquidez": "",
+        "vencimento": _safe_col(df0, _pick_existing(cols, "Vencimento", "Data Vencimento"), "").astype(str).str.strip(),
+        "emissor": _safe_col(df0, _pick_existing(cols, "Emissor"), "").astype(str).str.strip(),
+        "taxa": _safe_col(df0, _pick_existing(cols, "Taxa Compra", "Taxa Emissão", "Taxa"), "").astype(str).str.strip(),
     })
     return out[out["valor_mercado"].fillna(0) != 0].copy()
 
