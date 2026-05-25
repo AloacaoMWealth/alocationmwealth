@@ -805,7 +805,7 @@ st.caption("Aplicativo focado em controle de saldo, asset allocation e carteira 
 # =============================================================================
 # Página 1 - Controle de saldo
 # =============================================================================
-if page == "💰 Controle de Saldo":
+if page == "Controle de Saldo":
     st.header("Controle de Saldo para Operação")
     st.markdown('<div class="mw-muted">Tela enxuta para identificar quem tem caixa disponível, caixa negativo ou recursos fora da estratégia que podem demandar ação.</div>', unsafe_allow_html=True)
     c0, c1, c2 = st.columns([1.2, 1.3, 3.5])
@@ -854,7 +854,7 @@ if page == "💰 Controle de Saldo":
 # =============================================================================
 # Página 2 - Asset Allocation
 # =============================================================================
-if page == "🎯 Asset Allocation":
+if page == "Asset Allocation":
     st.header("Asset Allocation - Cliente / Grupo Familiar")
     try:
         df_latest, meta, mode = load_positions_cached(force_rebuild=False)
@@ -980,7 +980,7 @@ if page == "🎯 Asset Allocation":
 # =============================================================================
 # Página 3 - Carteira Teórica
 # =============================================================================
-if page == "📄 Carteira Teórica":
+if page == "Carteira Teórica":
     st.header("Carteira Teórica - Simulador para Cliente")
     st.markdown(
         '<div class="mw-muted">Visualização da carteira modelo de forma simples, organizada e apresentável para o cliente final.</div>',
@@ -1065,7 +1065,6 @@ if page == "📄 Carteira Teórica":
 
     st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
     st.subheader("Gerar material para cliente")
-    st.markdown('<div class="mw-muted">O PDF usa a logo preta em fundo claro e evita abreviações técnicas para ficar mais apresentável ao cliente final.</div>', unsafe_allow_html=True)
     try:
         pdf = build_pdf_teorico(df_teor, modelo, valor, cliente)
         st.download_button(
