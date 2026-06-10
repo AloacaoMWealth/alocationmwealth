@@ -278,6 +278,13 @@ def classify_position(row: pd.Series) -> pd.Series:
     nome = norm(row.get("asset_nome", ""))
     text = " ".join([asset_id, nome, asset_tipo, mercado, sub_mercado, estrategia, indexador, liquidez, emissor, taxa])
 
+    # Saldo operacional real: vem marcado no parser a partir da origem correta
+    # XP = Financeiro/ValorDisponivel; BTG = Conta Corrente; CS = Cash quando houver linha de cash.
+    if bool(row.get("saldo_operacional", False)):
+        if corretora == "CS":
+            return pd.Series(["Internacional", "Caixa Internacional", "Caixa Internacional", "Operacional"])
+        return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
+
     # Internacional
     if corretora == "CS":
         if any(x in text for x in ["CASH", "MONEY MARKET", "SWEEP", "BANK DEPOSIT"]):
@@ -286,8 +293,8 @@ def classify_position(row: pd.Series) -> pd.Series:
             return pd.Series(["Internacional", "Renda Fixa Internacional", "Renda Fixa Internacional", "Estratégia"])
         return pd.Series(["Internacional", "Renda Variável Internacional", "Renda Variável Internacional", "Estratégia"])
 
-    # Caixa / saldo
-    if any(x in text for x in ["SALDO FINANCEIRO", "CONTA CORRENTE", "VALORDISPONIVEL", "FINANCEIRO", "CC"]):
+    # Caixa / saldo - fallback conservador. Não inclui Custódia Remunerada, proventos ou outros itens.
+    if asset_id == "SALDOFINANCEIRO" or (mercado == "CONTA CORRENTE" and nome == "CONTA CORRENTE"):
         return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
 
     # Previdência / COE / estruturados
@@ -805,7 +812,7 @@ st.title("M Wealth - Balanceamento de Carteiras")
 # =============================================================================
 if page == "Controle de Saldo":
     st.header("Controle de Saldo para Operação")
-    st.markdown('<div class="mw-muted">Tela enxuta para identificar quem tem caixa disponível, caixa negativo ou recursos fora da estratégia que podem demandar ação.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="mw-muted">Tela enxuta para identificar contas com saldo financeiro disponível para operação.</div>', unsafe_allow_html=True)
     c0, c1, c2 = st.columns([1.2, 1.3, 3.5])
     force = c0.button("Atualizar base", type="primary")
     if force:
@@ -819,34 +826,37 @@ if page == "Controle de Saldo":
         st.error(f"Falha ao carregar/consolidar posições: {e}")
         st.stop()
 
-    st.caption(f"Carregamento: **{mode}** | Linhas: **{len(df_latest):,}** | Última consolidação: **{meta.get('built_at', 'n/d')}**")
+    st.caption(f"Última consolidação: **{meta.get('built_at', 'n/d')}**")
 
-    saldo_mask = df_latest["subbucket"].eq("Saldo em Conta") | df_latest["subbucket"].eq("Caixa Internacional")
-    saldo_conta = df_latest[saldo_mask].groupby(["GRUPO GERAL", "CLIENTE", "corretora", "conta"], dropna=False, as_index=False)["valor_mercado"].sum().rename(columns={"valor_mercado": "Saldo"})
-    pl_conta = df_latest.groupby(["GRUPO GERAL", "CLIENTE", "corretora", "conta"], dropna=False, as_index=False)["valor_mercado"].sum().rename(columns={"valor_mercado": "PL"})
-    fora_conta = df_latest[df_latest["classe_macro"].eq("Fora da Estratégia")].groupby(["GRUPO GERAL", "CLIENTE", "corretora", "conta"], dropna=False, as_index=False)["valor_mercado"].sum().rename(columns={"valor_mercado": "Fora da Estratégia"})
-    painel = pl_conta.merge(saldo_conta, how="left", on=["GRUPO GERAL", "CLIENTE", "corretora", "conta"]).merge(fora_conta, how="left", on=["GRUPO GERAL", "CLIENTE", "corretora", "conta"]).fillna({"Saldo": 0.0, "Fora da Estratégia": 0.0})
-    painel["Saldo % PL"] = np.where(painel["PL"] != 0, painel["Saldo"] / painel["PL"], 0)
-    painel["Prioridade"] = np.select(
-        [painel["Saldo"] >= 50000, painel["Saldo"] >= 10000, painel["Saldo"] >= min_saldo, painel["Saldo"] < 0],
-        ["Alta", "Média", "Baixa", "Caixa negativo"],
-        default="Sem ação",
+    if "saldo_operacional" not in df_latest.columns:
+        df_latest["saldo_operacional"] = False
+    df_latest["saldo_operacional"] = df_latest["saldo_operacional"].fillna(False).astype(bool)
+
+    saldo_conta = (
+        df_latest[df_latest["saldo_operacional"]]
+        .groupby(["GRUPO GERAL", "CLIENTE", "corretora", "conta"], dropna=False, as_index=False)["valor_mercado"]
+        .sum()
+        .rename(columns={"valor_mercado": "Saldo"})
     )
-    painel["Ação sugerida"] = np.where(painel["Saldo"] < 0, "Verificar chamada/margem", np.where(painel["Saldo"] >= min_saldo, "Avaliar operação", "Sem ação"))
+    pl_conta = (
+        df_latest.groupby(["GRUPO GERAL", "CLIENTE", "corretora", "conta"], dropna=False, as_index=False)["valor_mercado"]
+        .sum()
+        .rename(columns={"valor_mercado": "PL"})
+    )
+    painel = pl_conta.merge(saldo_conta, how="left", on=["GRUPO GERAL", "CLIENTE", "corretora", "conta"]).fillna({"Saldo": 0.0})
 
-    operaveis = painel[(painel["Saldo"] >= min_saldo) | (painel["Saldo"] < 0)].sort_values(["Prioridade", "Saldo"], ascending=[True, False])
-    k1, k2, k3, k4 = st.columns(4)
+    operaveis = painel[(painel["Saldo"] >= min_saldo) | (painel["Saldo"] < 0)].sort_values("Saldo", ascending=False)
+    k1, k2, k3 = st.columns(3)
     k1.metric("Contas com saldo ≥ mínimo", int((painel["Saldo"] >= min_saldo).sum()))
     k2.metric("Saldo total disponível", format_brl(painel.loc[painel["Saldo"] > 0, "Saldo"].sum()))
     k3.metric("Caixa negativo", format_brl(painel.loc[painel["Saldo"] < 0, "Saldo"].sum()))
-    k4.metric("Fora da estratégia", format_brl(painel["Fora da Estratégia"].sum()))
 
-    st.subheader("Contas que merecem ação")
-    cols = ["GRUPO GERAL", "CLIENTE", "corretora", "conta", "PL", "Saldo", "Saldo % PL", "Fora da Estratégia", "Prioridade", "Ação sugerida"]
-    st.dataframe(prepare_display(operaveis[cols], money_cols=["PL", "Saldo", "Fora da Estratégia"], pct_cols=["Saldo % PL"], max_rows=700), use_container_width=True, hide_index=True)
+    st.subheader("Contas com saldo para operação")
+    cols = ["GRUPO GERAL", "CLIENTE", "corretora", "conta", "PL", "Saldo"]
+    st.dataframe(prepare_display(operaveis[cols], money_cols=["PL", "Saldo"], max_rows=700), use_container_width=True, hide_index=True)
 
     with st.expander("Ver todas as contas, inclusive sem saldo operacional", expanded=False):
-        st.dataframe(prepare_display(painel[cols].sort_values("Saldo", ascending=False), money_cols=["PL", "Saldo", "Fora da Estratégia"], pct_cols=["Saldo % PL"], max_rows=1200), use_container_width=True, hide_index=True)
+        st.dataframe(prepare_display(painel[cols].sort_values("Saldo", ascending=False), money_cols=["PL", "Saldo"], max_rows=1200), use_container_width=True, hide_index=True)
 
 
 # =============================================================================

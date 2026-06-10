@@ -209,6 +209,14 @@ def parse_cs_positions(src: str | Path) -> pd.DataFrame:
     sym_col = _pick_existing(raw.columns.tolist(), "Symbol/CUSIP", "Symbol", "CUSIP")
     name_col = _pick_existing(raw.columns.tolist(), "Name", "Description")
     type_col = _pick_existing(raw.columns.tolist(), "Security Type", "Type")
+    type_series = _safe_col(raw, type_col).astype(str).str.upper() if type_col else pd.Series([""] * len(raw), index=raw.index)
+    name_series = _safe_col(raw, name_col).astype(str).str.upper() if name_col else pd.Series([""] * len(raw), index=raw.index)
+    symbol_series = _safe_col(raw, sym_col).astype(str).str.upper() if sym_col else pd.Series([""] * len(raw), index=raw.index)
+    saldo_operacional = (
+        type_series.str.contains("CASH", na=False)
+        | name_series.str.contains("CASH|MONEY MARKET|SWEEP|BANK DEPOSIT", regex=True, na=False)
+        | symbol_series.str.fullmatch("CASH", na=False)
+    )
 
     df = pd.DataFrame({
         "corretora": "CS",
@@ -227,6 +235,7 @@ def parse_cs_positions(src: str | Path) -> pd.DataFrame:
         "vencimento": "",
         "emissor": "",
         "taxa": "",
+        "saldo_operacional": saldo_operacional,
     })
     return df[df["valor_mercado"].fillna(0) != 0].copy()
 
@@ -295,6 +304,7 @@ def parse_xp_positions(src: str | Path) -> pd.DataFrame:
                 "vencimento": str(df.at[i, "DataVencimento"]).strip() if "DataVencimento" in df.columns and pd.notna(df.at[i, "DataVencimento"]) else "",
                 "emissor": str(df.at[i, "NomeEmissor"]).strip() if "NomeEmissor" in df.columns and pd.notna(df.at[i, "NomeEmissor"]) else "",
                 "taxa": str(df.at[i, "TaxaCompleta"]).strip() if "TaxaCompleta" in df.columns and pd.notna(df.at[i, "TaxaCompleta"]) else (str(df.at[i, "Taxa"]).strip() if "Taxa" in df.columns and pd.notna(df.at[i, "Taxa"]) else ""),
+                "saldo_operacional": aba == "Financeiro",
             })
     return pd.DataFrame(resultado)
 
@@ -333,6 +343,10 @@ def parse_btg_positions(src: str | Path) -> pd.DataFrame:
         "vencimento": _safe_col(df0, _pick_existing(cols, "Vencimento", "Data Vencimento"), "").astype(str).str.strip(),
         "emissor": _safe_col(df0, _pick_existing(cols, "Emissor"), "").astype(str).str.strip(),
         "taxa": _safe_col(df0, _pick_existing(cols, "Taxa Compra", "Taxa Emissão", "Taxa"), "").astype(str).str.strip(),
+        "saldo_operacional": (
+            _safe_col(df0, col_merc, "").astype(str).str.strip().str.upper().eq("CONTA CORRENTE")
+            | _safe_col(df0, col_prod, "").astype(str).str.strip().str.upper().eq("CONTA CORRENTE")
+        ),
     })
     return out[out["valor_mercado"].fillna(0) != 0].copy()
 
@@ -362,6 +376,9 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
     cs = force_numeric(parse_cs_positions(files["CS"]), ["valor_mercado", "quantidade"])
 
     pos = pd.concat([xp, btg, cs], ignore_index=True)
+    if "saldo_operacional" not in pos.columns:
+        pos["saldo_operacional"] = False
+    pos["saldo_operacional"] = pos["saldo_operacional"].fillna(False).astype(bool)
     if pos.empty:
         raise ValueError("Nenhuma posição foi carregada dos arquivos fonte.")
 
