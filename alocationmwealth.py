@@ -58,7 +58,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "3.2"
+APP_VERSION = "3.5"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -79,9 +79,15 @@ SUBBUCKET_ORDER = [
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; max-width: 1600px; }
+    [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
+    .block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; max-width: 1680px; }
     div[data-testid="stMetricValue"] { font-size: 1.2rem; }
-    .mw-card { border: 1px solid rgba(255,255,255,.09); border-radius: 14px; padding: 14px 16px; background: rgba(255,255,255,.025); }
+    .mw-header { display: flex; align-items: center; gap: 1.2rem; margin-bottom: .35rem; }
+    .mw-title { font-size: 2.2rem; line-height: 1.1; font-weight: 800; margin: 0; }
+    .mw-version { color: rgba(250,250,250,.45); font-size: .78rem; margin-top: .25rem; }
+    .mw-card { border: 1px solid rgba(255,255,255,.10); border-radius: 16px; padding: 16px 18px; background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.022)); box-shadow: 0 10px 24px rgba(0,0,0,.12); }
+    .mw-card-label { color: rgba(250,250,250,.68); font-size: .82rem; font-weight: 650; margin-bottom: .35rem; }
+    .mw-card-value { color: #fff; font-size: 1.38rem; font-weight: 800; letter-spacing: -.02em; }
     .mw-muted { color: rgba(250,250,250,.65); font-size: .86rem; }
     .mw-ok { color: #77dd77; font-weight: 700; }
     .mw-warn { color: #ffd166; font-weight: 700; }
@@ -135,6 +141,48 @@ def format_brl(v) -> str:
         return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return "R$ 0,00"
+
+
+def parse_brl_input(value, default: float = 0.0) -> float:
+    """Converte campos digitados no padrão brasileiro, ex.: R$ 10.000,00."""
+    try:
+        s = str(value or "").replace("R$", "").replace(" ", "").strip()
+        if not s:
+            return default
+        s = s.replace(".", "").replace(",", ".")
+        return float(s)
+    except Exception:
+        return default
+
+
+def metric_card(label: str, value: str) -> None:
+    html = (
+        '<div class="mw-card">'
+        f'<div class="mw-card-label">{escape(str(label))}</div>'
+        f'<div class="mw-card-value">{escape(str(value))}</div>'
+        '</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def ensure_saldo_operacional(df: pd.DataFrame) -> pd.DataFrame:
+    """Garante identificação de saldo real mesmo quando o cache veio de versão antiga."""
+    out = df.copy()
+    if "saldo_operacional" not in out.columns:
+        out["saldo_operacional"] = False
+    base = out["saldo_operacional"].fillna(False).astype(bool)
+    idx = out.index
+    corretora = out.get("corretora", pd.Series([""] * len(out), index=idx)).astype(str).str.upper().str.strip()
+    asset_id = out.get("asset_id", pd.Series([""] * len(out), index=idx)).astype(str).str.upper().str.strip()
+    asset_nome = out.get("asset_nome", pd.Series([""] * len(out), index=idx)).astype(str).str.upper().str.strip()
+    asset_tipo = out.get("asset_tipo", pd.Series([""] * len(out), index=idx)).astype(str).str.upper().str.strip()
+    mercado = out.get("mercado", pd.Series([""] * len(out), index=idx)).astype(str).str.upper().str.strip()
+    texto = asset_id + " " + asset_nome + " " + asset_tipo + " " + mercado
+    xp_saldo = corretora.eq("XP") & asset_tipo.eq("FINANCEIRO") & asset_id.str.contains("SALDO", na=False)
+    btg_saldo = corretora.eq("BTG") & (mercado.eq("CONTA CORRENTE") | asset_nome.eq("CONTA CORRENTE") | asset_id.eq("CONTA CORRENTE"))
+    cs_saldo = corretora.eq("CS") & texto.str.contains("CASH|MONEY MARKET|SWEEP|BANK DEPOSIT", regex=True, na=False)
+    out["saldo_operacional"] = (base | xp_saldo | btg_saldo | cs_saldo).fillna(False).astype(bool)
+    return out
 
 
 def format_usd(v) -> str:
@@ -278,13 +326,6 @@ def classify_position(row: pd.Series) -> pd.Series:
     nome = norm(row.get("asset_nome", ""))
     text = " ".join([asset_id, nome, asset_tipo, mercado, sub_mercado, estrategia, indexador, liquidez, emissor, taxa])
 
-    # Saldo operacional real: vem marcado no parser a partir da origem correta
-    # XP = Financeiro/ValorDisponivel; BTG = Conta Corrente; CS = Cash quando houver linha de cash.
-    if bool(row.get("saldo_operacional", False)):
-        if corretora == "CS":
-            return pd.Series(["Internacional", "Caixa Internacional", "Caixa Internacional", "Operacional"])
-        return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
-
     # Internacional
     if corretora == "CS":
         if any(x in text for x in ["CASH", "MONEY MARKET", "SWEEP", "BANK DEPOSIT"]):
@@ -293,8 +334,8 @@ def classify_position(row: pd.Series) -> pd.Series:
             return pd.Series(["Internacional", "Renda Fixa Internacional", "Renda Fixa Internacional", "Estratégia"])
         return pd.Series(["Internacional", "Renda Variável Internacional", "Renda Variável Internacional", "Estratégia"])
 
-    # Caixa / saldo - fallback conservador. Não inclui Custódia Remunerada, proventos ou outros itens.
-    if asset_id == "SALDOFINANCEIRO" or (mercado == "CONTA CORRENTE" and nome == "CONTA CORRENTE"):
+    # Caixa / saldo
+    if any(x in text for x in ["SALDO FINANCEIRO", "CONTA CORRENTE", "VALORDISPONIVEL", "FINANCEIRO", "CC"]):
         return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
 
     # Previdência / COE / estruturados
@@ -798,39 +839,50 @@ def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente:
 pesos = load_pesos_xlsx(str(find_file("Pesos-alocacao.xlsx")))
 df_contas = load_contas_cached()
 
-with st.sidebar:
-    lp = logo_path()
-    if lp:
-        st.image(str(lp), use_container_width=True)
-    st.caption(f"Versão {APP_VERSION}")
-    page = st.radio("Navegação", ["Controle de Saldo", "Asset Allocation", "Carteira Teórica"], index=0)
+lp = logo_path()
+if lp:
+    h_logo, h_title = st.columns([1.15, 5.85], vertical_alignment="center")
+    with h_logo:
+        st.image(str(lp), width=250)
+    with h_title:
+        st.markdown('<h1 class="mw-title">Balanceamento de Carteiras</h1>', unsafe_allow_html=True)
+        st.markdown(f'<div class="mw-version">M Wealth • Versão {APP_VERSION}</div>', unsafe_allow_html=True)
+else:
+    st.markdown('<h1 class="mw-title">M Wealth - Balanceamento de Carteiras</h1>', unsafe_allow_html=True)
+    st.markdown(f'<div class="mw-version">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
 
-st.title("M Wealth - Balanceamento de Carteiras")
+page = st.segmented_control(
+    "",
+    ["Controle de Saldo", "Asset Allocation", "Carteira Teórica"],
+    default="Controle de Saldo",
+)
+if page is None:
+    page = "Controle de Saldo"
+
+st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
 
 # =============================================================================
 # Página 1 - Controle de saldo
 # =============================================================================
 if page == "Controle de Saldo":
     st.header("Controle de Saldo para Operação")
-    st.markdown('<div class="mw-muted">Tela enxuta para identificar contas com saldo financeiro disponível para operação.</div>', unsafe_allow_html=True)
-    c0, c1, c2 = st.columns([1.2, 1.3, 3.5])
-    force = c0.button("Atualizar base", type="primary")
+
+    c0, c1, c2 = st.columns([1.0, 1.35, 4.2], vertical_alignment="bottom")
+    force = c0.button("Atualizar base", type="primary", use_container_width=True)
     if force:
         st.cache_data.clear()
-    min_saldo = c1.number_input("Saldo mínimo", min_value=0.0, value=1000.0, step=1000.0, format="%.2f")
+    min_saldo_txt = c1.text_input("Saldo mínimo", value=format_brl(1000.0), help="Digite no formato financeiro. Ex.: R$ 10.000,00")
+    min_saldo = parse_brl_input(min_saldo_txt, 1000.0)
 
     try:
         df_latest, meta, mode = load_positions_cached(force_rebuild=force)
         df_latest = enrich_positions_cached(df_latest)
+        df_latest = ensure_saldo_operacional(df_latest)
     except Exception as e:
         st.error(f"Falha ao carregar/consolidar posições: {e}")
         st.stop()
 
     st.caption(f"Última consolidação: **{meta.get('built_at', 'n/d')}**")
-
-    if "saldo_operacional" not in df_latest.columns:
-        df_latest["saldo_operacional"] = False
-    df_latest["saldo_operacional"] = df_latest["saldo_operacional"].fillna(False).astype(bool)
 
     saldo_conta = (
         df_latest[df_latest["saldo_operacional"]]
@@ -846,10 +898,14 @@ if page == "Controle de Saldo":
     painel = pl_conta.merge(saldo_conta, how="left", on=["GRUPO GERAL", "CLIENTE", "corretora", "conta"]).fillna({"Saldo": 0.0})
 
     operaveis = painel[(painel["Saldo"] >= min_saldo) | (painel["Saldo"] < 0)].sort_values("Saldo", ascending=False)
+
     k1, k2, k3 = st.columns(3)
-    k1.metric("Contas com saldo ≥ mínimo", int((painel["Saldo"] >= min_saldo).sum()))
-    k2.metric("Saldo total disponível", format_brl(painel.loc[painel["Saldo"] > 0, "Saldo"].sum()))
-    k3.metric("Caixa negativo", format_brl(painel.loc[painel["Saldo"] < 0, "Saldo"].sum()))
+    with k1:
+        metric_card("Contas com saldo acima do mínimo", f"{int((painel['Saldo'] >= min_saldo).sum())}")
+    with k2:
+        metric_card("Saldo total disponível", format_brl(painel.loc[painel["Saldo"] > 0, "Saldo"].sum()))
+    with k3:
+        metric_card("Caixa negativo", format_brl(painel.loc[painel["Saldo"] < 0, "Saldo"].sum()))
 
     st.subheader("Contas com saldo para operação")
     cols = ["GRUPO GERAL", "CLIENTE", "corretora", "conta", "PL", "Saldo"]
