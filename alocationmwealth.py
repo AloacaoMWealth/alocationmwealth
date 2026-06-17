@@ -137,6 +137,11 @@ def ticker_clean(x) -> str:
     return norm(x).replace(" ", "").replace(".", "")
 
 
+def format_brl_label(v) -> str:
+    """Versão segura para labels markdown do Streamlit, evitando que o $ vire formatação."""
+    return format_brl(v).replace("$", "\\$")
+
+
 def format_brl(v) -> str:
     try:
         return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -273,12 +278,60 @@ def bucket_from_liquidity_days(days) -> str:
 
 
 def fund_name_key(value: str) -> str:
+    """Chave robusta para casar fundos entre posição e Manual de Alocação.
+
+    Remove pedaços jurídicos/comerciais que mudam entre corretoras, mas preserva
+    os termos realmente distintivos do fundo/gestora.
+    """
     s = norm(value)
-    for token in ["FUNDO DE INVESTIMENTO", "FUNDO INVESTIMENTO", "FUNDO", "FIC", "FI", "FIRF", "FIM", "FIA", "CP", "LP", "CREDITO PRIVADO", "CRÉDITO PRIVADO", "PREVIDENCIA", "PREVIDÊNCIA"]:
-        s = s.replace(token, " ")
+    replacements = {
+        "CRÉDITO PRIVADO": "CREDITO PRIVADO",
+        "AÇÕES": "ACOES",
+        "PREVIDÊNCIA": "PREVIDENCIA",
+    }
+    for a, b in replacements.items():
+        s = s.replace(a, b)
     s = re.sub(r"[^A-Z0-9 ]+", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    stop = [
+        "FUNDO", "FUNDOS", "INVESTIMENTO", "INVESTIMENTOS", "COTAS", "COTA",
+        "FIC", "FIF", "FIRF", "FIM", "FIA", "FIDC", "FI", "RF", "CP", "RL", "LP",
+        "DE", "EM", "DO", "DA", "DAS", "DOS", "ADVISORY", "CREDITO", "PRIVADO",
+        "PREVIDENCIA", "PGBL", "VGBL", "HIGH"  # HIGH fica pouco distintivo sozinho
+    ]
+    tokens = [t for t in re.split(r"\s+", s.strip()) if t and t not in stop]
+    return " ".join(tokens)
+
+
+def fund_token_set(value: str) -> set[str]:
+    key = fund_name_key(value)
+    return {t for t in key.split() if len(t) >= 3}
+
+
+def fund_match_score(position_name: str, manual_name: str) -> float:
+    """Score simples, sem dependência externa, para casar nomes parecidos.
+    Prioriza sobreposição de tokens relevantes e sequência parcial.
+    """
+    a = fund_name_key(position_name)
+    b = fund_name_key(manual_name)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if a in b or b in a:
+        return 0.95
+    ta, tb = set(a.split()), set(b.split())
+    if not ta or not tb:
+        return 0.0
+    inter = ta & tb
+    # mínimo de 2 tokens ajuda Jive BossaNova, BNP Rubi etc. sem casar coisas genéricas demais.
+    token_score = len(inter) / max(1, min(len(ta), len(tb)))
+    seq_score = 0.0
+    try:
+        from difflib import SequenceMatcher
+        seq_score = SequenceMatcher(None, a, b).ratio()
+    except Exception:
+        seq_score = 0.0
+    return max(token_score, seq_score * 0.82)
 
 
 @st.cache_data(show_spinner=False)
@@ -323,20 +376,30 @@ def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
     out["_fund_key_asset"] = out.get("asset_nome", out.get("asset_id", "")).astype(str).apply(fund_name_key)
     manual_map = manual.set_index("manual_key").to_dict("index")
 
-    def find_match(key: str):
+    manual_records = manual.to_dict("records")
+
+    def find_match(key: str, original_name: str = ""):
         if not key:
             return None
         if key in manual_map:
             return manual_map[key]
-        candidates = []
-        for mk, rec in manual_map.items():
-            if len(mk) >= 8 and (mk in key or key in mk):
-                candidates.append((abs(len(mk) - len(key)), rec))
-        if candidates:
-            return sorted(candidates, key=lambda x: x[0])[0][1]
-        return None
+        best_score = 0.0
+        best_rec = None
+        source_name = original_name or key
+        for rec in manual_records:
+            mk = str(rec.get("manual_key", ""))
+            fundo = str(rec.get("Fundo", ""))
+            score = fund_match_score(source_name, fundo)
+            # reforço para nomes com tokens de gestora/fundo muito claros
+            if len(set(key.split()) & set(mk.split())) >= 2:
+                score = max(score, 0.78)
+            if score > best_score:
+                best_score = score
+                best_rec = rec
+        return best_rec if best_score >= 0.72 else None
 
-    matches = out["_fund_key_asset"].apply(find_match)
+    source_names = out.get("asset_nome", out.get("asset_id", "")).astype(str)
+    matches = pd.Series([find_match(k, n) for k, n in zip(out["_fund_key_asset"], source_names)], index=out.index)
     out["manual_match"] = matches.notna()
     out.loc[out["manual_match"], "manual_classe"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Classificação", "")).strip())
     out.loc[out["manual_match"], "manual_liquidez"] = matches[out["manual_match"]].apply(lambda r: r.get("Liquidez (D+)", np.nan))
@@ -520,6 +583,23 @@ def classify_position(row: pd.Series) -> pd.Series:
     nome = norm(row.get("asset_nome", ""))
     text = " ".join([asset_id, nome, asset_tipo, mercado, sub_mercado, estrategia, indexador, liquidez, emissor, taxa])
 
+    # Caixa operacional real: não confundir com proventos/custódia remunerada.
+    if bool(row.get("saldo_operacional", False)):
+        if corretora == "CS":
+            return pd.Series(["Internacional", "Caixa Internacional", "Caixa Internacional", "Operacional"])
+        return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
+
+    # Renda fixa bancária/tesouro com indexador explícito. Vem antes de fundos genéricos
+    # para não jogar CDB/LCI/LCA prefixado ou IPCA em pós-fixado/monitoramento.
+    is_rf_local = ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or "BANCARIO" in estrategia or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF")))
+    if is_rf_local:
+        if any(x in text for x in ["PRE-FIXADO", "PRE FIXADO", "PREFIXADO", "PRÉ-FIXADO", "PRÉ FIXADO"]):
+            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Indexador"])
+        if any(x in text for x in ["IPCA", "IPC-A", "INFLACAO", "INFLAÇÃO"]):
+            return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Indexador"])
+        if any(x in text for x in ["CDI", "POS-FIXADO", "PÓS-FIXADO", "POS FIXADO", "PÓS FIXADO"]):
+            return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "Indexador"])
+
     # Classificação pelo Manual de Alocação > aba Gestoras e Fundos.
     manual_classe = norm(row.get("manual_classe", ""))
     manual_liq = row.get("manual_liquidez", np.nan)
@@ -548,8 +628,14 @@ def classify_position(row: pd.Series) -> pd.Series:
         m_liq = re.search(r"(?:D\+)?\b(0|1|5|10|15|30|31|32|45|60|90|120|180|360)\b", text)
         bucket = bucket_from_liquidity_days(float(m_liq.group(1)) if m_liq else np.nan)
         return pd.Series(["RF Brasil", bucket, bucket, "Heurística"])
-    if " FIM" in f" {text} " or "MULTIMERCADO" in text:
-        return pd.Series(["Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada", "Fundos de Investimento / Sem Liquidez Mapeada", "Heurística"])
+    if " FIM" in f" {text} " or "MULTIMERCADO" in text or "FIDC" in text:
+        # Alguns fundos de crédito aprovados aparecem como FIM/FIDC e carregam a liquidez no nome
+        # (ex.: Riza Meyenii 180). Quando há prazo explícito, tratamos como renda fixa pós-fixada.
+        m_liq = re.search(r"(?:D\+)?\b(0|1|5|10|15|30|31|32|45|60|90|120|180|360)\b", text)
+        if m_liq:
+            bucket = bucket_from_liquidity_days(float(m_liq.group(1)))
+            return pd.Series(["RF Brasil", bucket, bucket, "Heurística"])
+        return pd.Series(["Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada", "Fundos de Investimento / Sem Liquidez Mapeada", "Monitorar"])
 
     # Internacional
     if corretora == "CS":
@@ -1233,7 +1319,7 @@ if page == "Asset Allocation":
     st.subheader("1. Visão macro atual x ideal")
     macro_view = macro_df.copy()
     macro_view["Classe"] = macro_view["Classe"].apply(friendly_class_name)
-    macro_view = macro_view.drop(columns=["Ação"], errors="ignore")
+    macro_view = macro_view.drop(columns=["Ação", "Status"], errors="ignore")
     col1, col2 = st.columns([1.05, 1.95])
     with col1:
         plot = macro_view[macro_view["Valor Atual"] > 0].copy()
@@ -1253,8 +1339,8 @@ if page == "Asset Allocation":
         )
 
     st.subheader("2. Alocação por estratégia")
-    st.markdown('<div class="mw-muted">Leitura em camadas: classe de investimento → estratégia → desvio em relação ao modelo.</div>', unsafe_allow_html=True)
-    class_order = ["RF Brasil", "RV Brasil", "Internacional", "Caixa", "Fora da Estratégia"]
+    st.markdown('<div class="mw-muted">Abertura objetiva por classe e estratégia. A diferença positiva indica valor a alocar; diferença negativa indica excesso.</div>', unsafe_allow_html=True)
+    class_order = ["RF Brasil", "RV Brasil", "Fora da Estratégia", "Internacional"]
     for classe in class_order:
         class_df = sub_df[sub_df["Classe"].eq(classe)].copy()
         if class_df.empty:
@@ -1262,12 +1348,12 @@ if page == "Asset Allocation":
         valor_atual_cls = float(class_df["Valor Atual"].sum())
         valor_ideal_cls = float(class_df["Valor Ideal"].sum())
         diff_cls = float(class_df["Diferença"].sum())
-        titulo = f"{friendly_class_name(classe)} • Atual {format_brl(valor_atual_cls)} | Ideal {format_brl(valor_ideal_cls)} | Diferença {format_brl(diff_cls)}"
+        titulo = f"{friendly_class_name(classe)} • Atual {format_brl_label(valor_atual_cls)} | Ideal {format_brl_label(valor_ideal_cls)} | Diferença {format_brl_label(diff_cls)}"
         expanded = classe in ["RF Brasil", "RV Brasil", "Internacional"] or abs(diff_cls) > 300
         with st.expander(titulo, expanded=expanded):
             class_view = class_df.copy()
             class_view["Estratégia"] = class_view["Subbucket"].apply(friendly_strategy_name)
-            class_view = class_view[["Estratégia", "Status", "Prioridade", "Peso Atual", "Peso Ideal", "Valor Atual", "Valor Ideal", "Diferença"]]
+            class_view = class_view[["Estratégia", "Peso Atual", "Peso Ideal", "Valor Atual", "Valor Ideal", "Diferença"]]
             st.dataframe(
                 money_color_styler(
                     class_view,
@@ -1308,7 +1394,7 @@ if page == "Asset Allocation":
     fi_df = fiinfra_recommendation(pos_cliente, p, pl, price_ref)
     tab_a, tab_b = st.tabs(["Ações e Fundos Imobiliários", "Infraestrutura"])
     with tab_a:
-        rv_view = rv_df[rv_df["Valor Ideal"].gt(0)].copy()
+        rv_view = rv_df[rv_df["Valor Ideal"].gt(0)].copy().drop(columns=["Status"], errors="ignore")
         if rv_view.empty:
             st.info("Este modelo não possui alvo para ações ou fundos imobiliários.")
         else:
@@ -1323,7 +1409,7 @@ if page == "Asset Allocation":
                 hide_index=True,
             )
     with tab_b:
-        fi_view = fi_df[fi_df["Valor Ideal"].gt(0)].copy()
+        fi_view = fi_df[fi_df["Valor Ideal"].gt(0)].copy().drop(columns=["Status"], errors="ignore")
         if fi_view.empty:
             st.info("Este modelo não possui alvo para infraestrutura.")
         else:
