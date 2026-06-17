@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import unicodedata
 from datetime import datetime
 from io import BytesIO
@@ -58,7 +59,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "3.5"
+APP_VERSION = "3.6"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -185,6 +186,199 @@ def ensure_saldo_operacional(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def friendly_class_name(x: str) -> str:
+    mapa = {
+        "RF Brasil": "Renda fixa no Brasil",
+        "RV Brasil": "Renda variável no Brasil",
+        "Internacional": "Investimentos internacionais",
+        "Caixa": "Caixa",
+        "Fora da Estratégia": "Fora da estratégia",
+    }
+    return mapa.get(str(x), str(x))
+
+
+def friendly_strategy_name(x: str) -> str:
+    mapa = {
+        "Pós - Imediato": "Pós-fixado — liquidez imediata",
+        "Pós - 1 a 30 dias": "Pós-fixado — resgate entre 1 e 30 dias",
+        "Pós - 31 a 180 dias": "Pós-fixado — resgate entre 31 e 180 dias",
+        "Pós - 181 a 360 dias": "Pós-fixado — resgate entre 181 e 360 dias",
+        "Pós - 361+ dias": "Pós-fixado — resgate acima de 361 dias",
+        "FiInfra e Cetipados": "Fundos de infraestrutura e crédito incentivado",
+        "Pré - Bancário": "Prefixado bancário",
+        "Pré - Tesouro": "Tesouro prefixado",
+        "Inflação - Bancário": "Inflação bancário",
+        "Inflação - Tesouro": "Tesouro indexado à inflação",
+        "Crédito Privado": "Crédito privado",
+        "Ações": "Ações brasileiras",
+        "FIIs": "Fundos imobiliários",
+        "Renda Fixa Internacional": "Renda fixa internacional",
+        "Renda Variável Internacional": "Renda variável internacional",
+        "Caixa Internacional": "Caixa internacional",
+        "Saldo em Conta": "Saldo em conta",
+        "Fundos de Investimento / Sem Liquidez Mapeada": "Fundos de investimento sem liquidez mapeada",
+        "Previdência": "Previdência",
+        "COE / Estruturados": "COE e estruturados",
+        "Outros / Não Classificado": "Outros não classificados",
+    }
+    return mapa.get(str(x), str(x))
+
+
+def money_color_styler(df: pd.DataFrame, money_cols=None, pct_cols=None, qty_cols=None, diff_cols=None):
+    """Styler leve para tabelas pequenas, com diferença positiva em verde e negativa em vermelho."""
+    money_cols = [c for c in (money_cols or []) if c in df.columns]
+    pct_cols = [c for c in (pct_cols or []) if c in df.columns]
+    qty_cols = [c for c in (qty_cols or []) if c in df.columns]
+    diff_cols = [c for c in (diff_cols or []) if c in df.columns]
+
+    fmt = {}
+    for c in money_cols:
+        fmt[c] = format_brl
+    for c in pct_cols:
+        fmt[c] = fmt_pct
+    for c in qty_cols:
+        fmt[c] = lambda x: "" if pd.isna(x) else f"{float(x):,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def color_diff(v):
+        try:
+            val = float(v)
+        except Exception:
+            return ""
+        if val > 0:
+            return "color: #7bd88f; font-weight: 800;"
+        if val < 0:
+            return "color: #ff6b6b; font-weight: 800;"
+        return "color: rgba(250,250,250,.72);"
+
+    styler = df.style.format(fmt)
+    if diff_cols:
+        styler = styler.map(color_diff, subset=diff_cols)
+    return styler
+
+
+def bucket_from_liquidity_days(days) -> str:
+    try:
+        d = float(days)
+    except Exception:
+        return "Fundos de Investimento / Sem Liquidez Mapeada"
+    if d <= 1:
+        return "Pós - Imediato"
+    if d <= 30:
+        return "Pós - 1 a 30 dias"
+    if d <= 180:
+        return "Pós - 31 a 180 dias"
+    if d <= 360:
+        return "Pós - 181 a 360 dias"
+    return "Pós - 361+ dias"
+
+
+def fund_name_key(value: str) -> str:
+    s = norm(value)
+    for token in ["FUNDO DE INVESTIMENTO", "FUNDO INVESTIMENTO", "FUNDO", "FIC", "FI", "FIRF", "FIM", "FIA", "CP", "LP", "CREDITO PRIVADO", "CRÉDITO PRIVADO", "PREVIDENCIA", "PREVIDÊNCIA"]:
+        s = s.replace(token, " ")
+    s = re.sub(r"[^A-Z0-9 ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+@st.cache_data(show_spinner=False)
+def load_manual_fundos_cached(path_str: str) -> pd.DataFrame:
+    path = Path(path_str)
+    if not path.exists():
+        return pd.DataFrame(columns=["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "manual_key"])
+    try:
+        raw = pd.read_excel(path, sheet_name="Gestoras e Fundos", header=None)
+        header_row = None
+        for i, row in raw.iterrows():
+            vals = [str(x).strip() for x in row.tolist()]
+            if "Gestora" in vals and "Fundo" in vals:
+                header_row = i
+                break
+        if header_row is None:
+            return pd.DataFrame(columns=["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "manual_key"])
+        df = pd.read_excel(path, sheet_name="Gestoras e Fundos", header=header_row)
+        df.columns = [str(c).strip() for c in df.columns]
+        keep = [c for c in ["Gestora", "Classificação", "Fundo", "Liquidez (D+)", "Perfil", "Condição", "Previdência", "Estretégia/Objetivo", "CNPJ"] if c in df.columns]
+        df = df[keep].copy()
+        df = df[df.get("Fundo", pd.Series(dtype=object)).notna()].copy()
+        df["Fundo"] = df["Fundo"].astype(str).str.strip()
+        df["manual_key"] = df["Fundo"].apply(fund_name_key)
+        df["Liquidez (D+)"] = pd.to_numeric(df.get("Liquidez (D+)", np.nan), errors="coerce")
+        df = df[df["manual_key"].str.len() > 2].drop_duplicates("manual_key")
+        return df.reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "manual_key"])
+
+
+def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    manual = load_manual_fundos_cached(str(find_file("Manual de Alocação.xlsx")))
+    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo"]:
+        if col not in out.columns:
+            out[col] = "" if col != "manual_liquidez" else np.nan
+    if manual.empty:
+        out["manual_match"] = False
+        return out
+
+    out["_fund_key_asset"] = out.get("asset_nome", out.get("asset_id", "")).astype(str).apply(fund_name_key)
+    manual_map = manual.set_index("manual_key").to_dict("index")
+
+    def find_match(key: str):
+        if not key:
+            return None
+        if key in manual_map:
+            return manual_map[key]
+        candidates = []
+        for mk, rec in manual_map.items():
+            if len(mk) >= 8 and (mk in key or key in mk):
+                candidates.append((abs(len(mk) - len(key)), rec))
+        if candidates:
+            return sorted(candidates, key=lambda x: x[0])[0][1]
+        return None
+
+    matches = out["_fund_key_asset"].apply(find_match)
+    out["manual_match"] = matches.notna()
+    out.loc[out["manual_match"], "manual_classe"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Classificação", "")).strip())
+    out.loc[out["manual_match"], "manual_liquidez"] = matches[out["manual_match"]].apply(lambda r: r.get("Liquidez (D+)", np.nan))
+    out.loc[out["manual_match"], "manual_previdencia"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Previdência", "")).strip())
+    out.loc[out["manual_match"], "manual_fundo"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Fundo", "")).strip())
+    out = out.drop(columns=["_fund_key_asset"], errors="ignore")
+    return out
+
+
+def price_reference_from_positions(df: pd.DataFrame) -> dict[str, float]:
+    if df.empty or "ticker_norm" not in df.columns:
+        return {}
+    base = df.copy()
+    base["valor_mercado"] = pd.to_numeric(base.get("valor_mercado", 0), errors="coerce").fillna(0.0)
+    base["quantidade"] = pd.to_numeric(base.get("quantidade", 0), errors="coerce").fillna(0.0)
+    base = base[(base["quantidade"] > 0) & (base["valor_mercado"] > 0) & (base["ticker_norm"].astype(str).str.len() > 0)]
+    if base.empty:
+        return {}
+    g = base.groupby("ticker_norm", as_index=False).agg(valor=("valor_mercado", "sum"), qtd=("quantidade", "sum"))
+    g["preco"] = np.where(g["qtd"] > 0, g["valor"] / g["qtd"], np.nan)
+    return dict(zip(g["ticker_norm"], g["preco"]))
+
+
+def operation_text(qtd_diff, diff_value) -> str:
+    try:
+        q = float(qtd_diff)
+        v = float(diff_value)
+    except Exception:
+        return "Preço indisponível"
+    if np.isnan(q):
+        return "Preço indisponível"
+    q_abs = abs(int(round(q)))
+    if q_abs == 0:
+        return "Manter"
+    if v > 0:
+        return f"Comprar {q_abs}"
+    if v < 0:
+        return f"Vender {q_abs}"
+    return "Manter"
+
+
+
 def format_usd(v) -> str:
     try:
         return f"US$ {float(v):,.2f}"
@@ -210,10 +404,10 @@ def acao_por_diff(diff: float, tolerancia: float = 300.0) -> str:
 def status_por_diff(diff: float, base: float, tolerancia_abs: float = 300.0, tolerancia_pct: float = 0.003) -> str:
     tol = max(tolerancia_abs, abs(base) * tolerancia_pct)
     if diff > tol:
-        return "🟢 Falta comprar"
+        return "Abaixo do alvo"
     if diff < -tol:
-        return "🔴 Excesso"
-    return "✅ OK"
+        return "Acima do alvo"
+    return "Dentro do alvo"
 
 
 def prioridade_por_diff(diff: float, pl: float) -> str:
@@ -326,6 +520,37 @@ def classify_position(row: pd.Series) -> pd.Series:
     nome = norm(row.get("asset_nome", ""))
     text = " ".join([asset_id, nome, asset_tipo, mercado, sub_mercado, estrategia, indexador, liquidez, emissor, taxa])
 
+    # Classificação pelo Manual de Alocação > aba Gestoras e Fundos.
+    manual_classe = norm(row.get("manual_classe", ""))
+    manual_liq = row.get("manual_liquidez", np.nan)
+    manual_prev = norm(row.get("manual_previdencia", ""))
+    if manual_classe:
+        if "SIM" in manual_prev or any(x in text for x in ["PREV", "PREVIDENCIA", "PREVIDÊNCIA", "PGBL", "VGBL"]):
+            return pd.Series(["Fora da Estratégia", "Previdência", "Previdência", "Manual"])
+        if "RF POS" in manual_classe or "RF PÓS" in manual_classe:
+            bucket = bucket_from_liquidity_days(manual_liq)
+            return pd.Series(["RF Brasil", bucket, bucket, "Manual"])
+        if "RF INF" in manual_classe:
+            return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Manual"])
+        if "RV BRASIL" in manual_classe or "EQUITIES" in manual_classe or "GUEPARDO" in manual_classe:
+            return pd.Series(["RV Brasil", "Ações", "Ações", "Manual"])
+        if "INTERNACIONAL" in manual_classe or "US" in manual_classe:
+            return pd.Series(["Internacional", "Renda Variável Internacional", "Renda Variável Internacional", "Manual"])
+        if any(x in manual_classe for x in ["ESPECIALIDADE", "PRIVATE EQUITY", "VENTURE", "REAL ESTATE", "MULTI", "FUNDO"]):
+            return pd.Series(["Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada", "Fundos de Investimento / Sem Liquidez Mapeada", "Manual"])
+
+    # Heurísticas de fundos pelo nome quando não há match exato no manual.
+    if any(x in text for x in ["PREVIDENCIA", "PREVIDÊNCIA", "PGBL", "VGBL", " PREV "]):
+        return pd.Series(["Fora da Estratégia", "Previdência", "Previdência", "Heurística"])
+    if " FIA" in f" {text} " or "FUNDO DE ACOES" in text or "FUNDO DE AÇÕES" in text:
+        return pd.Series(["RV Brasil", "Ações", "Ações", "Heurística"])
+    if any(x in text for x in ["FIRF", "FI RF", "RENDA FIXA", "REFERENCIADO DI", "CRED PRIV", "CREDITO PRIVADO", "CRÉDITO PRIVADO"]):
+        m_liq = re.search(r"(?:D\+)?\b(0|1|5|10|15|30|31|32|45|60|90|120|180|360)\b", text)
+        bucket = bucket_from_liquidity_days(float(m_liq.group(1)) if m_liq else np.nan)
+        return pd.Series(["RF Brasil", bucket, bucket, "Heurística"])
+    if " FIM" in f" {text} " or "MULTIMERCADO" in text:
+        return pd.Series(["Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada", "Fundos de Investimento / Sem Liquidez Mapeada", "Heurística"])
+
     # Internacional
     if corretora == "CS":
         if any(x in text for x in ["CASH", "MONEY MARKET", "SWEEP", "BANK DEPOSIT"]):
@@ -402,6 +627,7 @@ def enrich_positions_cached(df: pd.DataFrame) -> pd.DataFrame:
     for c in ["valor_mercado", "quantidade", "valor_original"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    df = apply_manual_fund_mapping(df)
     cols = df.apply(classify_position, axis=1)
     cols.columns = ["classe_macro", "subclasse", "subbucket", "tratamento"]
     out = pd.concat([df, cols], axis=1)
@@ -506,21 +732,32 @@ def portfolio_tables(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float) 
     return macro, sub
 
 
-def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float, modelo: str) -> pd.DataFrame:
+def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float, modelo: str, price_ref: dict[str, float] | None = None) -> pd.DataFrame:
+    price_ref = price_ref or {}
     rows = []
     for bucket, tickers in rv_universe(modelo).items():
         alvo_total = pl * peso_get(p, bucket)
         alvo_ativo = alvo_total / len(tickers) if tickers else 0
         for t in tickers:
-            mask = pos_cliente["ticker_norm"].eq(ticker_clean(t))
+            tk = ticker_clean(t)
+            mask = pos_cliente["ticker_norm"].eq(tk)
             atual = float(pos_cliente.loc[mask, "valor_mercado"].sum())
             qtd = float(pos_cliente.loc[mask, "quantidade"].sum())
+            preco = price_ref.get(tk, np.nan)
+            if (pd.isna(preco) or preco <= 0) and qtd > 0:
+                preco = atual / qtd
+            qtd_ideal = round(alvo_ativo / preco) if pd.notna(preco) and preco > 0 else np.nan
+            qtd_operar = qtd_ideal - qtd if pd.notna(qtd_ideal) else np.nan
             diff = alvo_ativo - atual
-            rows.append([bucket, t, qtd, atual, alvo_ativo, diff, status_por_diff(diff, alvo_ativo), acao_por_diff(diff)])
-    return pd.DataFrame(rows, columns=["Subbucket", "Ativo", "Qtd Atual", "Valor Atual", "Valor Ideal", "Diferença", "Status", "Ação"])
+            rows.append([
+                bucket, t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar,
+                operation_text(qtd_operar, diff), status_por_diff(diff, alvo_ativo)
+            ])
+    return pd.DataFrame(rows, columns=["Estratégia", "Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Operação", "Status"])
 
 
-def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float) -> pd.DataFrame:
+def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float, price_ref: dict[str, float] | None = None) -> pd.DataFrame:
+    price_ref = price_ref or {}
     rows = []
     grupos = [
         ("Infraestrutura pós-fixada", peso_get(p, "FiInfra e Cetipados"), FI_INFRA_POS_TICKERS),
@@ -532,12 +769,21 @@ def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: f
             continue
         alvo_ativo = alvo_total / len(tickers)
         for t in tickers:
-            mask = pos_cliente["ticker_norm"].eq(ticker_clean(t))
+            tk = ticker_clean(t)
+            mask = pos_cliente["ticker_norm"].eq(tk)
             atual = float(pos_cliente.loc[mask, "valor_mercado"].sum())
             qtd = float(pos_cliente.loc[mask, "quantidade"].sum())
+            preco = price_ref.get(tk, np.nan)
+            if (pd.isna(preco) or preco <= 0) and qtd > 0:
+                preco = atual / qtd
+            qtd_ideal = round(alvo_ativo / preco) if pd.notna(preco) and preco > 0 else np.nan
+            qtd_operar = qtd_ideal - qtd if pd.notna(qtd_ideal) else np.nan
             diff = alvo_ativo - atual
-            rows.append([nome, t, qtd, atual, alvo_ativo, diff, status_por_diff(diff, alvo_ativo), acao_por_diff(diff)])
-    return pd.DataFrame(rows, columns=["Estratégia", "Ativo", "Qtd Atual", "Valor Atual", "Valor Ideal", "Diferença", "Status", "Ação"])
+            rows.append([
+                nome, t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar,
+                operation_text(qtd_operar, diff), status_por_diff(diff, alvo_ativo)
+            ])
+    return pd.DataFrame(rows, columns=["Estratégia", "Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Operação", "Status"])
 
 
 def action_summary(pos_cliente: pd.DataFrame, sub_df: pd.DataFrame, pl: float) -> tuple[pd.DataFrame, float, float]:
@@ -923,6 +1169,7 @@ if page == "Asset Allocation":
     try:
         df_latest, meta, mode = load_positions_cached(force_rebuild=False)
         df_latest = enrich_positions_cached(df_latest)
+        df_latest = ensure_saldo_operacional(df_latest)
     except Exception as e:
         st.error(f"Não consegui carregar a base: {e}")
         st.stop()
@@ -960,75 +1207,155 @@ if page == "Asset Allocation":
     p = pesos[modelo]
     pl = float(pos_cliente["valor_mercado"].sum())
     macro_df, sub_df = portfolio_tables(pos_cliente, p, pl)
-    acoes_df, saldo_disponivel, fora_liquidez = action_summary(pos_cliente, sub_df, pl)
 
     pl_xp = float(pos_cliente.loc[pos_cliente["corretora"].eq("XP"), "valor_mercado"].sum())
     pl_btg = float(pos_cliente.loc[pos_cliente["corretora"].eq("BTG"), "valor_mercado"].sum())
     pl_cs = float(pos_cliente.loc[pos_cliente["corretora"].eq("CS"), "valor_mercado"].sum())
-    saldo = float(pos_cliente.loc[pos_cliente["subbucket"].eq("Saldo em Conta"), "valor_mercado"].sum())
+    saldo = float(pos_cliente.loc[pos_cliente.get("saldo_operacional", False).fillna(False).astype(bool), "valor_mercado"].sum()) if "saldo_operacional" in pos_cliente.columns else float(pos_cliente.loc[pos_cliente["subbucket"].eq("Saldo em Conta"), "valor_mercado"].sum())
+    manual_matches = int(pos_cliente.get("manual_match", pd.Series([False] * len(pos_cliente), index=pos_cliente.index)).fillna(False).astype(bool).sum())
     nao_class = float(pos_cliente.loc[pos_cliente["subbucket"].eq("Outros / Não Classificado"), "valor_mercado"].sum())
 
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("PL Total", format_brl(pl), delta=f"{perfil_cliente}")
-    k2.metric("XP", format_brl(pl_xp))
-    k3.metric("BTG", format_brl(pl_btg))
-    k4.metric("CS", format_brl(pl_cs))
-    k5.metric("Saldo", format_brl(saldo))
+    with k1:
+        metric_card("PL Total", format_brl(pl))
+    with k2:
+        metric_card("XP", format_brl(pl_xp))
+    with k3:
+        metric_card("BTG", format_brl(pl_btg))
+    with k4:
+        metric_card("CS", format_brl(pl_cs))
+    with k5:
+        metric_card("Saldo", format_brl(saldo))
+    st.caption(f"Perfil: **{perfil_cliente}** • Modelo aplicado: **{modelo}** • Fundos reconhecidos pelo manual: **{manual_matches}** • Não classificado: **{format_brl(nao_class)}**")
 
     st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
-    st.subheader("1. O que precisa ser feito")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Caixa disponível", format_brl(saldo_disponivel))
-    c2.metric("Fora da estratégia", format_brl(fora_liquidez))
-    c3.metric("Não classificado", format_brl(nao_class))
-    if acoes_df.empty:
-        st.success("Carteira próxima do modelo dentro da tolerância operacional.")
-    else:
-        st.dataframe(prepare_display(acoes_df, money_cols=["Valor"]), use_container_width=True, hide_index=True)
 
-    st.subheader("2. Visão macro atual x ideal")
+    st.subheader("1. Visão macro atual x ideal")
+    macro_view = macro_df.copy()
+    macro_view["Classe"] = macro_view["Classe"].apply(friendly_class_name)
+    macro_view = macro_view.drop(columns=["Ação"], errors="ignore")
     col1, col2 = st.columns([1.05, 1.95])
     with col1:
-        plot = macro_df[macro_df["Valor Atual"] > 0].copy()
+        plot = macro_view[macro_view["Valor Atual"] > 0].copy()
         fig = px.pie(plot, names="Classe", values="Valor Atual", title="Atual", hole=.48)
-        fig.update_layout(height=295, margin=dict(l=8, r=8, t=45, b=8), showlegend=True)
+        fig.update_layout(height=295, margin=dict(l=8, r=8, t=45, b=8), showlegend=True, legend_title_text="")
         st.plotly_chart(fig, use_container_width=True)
     with col2:
-        st.dataframe(prepare_display(macro_df, money_cols=["Valor Atual", "Valor Ideal", "Diferença"], pct_cols=["Peso Atual", "Peso Ideal"]), use_container_width=True, hide_index=True)
+        st.dataframe(
+            money_color_styler(
+                macro_view,
+                money_cols=["Valor Atual", "Valor Ideal", "Diferença"],
+                pct_cols=["Peso Atual", "Peso Ideal"],
+                diff_cols=["Diferença"],
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
 
-    st.subheader("3. Alocação por subbucket")
-    filtro = st.segmented_control("Filtro", ["Todos", "Só ações necessárias", "Excessos", "Falta comprar"], default="Só ações necessárias")
-    sub_view = sub_df.copy()
-    if filtro == "Só ações necessárias":
-        sub_view = sub_view[sub_view["Ação"].ne("Manter / OK")]
-    elif filtro == "Excessos":
-        sub_view = sub_view[sub_view["Diferença"] < -300]
-    elif filtro == "Falta comprar":
-        sub_view = sub_view[sub_view["Diferença"] > 300]
-    st.dataframe(prepare_display(sub_view, money_cols=["Valor Atual", "Valor Ideal", "Diferença"], pct_cols=["Peso Atual", "Peso Ideal"], max_rows=300), use_container_width=True, hide_index=True)
+    st.subheader("2. Alocação por estratégia")
+    st.markdown('<div class="mw-muted">Leitura em camadas: classe de investimento → estratégia → desvio em relação ao modelo.</div>', unsafe_allow_html=True)
+    class_order = ["RF Brasil", "RV Brasil", "Internacional", "Caixa", "Fora da Estratégia"]
+    for classe in class_order:
+        class_df = sub_df[sub_df["Classe"].eq(classe)].copy()
+        if class_df.empty:
+            continue
+        valor_atual_cls = float(class_df["Valor Atual"].sum())
+        valor_ideal_cls = float(class_df["Valor Ideal"].sum())
+        diff_cls = float(class_df["Diferença"].sum())
+        titulo = f"{friendly_class_name(classe)} • Atual {format_brl(valor_atual_cls)} | Ideal {format_brl(valor_ideal_cls)} | Diferença {format_brl(diff_cls)}"
+        expanded = classe in ["RF Brasil", "RV Brasil", "Internacional"] or abs(diff_cls) > 300
+        with st.expander(titulo, expanded=expanded):
+            class_view = class_df.copy()
+            class_view["Estratégia"] = class_view["Subbucket"].apply(friendly_strategy_name)
+            class_view = class_view[["Estratégia", "Status", "Prioridade", "Peso Atual", "Peso Ideal", "Valor Atual", "Valor Ideal", "Diferença"]]
+            st.dataframe(
+                money_color_styler(
+                    class_view,
+                    money_cols=["Valor Atual", "Valor Ideal", "Diferença"],
+                    pct_cols=["Peso Atual", "Peso Ideal"],
+                    diff_cols=["Diferença"],
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
-    st.subheader("4. Sugestão por ativo - RV Brasil e FiInfra")
-    rv_df = rv_recommendation(pos_cliente, p, pl, modelo)
-    fi_df = fiinfra_recommendation(pos_cliente, p, pl)
-    tab_a, tab_b = st.tabs(["Ações e FIIs", "FiInfra"])
+            ativos_cls = pos_cliente[pos_cliente["classe_macro"].eq(classe)].copy()
+            if not ativos_cls.empty:
+                cols_pos = ["subbucket", "asset_id", "asset_nome", "corretora", "valor_mercado", "quantidade", "manual_fundo", "manual_liquidez", "tratamento"]
+                ativos_cls = ativos_cls[[c for c in cols_pos if c in ativos_cls.columns]].sort_values("valor_mercado", ascending=False).head(80)
+                ativos_cls["subbucket"] = ativos_cls["subbucket"].apply(friendly_strategy_name)
+                ativos_cls = ativos_cls.rename(columns={
+                    "subbucket": "Estratégia",
+                    "asset_id": "Ativo",
+                    "asset_nome": "Nome",
+                    "corretora": "Corretora",
+                    "valor_mercado": "Valor",
+                    "quantidade": "Quantidade",
+                    "manual_fundo": "Fundo no manual",
+                    "manual_liquidez": "Liquidez D+",
+                    "tratamento": "Origem do match",
+                })
+                with st.expander("Ver ativos classificados nessa classe", expanded=False):
+                    st.dataframe(
+                        prepare_display(ativos_cls, money_cols=["Valor"], qty_cols=["Quantidade"], max_rows=80),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+    st.subheader("3. Sugestão por ativo — Ações, Fundos Imobiliários e Infraestrutura")
+    price_ref = price_reference_from_positions(df_latest)
+    rv_df = rv_recommendation(pos_cliente, p, pl, modelo, price_ref)
+    fi_df = fiinfra_recommendation(pos_cliente, p, pl, price_ref)
+    tab_a, tab_b = st.tabs(["Ações e Fundos Imobiliários", "Infraestrutura"])
     with tab_a:
         rv_view = rv_df[rv_df["Valor Ideal"].gt(0)].copy()
-        st.dataframe(prepare_display(rv_view, money_cols=["Valor Atual", "Valor Ideal", "Diferença"], qty_cols=["Qtd Atual"]), use_container_width=True, hide_index=True)
+        if rv_view.empty:
+            st.info("Este modelo não possui alvo para ações ou fundos imobiliários.")
+        else:
+            st.dataframe(
+                money_color_styler(
+                    rv_view,
+                    money_cols=["Preço referência", "Valor Atual", "Valor Ideal", "Diferença"],
+                    qty_cols=["Qtd Atual", "Qtd Ideal", "Qtd a operar"],
+                    diff_cols=["Diferença", "Qtd a operar"],
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
     with tab_b:
         fi_view = fi_df[fi_df["Valor Ideal"].gt(0)].copy()
         if fi_view.empty:
-            st.info("Este modelo não possui alvo para FiInfra.")
+            st.info("Este modelo não possui alvo para infraestrutura.")
         else:
-            st.dataframe(prepare_display(fi_view, money_cols=["Valor Atual", "Valor Ideal", "Diferença"], qty_cols=["Qtd Atual"]), use_container_width=True, hide_index=True)
+            st.dataframe(
+                money_color_styler(
+                    fi_view,
+                    money_cols=["Preço referência", "Valor Atual", "Valor Ideal", "Diferença"],
+                    qty_cols=["Qtd Atual", "Qtd Ideal", "Qtd a operar"],
+                    diff_cols=["Diferença", "Qtd a operar"],
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
-    st.subheader("5. Detalhamento das posições")
+    st.subheader("4. Detalhamento das posições")
     buckets = [b for b in SUBBUCKET_ORDER if b in set(pos_cliente["subbucket"])]
-    bucket_sel = st.selectbox("Abrir posições por subbucket", buckets if buckets else ["Nenhum"])
-    if bucket_sel != "Nenhum":
+    bucket_options = {friendly_strategy_name(b): b for b in buckets}
+    if bucket_options:
+        bucket_label = st.selectbox("Abrir posições por estratégia", list(bucket_options.keys()))
+        bucket_sel = bucket_options[bucket_label]
         subpos = pos_cliente[pos_cliente["subbucket"].eq(bucket_sel)].copy()
         agrup = subpos.groupby(["asset_id", "asset_nome", "corretora", "subbucket"], dropna=False, as_index=False).agg(Valor=("valor_mercado", "sum"), Quantidade=("quantidade", "sum"), Contas=("conta", "nunique")).sort_values("Valor", ascending=False)
         agrup["Peso no Cliente"] = np.where(pl > 0, agrup["Valor"] / pl, 0)
-        st.dataframe(prepare_display(agrup, money_cols=["Valor"], pct_cols=["Peso no Cliente"], qty_cols=["Quantidade"], max_rows=600), use_container_width=True, hide_index=True)
+        agrup["Estratégia"] = agrup["subbucket"].apply(friendly_strategy_name)
+        agrup = agrup.rename(columns={"asset_id": "Ativo", "asset_nome": "Nome", "corretora": "Corretora"})
+        st.dataframe(
+            prepare_display(agrup[["Estratégia", "Ativo", "Nome", "Corretora", "Valor", "Quantidade", "Peso no Cliente", "Contas"]], money_cols=["Valor"], pct_cols=["Peso no Cliente"], qty_cols=["Quantidade"], max_rows=600),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Nenhuma estratégia encontrada para detalhamento.")
 
     with st.expander("Revisões e exceções", expanded=False):
         universo = set(ACOES_SEM_RENDA + ACOES_COM_RENDA + FIIS_RECOMENDADOS + FI_INFRA_TICKERS)
@@ -1037,8 +1364,12 @@ if page == "Asset Allocation":
             ((pos_cliente["classe_macro"].eq("RV Brasil")) & (~pos_cliente["ticker_norm"].isin({ticker_clean(x) for x in universo}))) |
             (pos_cliente["subbucket"].str.contains("Sem Liquidez|Não Classificado|COE|Previdência", case=False, na=False))
         ].sort_values("valor_mercado", ascending=False)
-        cols = ["corretora", "conta", "CLIENTE", "asset_id", "asset_nome", "classe_macro", "subbucket", "tratamento", "valor_mercado", "quantidade", "indexador", "liquidez", "vencimento"]
-        st.dataframe(prepare_display(fora_df[[c for c in cols if c in fora_df.columns]], money_cols=["valor_mercado"], qty_cols=["quantidade"], max_rows=500), use_container_width=True, hide_index=True)
+        cols = ["corretora", "conta", "CLIENTE", "asset_id", "asset_nome", "classe_macro", "subbucket", "tratamento", "manual_fundo", "manual_classe", "manual_liquidez", "valor_mercado", "quantidade", "indexador", "liquidez", "vencimento"]
+        view = fora_df[[c for c in cols if c in fora_df.columns]].copy()
+        for c in ["classe_macro", "subbucket"]:
+            if c in view.columns:
+                view[c] = view[c].apply(friendly_class_name if c == "classe_macro" else friendly_strategy_name)
+        st.dataframe(prepare_display(view, money_cols=["valor_mercado"], qty_cols=["quantidade"], max_rows=500), use_container_width=True, hide_index=True)
 
 
 # =============================================================================
