@@ -261,6 +261,129 @@ def money_color_styler(df: pd.DataFrame, money_cols=None, pct_cols=None, qty_col
     return styler
 
 
+def macro_hierarchy_table(sub_df: pd.DataFrame, pl: float) -> pd.DataFrame:
+    """Monta uma visão macro no estilo Power BI: classe principal + aberturas relevantes.
+
+    A ideia é mostrar a carteira em uma leitura executiva, sem ficar presa só em
+    Renda Fixa / Renda Variável / Internacional, mas também sem detalhar ativo a ativo.
+    """
+    if sub_df.empty:
+        return pd.DataFrame(columns=[
+            "Estratégia", "Quanto tem", "Quanto tem %", "Deveria ter (%)",
+            "Deveria ter R$", "Ajuste necessário", "Diferença"
+        ])
+
+    base = sub_df.copy()
+    for col in ["Valor Atual", "Valor Ideal", "Peso Atual", "Peso Ideal", "Diferença"]:
+        if col in base.columns:
+            base[col] = pd.to_numeric(base[col], errors="coerce").fillna(0.0)
+
+    def group_row(label: str, buckets: list[str] | None = None, classes: list[str] | None = None, is_header: bool = False):
+        if classes is not None:
+            part = base[base["Classe"].isin(classes)].copy()
+        else:
+            part = base[base["Subbucket"].isin(buckets or [])].copy()
+        atual = float(part["Valor Atual"].sum()) if not part.empty else 0.0
+        ideal = float(part["Valor Ideal"].sum()) if not part.empty else 0.0
+        diff = ideal - atual
+        return {
+            "Estratégia": label,
+            "Quanto tem": atual,
+            "Quanto tem %": atual / pl if pl > 0 else 0.0,
+            "Deveria ter (%)": ideal / pl if pl > 0 else 0.0,
+            "Deveria ter R$": ideal,
+            "Ajuste necessário": diff,
+            "Diferença": (atual - ideal) / pl if pl > 0 else 0.0,
+            "_header": is_header,
+        }
+
+    groups = [
+        ("RENDA FIXA NO BRASIL", None, ["RF Brasil"], True),
+        ("  Pós-fixado", ["Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias"], None, False),
+        ("  Prefixado", ["Pré - Bancário", "Pré - Tesouro"], None, False),
+        ("  Inflação", ["Inflação - Bancário", "Inflação - Tesouro"], None, False),
+        ("  Infraestrutura e crédito incentivado", ["FiInfra e Cetipados"], None, False),
+        ("  Crédito privado", ["Crédito Privado"], None, False),
+        ("RENDA VARIÁVEL NO BRASIL", None, ["RV Brasil"], True),
+        ("  Ações brasileiras", ["Ações"], None, False),
+        ("  Fundos imobiliários", ["FIIs"], None, False),
+        ("INVESTIMENTOS INTERNACIONAIS", None, ["Internacional"], True),
+        ("  Renda fixa internacional", ["Renda Fixa Internacional"], None, False),
+        ("  Renda variável internacional", ["Renda Variável Internacional"], None, False),
+        ("FORA DA ESTRATÉGIA / MONITORAMENTO", None, ["Fora da Estratégia"], True),
+        ("  Fundos sem liquidez mapeada", ["Fundos de Investimento / Sem Liquidez Mapeada"], None, False),
+        ("  Previdência", ["Previdência"], None, False),
+        ("  COE e estruturados", ["COE / Estruturados"], None, False),
+        ("  Outros não classificados", ["Outros / Não Classificado"], None, False),
+    ]
+
+    rows = []
+    for label, buckets, classes, is_header in groups:
+        row = group_row(label, buckets=buckets, classes=classes, is_header=is_header)
+        # Mostra sempre os cabeçalhos principais quando houver qualquer valor atual/ideal.
+        # Nas linhas-filhas, remove ruído de zeros.
+        if is_header:
+            if abs(row["Quanto tem"]) > 0.01 or abs(row["Deveria ter R$"]) > 0.01:
+                rows.append(row)
+        else:
+            if abs(row["Quanto tem"]) > 0.01 or abs(row["Deveria ter R$"]) > 0.01:
+                rows.append(row)
+
+    total_atual = float(base["Valor Atual"].sum())
+    total_ideal = float(base["Valor Ideal"].sum())
+    rows.append({
+        "Estratégia": "TOTAL",
+        "Quanto tem": total_atual,
+        "Quanto tem %": total_atual / pl if pl > 0 else 0.0,
+        "Deveria ter (%)": total_ideal / pl if pl > 0 else 0.0,
+        "Deveria ter R$": total_ideal,
+        "Ajuste necessário": total_ideal - total_atual,
+        "Diferença": (total_atual - total_ideal) / pl if pl > 0 else 0.0,
+        "_header": True,
+    })
+    return pd.DataFrame(rows)
+
+
+def macro_hierarchy_styler(df: pd.DataFrame):
+    """Aplica visual leve na tabela macro hierárquica."""
+    visible_cols = ["Estratégia", "Quanto tem", "Quanto tem %", "Deveria ter (%)", "Deveria ter R$", "Ajuste necessário", "Diferença"]
+    view = df[visible_cols].copy()
+    header_mask = df.get("_header", pd.Series([False] * len(df))).astype(bool).tolist()
+
+    fmt = {
+        "Quanto tem": format_brl,
+        "Quanto tem %": fmt_pct,
+        "Deveria ter (%)": fmt_pct,
+        "Deveria ter R$": format_brl,
+        "Ajuste necessário": format_brl,
+        "Diferença": fmt_pct,
+    }
+
+    def color_adjust(v):
+        try:
+            val = float(v)
+        except Exception:
+            return ""
+        if val > 0:
+            return "color: #7bd88f; font-weight: 800;"
+        if val < 0:
+            return "color: #ff6b6b; font-weight: 800;"
+        return "color: rgba(250,250,250,.72);"
+
+    def row_style(row):
+        is_header = header_mask[row.name] if row.name < len(header_mask) else False
+        if is_header:
+            return [
+                "background-color: rgba(93, 115, 170, .34); font-weight: 900; border-top: 1px solid rgba(255,255,255,.22);"
+                for _ in row
+            ]
+        return ["" for _ in row]
+
+    styler = view.style.format(fmt).apply(row_style, axis=1)
+    styler = styler.map(color_adjust, subset=["Ajuste necessário"])
+    return styler
+
+
 def bucket_from_liquidity_days(days) -> str:
     try:
         d = float(days)
@@ -1320,20 +1443,18 @@ if page == "Asset Allocation":
     macro_view = macro_df.copy()
     macro_view["Classe"] = macro_view["Classe"].apply(friendly_class_name)
     macro_view = macro_view.drop(columns=["Ação", "Status"], errors="ignore")
-    col1, col2 = st.columns([1.05, 1.95])
+
+    macro_hier = macro_hierarchy_table(sub_df, pl)
+    col1, col2 = st.columns([0.95, 2.45])
     with col1:
-        plot = macro_view[macro_view["Valor Atual"] > 0].copy()
+        plot = macro_df[macro_df["Valor Atual"] > 0].copy()
+        plot["Classe"] = plot["Classe"].apply(friendly_class_name)
         fig = px.pie(plot, names="Classe", values="Valor Atual", title="Atual", hole=.48)
-        fig.update_layout(height=295, margin=dict(l=8, r=8, t=45, b=8), showlegend=True, legend_title_text="")
+        fig.update_layout(height=315, margin=dict(l=8, r=8, t=45, b=8), showlegend=True, legend_title_text="")
         st.plotly_chart(fig, use_container_width=True)
     with col2:
         st.dataframe(
-            money_color_styler(
-                macro_view,
-                money_cols=["Valor Atual", "Valor Ideal", "Diferença"],
-                pct_cols=["Peso Atual", "Peso Ideal"],
-                diff_cols=["Diferença"],
-            ),
+            macro_hierarchy_styler(macro_hier),
             use_container_width=True,
             hide_index=True,
         )
