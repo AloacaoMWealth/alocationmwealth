@@ -883,6 +883,29 @@ def classify_position(row: pd.Series) -> pd.Series:
     nome = norm(row.get("asset_nome", ""))
     cnpj = only_digits_str(row.get("cnpj", ""))
     text = " ".join([asset_id, nome, asset_tipo, mercado, sub_mercado, estrategia, indexador, liquidez, emissor, taxa])
+    # Flags robustas de indexador. Alguns relatórios trazem prefixado como
+    # "CDB PRE DU", "CRA PRE DU" ou apenas "PRE" no nome, sem escrever
+    # "prefixado". Usamos regex com borda de palavra para não confundir com
+    # PREV/PREVIDÊNCIA.
+    has_ipca = bool(re.search(r"\b(IPCA|IPC\s*-?\s*A|INFLACAO|INFLAÇÃO)\b", text))
+    has_cdi = bool(re.search(r"\b(CDI|DI|POS\s*-?\s*FIXADO|PÓS\s*-?\s*FIXADO|POS\s+FIXADO|PÓS\s+FIXADO)\b", text))
+    has_pre = bool(re.search(r"\b(PRE|PRÉ|PREFIXADO)\b|PRE\s*-\s*FIXADO|PRÉ\s*-\s*FIXADO|PRE\s+FIXADO|PRÉ\s+FIXADO", text))
+
+    # Sinais vindos diretamente dos relatórios.
+    # XP: no relatório de Renda Fixa, prefixados normalmente vêm com NomeIndexador vazio
+    # e TaxaCompleta como '+13,10%' / '+14,50%', enquanto CDI/IPCA aparecem no NomeIndexador
+    # ou na TaxaCompleta.
+    # BTG: a coluna Estratégia costuma trazer Pré-fixado/Pós-fixado/Inflação; quando vem
+    # em branco, a Taxa Compra/Taxa Emissão ajuda no fallback.
+    indexador_blank = indexador in ["", "NAN", "NONE", "NULL", "-", "0"]
+    estrategia_blank = estrategia in ["", "NAN", "NONE", "NULL", "-"]
+    taxa_clean = taxa.replace("%", "").replace("+", "").replace(",", ".").strip()
+    try:
+        taxa_num = float(re.sub(r"[^0-9.\-]", "", taxa_clean)) if taxa_clean else np.nan
+    except Exception:
+        taxa_num = np.nan
+    has_taxa_nominal = pd.notna(taxa_num) and abs(float(taxa_num)) > 0.0001 and not has_cdi and not has_ipca
+    pre_by_report = (has_pre or (indexador_blank and has_taxa_nominal and ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF", "DEB", "CRI", "CRA", "CDCA")))))
     liq_days = infer_liquidity_days_from_row(row)
 
     if bool(row.get("saldo_operacional", False)):
@@ -904,13 +927,13 @@ def classify_position(row: pd.Series) -> pd.Series:
                 if any(x in estrategia + " " + text for x in ["PRE", "PRÉ", "PREFIXADO", "LTN", "NTN-F"]):
                     return pd.Series(["RF Brasil", "Pré - Tesouro", "Pré - Tesouro", "BTG"])
                 return pd.Series(["RF Brasil", "Pós - Imediato", "Pós - Imediato", "BTG"])
-            if "INFL" in estrategia or "IPCA" in text:
-                return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "BTG"])
-            if "PRE" in estrategia or "PRÉ" in estrategia or "PREFIX" in text:
-                return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "BTG"])
-            if "POS" in estrategia or "PÓS" in estrategia or "CDI" in text:
-                return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "BTG"])
-            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "BTG fallback"])
+            if "INFL" in estrategia or has_ipca:
+                return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "BTG Estratégia/Indexador"])
+            if "PRE" in estrategia or "PRÉ" in estrategia or pre_by_report or (estrategia_blank and has_taxa_nominal):
+                return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "BTG Estratégia/Taxa"])
+            if "POS" in estrategia or "PÓS" in estrategia or has_cdi:
+                return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "BTG Estratégia/Indexador"])
+            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "BTG fallback sem estratégia"])
         if mercado == "FUNDOS":
             classe, bucket = classify_fund_class(row.get("manual_classe", "") or estrategia, text, liq_days)
             return pd.Series([classe, bucket, bucket, "Manual" if row.get("manual_match", False) else "BTG/Heurística"])
@@ -978,12 +1001,15 @@ def classify_position(row: pd.Series) -> pd.Series:
     # Renda fixa local por indexador/taxa.
     is_rf_local = ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF", "DEB", "CRI", "CRA", "CDCA")))
     if is_rf_local or any(x in text for x in ["CDB", "LCI", "LCA", "LCD", "CRI", "CRA", "DEB", "DEBENTURE", "CDCA"]):
-        if any(x in text for x in ["IPCA", "IPC-A", "INFLACAO", "INFLAÇÃO"]):
-            return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Indexador"])
-        if any(x in text for x in ["PRE-FIXADO", "PRE FIXADO", "PRÉ-FIXADO", "PREFIXADO"]) or (taxa and "CDI" not in taxa and "IPCA" not in taxa):
-            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Indexador"])
-        if any(x in text for x in ["CDI", "POS-FIXADO", "PÓS-FIXADO", "POS FIXADO", "PÓS FIXADO"]):
-            return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "Indexador"])
+        if has_ipca:
+            return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Relatório: indexador/taxa"])
+        if pre_by_report:
+            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Relatório: indexador/taxa"])
+        if has_cdi:
+            return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "Relatório: indexador/taxa"])
+        # Se é RF local, não tem CDI/IPCA e tem taxa nominal, o comportamento mais seguro é tratar como prefixado.
+        if has_taxa_nominal or indexador_blank:
+            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Relatório: taxa sem indexador"])
         return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Indexador fallback"])
 
     return pd.Series(["Fora da Estratégia", "Outros / Não Classificado", "Outros / Não Classificado", "Revisar"])
