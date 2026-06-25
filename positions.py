@@ -52,7 +52,10 @@ def source_signature() -> dict[str, Any]:
 
 
 def missing_repo_files() -> list[str]:
-    return [str(p) for p in repo_files().values() if not p.exists()]
+    # CS é opcional: quando não houver arquivo internacional, consolidamos XP/BTG normalmente.
+    files = repo_files()
+    required = [files["Contas"], files["XP"], files["BTG"]]
+    return [str(p) for p in required if not p.exists()]
 
 
 def _normalize_broker(x: Any) -> str:
@@ -240,6 +243,7 @@ def parse_cs_positions(src: str | Path) -> pd.DataFrame:
     return df[df["valor_mercado"].fillna(0) != 0].copy()
 
 
+
 def parse_xp_positions(src: str | Path) -> pd.DataFrame:
     resultado: list[dict[str, Any]] = []
     mapa = {
@@ -287,6 +291,9 @@ def parse_xp_positions(src: str | Path) -> pd.DataFrame:
             qtd = pd.to_numeric(df.at[i, qtd_col], errors="coerce") if qtd_col and qtd_col in df.columns else 0.0
             if pd.isna(qtd):
                 qtd = 0.0
+            cnpj_col = _pick_existing(df.columns.tolist(), "Cnpj", "CNPJ", "CNPJ_FUNDO", "CNPJ Fundo")
+            periodo_cot = _safe_col(df, _pick_existing(df.columns.tolist(), "PeriodoCotizacaoResgate", "PERÍODO_COTIZAÇÃO", "Periodo Cotizacao Resgate"), "").astype(str)
+            periodo_liq = _safe_col(df, _pick_existing(df.columns.tolist(), "PeriodoLiquidacaoResgate", "PERÍODO_LIQUIDAÇÃO", "Periodo Liquidacao Resgate"), "").astype(str)
             resultado.append({
                 "corretora": "XP",
                 "conta": conta,
@@ -300,14 +307,16 @@ def parse_xp_positions(src: str | Path) -> pd.DataFrame:
                 "sub_mercado": str(df.at[i, "Categoria"]).strip() if "Categoria" in df.columns and pd.notna(df.at[i, "Categoria"]) else aba.strip(),
                 "estrategia": str(df.at[i, "TipoDeAtivo"]).strip() if "TipoDeAtivo" in df.columns and pd.notna(df.at[i, "TipoDeAtivo"]) else "",
                 "indexador": str(df.at[i, "NomeIndexador"]).strip() if "NomeIndexador" in df.columns and pd.notna(df.at[i, "NomeIndexador"]) else "",
-                "liquidez": str(df.at[i, "TipoLiquidez"]).strip() if "TipoLiquidez" in df.columns and pd.notna(df.at[i, "TipoLiquidez"]) else (str(df.at[i, "PeriodoCotizacaoResgate"]).strip() if "PeriodoCotizacaoResgate" in df.columns and pd.notna(df.at[i, "PeriodoCotizacaoResgate"]) else ""),
+                "liquidez": str(df.at[i, "TipoLiquidez"]).strip() if "TipoLiquidez" in df.columns and pd.notna(df.at[i, "TipoLiquidez"]) else (str(df.at[i, "PeriodoLiquidacaoResgate"]).strip() if "PeriodoLiquidacaoResgate" in df.columns and pd.notna(df.at[i, "PeriodoLiquidacaoResgate"]) else ""),
+                "cotizacao_resgate": str(df.at[i, "PeriodoCotizacaoResgate"]).strip() if "PeriodoCotizacaoResgate" in df.columns and pd.notna(df.at[i, "PeriodoCotizacaoResgate"]) else "",
+                "liquidacao_resgate": str(df.at[i, "PeriodoLiquidacaoResgate"]).strip() if "PeriodoLiquidacaoResgate" in df.columns and pd.notna(df.at[i, "PeriodoLiquidacaoResgate"]) else "",
                 "vencimento": str(df.at[i, "DataVencimento"]).strip() if "DataVencimento" in df.columns and pd.notna(df.at[i, "DataVencimento"]) else "",
                 "emissor": str(df.at[i, "NomeEmissor"]).strip() if "NomeEmissor" in df.columns and pd.notna(df.at[i, "NomeEmissor"]) else "",
                 "taxa": str(df.at[i, "TaxaCompleta"]).strip() if "TaxaCompleta" in df.columns and pd.notna(df.at[i, "TaxaCompleta"]) else (str(df.at[i, "Taxa"]).strip() if "Taxa" in df.columns and pd.notna(df.at[i, "Taxa"]) else ""),
+                "cnpj": str(df.at[i, cnpj_col]).strip() if cnpj_col and cnpj_col in df.columns and pd.notna(df.at[i, cnpj_col]) else "",
                 "saldo_operacional": aba == "Financeiro",
             })
     return pd.DataFrame(resultado)
-
 
 def parse_btg_positions(src: str | Path) -> pd.DataFrame:
     df0 = pd.read_excel(src)
@@ -340,17 +349,18 @@ def parse_btg_positions(src: str | Path) -> pd.DataFrame:
         "moeda": "BRL",
         "indexador": _safe_col(df0, col_estr, "").astype(str).str.strip(),
         "liquidez": "",
+        "cotizacao_resgate": _safe_col(df0, _pick_existing(cols, "Data Cotização", "Data Cotizacao", "Cotização"), "").astype(str).str.strip(),
+        "liquidacao_resgate": "",
         "vencimento": _safe_col(df0, _pick_existing(cols, "Vencimento", "Data Vencimento"), "").astype(str).str.strip(),
         "emissor": _safe_col(df0, _pick_existing(cols, "Emissor"), "").astype(str).str.strip(),
         "taxa": _safe_col(df0, _pick_existing(cols, "Taxa Compra", "Taxa Emissão", "Taxa"), "").astype(str).str.strip(),
+        "cnpj": _safe_col(df0, _pick_existing(cols, "CNPJ", "CNPJ_FUNDO", "CNPJ Fundo"), "").astype(str).str.strip(),
         "saldo_operacional": (
             _safe_col(df0, col_merc, "").astype(str).str.strip().str.upper().eq("CONTA CORRENTE")
             | _safe_col(df0, col_prod, "").astype(str).str.strip().str.upper().eq("CONTA CORRENTE")
         ),
     })
     return out[out["valor_mercado"].fillna(0) != 0].copy()
-
-
 def diagnose_unmatched(pos: pd.DataFrame, control: pd.DataFrame) -> dict[str, Any]:
     if pos.empty or control.empty:
         return {}
@@ -373,7 +383,10 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
     control = load_control_accounts(files["Contas"])
     xp = force_numeric(parse_xp_positions(files["XP"]), ["valor_mercado", "quantidade"])
     btg = force_numeric(parse_btg_positions(files["BTG"]), ["valor_mercado", "quantidade"])
-    cs = force_numeric(parse_cs_positions(files["CS"]), ["valor_mercado", "quantidade"])
+    if files["CS"].exists():
+        cs = force_numeric(parse_cs_positions(files["CS"]), ["valor_mercado", "quantidade"])
+    else:
+        cs = pd.DataFrame(columns=xp.columns)
 
     pos = pd.concat([xp, btg, cs], ignore_index=True)
     if "saldo_operacional" not in pos.columns:

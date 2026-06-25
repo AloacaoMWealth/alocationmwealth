@@ -458,10 +458,13 @@ def fund_match_score(position_name: str, manual_name: str) -> float:
 
 
 @st.cache_data(show_spinner=False)
+
+@st.cache_data(show_spinner=False)
 def load_manual_fundos_cached(path_str: str) -> pd.DataFrame:
+    """Lê o Manual de Alocação antigo, quando estiver disponível."""
     path = Path(path_str)
     if not path.exists():
-        return pd.DataFrame(columns=["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "manual_key"])
+        return pd.DataFrame(columns=["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "CNPJ", "manual_key", "cnpj_norm"])
     try:
         raw = pd.read_excel(path, sheet_name="Gestoras e Fundos", header=None)
         header_row = None
@@ -471,67 +474,169 @@ def load_manual_fundos_cached(path_str: str) -> pd.DataFrame:
                 header_row = i
                 break
         if header_row is None:
-            return pd.DataFrame(columns=["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "manual_key"])
+            return pd.DataFrame(columns=["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "CNPJ", "manual_key", "cnpj_norm"])
         df = pd.read_excel(path, sheet_name="Gestoras e Fundos", header=header_row)
         df.columns = [str(c).strip() for c in df.columns]
         keep = [c for c in ["Gestora", "Classificação", "Fundo", "Liquidez (D+)", "Perfil", "Condição", "Previdência", "Estretégia/Objetivo", "CNPJ"] if c in df.columns]
         df = df[keep].copy()
         df = df[df.get("Fundo", pd.Series(dtype=object)).notna()].copy()
         df["Fundo"] = df["Fundo"].astype(str).str.strip()
+        if "CNPJ" not in df.columns:
+            df["CNPJ"] = ""
         df["manual_key"] = df["Fundo"].apply(fund_name_key)
+        df["cnpj_norm"] = df["CNPJ"].apply(only_digits_str)
         df["Liquidez (D+)"] = pd.to_numeric(df.get("Liquidez (D+)", np.nan), errors="coerce")
         df = df[df["manual_key"].str.len() > 2].drop_duplicates("manual_key")
         return df.reset_index(drop=True)
     except Exception:
-        return pd.DataFrame(columns=["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "manual_key"])
+        return pd.DataFrame(columns=["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "CNPJ", "manual_key", "cnpj_norm"])
 
+
+def only_digits_str(value) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def parse_days_from_text(value) -> float:
+    txt = norm(value)
+    if not txt or txt in ["NAN", "NONE"]:
+        return np.nan
+    # casos como D+59, D+1, 180 Dias Corridos ou apenas 180 no nome do fundo.
+    m = re.search(r"D\s*\+\s*(\d+)", txt)
+    if not m:
+        m = re.search(r"\b(0|1|2|5|10|15|30|31|32|45|59|60|90|120|180|360|361|720)\b", txt)
+    return float(m.group(1)) if m else np.nan
+
+
+@st.cache_data(show_spinner=False)
+def load_fundos_prev_cached(path_str: str) -> pd.DataFrame:
+    """Lê a planilha Nome fundos e prev.xlsx, priorizando CNPJ, classificação e liquidez.
+
+    Esta base é mais operacional para casar fundos da XP e BTG do que o manual antigo.
+    """
+    path = Path(path_str)
+    cols = ["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "CNPJ", "manual_key", "cnpj_norm", "Fonte"]
+    if not path.exists():
+        return pd.DataFrame(columns=cols)
+    rows = []
+    try:
+        xls = pd.ExcelFile(path)
+        if "Fundos de Investimentos" in xls.sheet_names:
+            df = pd.read_excel(path, sheet_name="Fundos de Investimentos")
+            df.columns = [str(c).strip() for c in df.columns]
+            for _, r in df.iterrows():
+                nome = str(r.get("NOME_FUNDO", "")).strip()
+                if not nome or nome.lower() == "nan":
+                    continue
+                cot = parse_days_from_text(r.get("COTIZAÇÃO_RESGATE", np.nan))
+                liq = parse_days_from_text(r.get("LIQUIDAÇÃO_RESGATE", np.nan))
+                # Para alocação, o prazo de disponibilidade precisa considerar cotização + liquidação.
+                prazo = np.nan
+                if pd.notna(cot) or pd.notna(liq):
+                    prazo = (0 if pd.isna(cot) else cot) + (0 if pd.isna(liq) else liq)
+                rows.append({
+                    "Fundo": nome,
+                    "Classificação": str(r.get("CLASSIFICAÇÃO_XP", r.get("CLASSIFICAÇÃO_CVM", ""))).strip(),
+                    "Classificação CVM": str(r.get("CLASSIFICAÇÃO_CVM", "")).strip(),
+                    "Liquidez (D+)": prazo,
+                    "Previdência": "Não",
+                    "CNPJ": str(r.get("CNPJ_FUNDO", "")).strip(),
+                    "manual_key": fund_name_key(nome),
+                    "cnpj_norm": only_digits_str(r.get("CNPJ_FUNDO", "")),
+                    "Fonte": "Nome fundos e prev",
+                })
+        if "Previdência" in xls.sheet_names:
+            df = pd.read_excel(path, sheet_name="Previdência")
+            df.columns = [str(c).strip() for c in df.columns]
+            for _, r in df.iterrows():
+                nome = str(r.get("Nome do Fundo Investido pelos planos", "")).strip()
+                if not nome or nome.lower() == "nan":
+                    continue
+                prazo = parse_days_from_text(r.get("Carência inicial para Port. Internas\n(dias corridos)", np.nan))
+                rows.append({
+                    "Fundo": nome,
+                    "Classificação": str(r.get("Classificação XP", "")).strip(),
+                    "Classificação CVM": "Previdência",
+                    "Liquidez (D+)": prazo,
+                    "Previdência": "Sim",
+                    "CNPJ": str(r.get("CNPJ", "")).strip(),
+                    "manual_key": fund_name_key(nome),
+                    "cnpj_norm": only_digits_str(r.get("CNPJ", "")),
+                    "Fonte": "Nome fundos e prev - Prev",
+                })
+    except Exception:
+        pass
+    out = pd.DataFrame(rows, columns=cols + ["Classificação CVM"])
+    if out.empty:
+        return pd.DataFrame(columns=cols)
+    out = out[out["manual_key"].astype(str).str.len() > 2].copy()
+    # Prioriza CNPJ; mantém duplicatas de nome quando CNPJ diferente.
+    out = out.drop_duplicates(subset=["cnpj_norm", "manual_key"], keep="first")
+    return out.reset_index(drop=True)
 
 def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    manual = load_manual_fundos_cached(str(find_file("Manual de Alocação.xlsx")))
-    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo"]:
+    # une as duas bases: nova base de fundos/previdência + manual antigo.
+    base_nova = load_fundos_prev_cached(str(find_file("Nome fundos e prev.xlsx")))
+    base_manual = load_manual_fundos_cached(str(find_file("Manual de Alocação.xlsx")))
+    bases = []
+    if not base_nova.empty:
+        bases.append(base_nova)
+    if not base_manual.empty:
+        base_manual = base_manual.rename(columns={"Classificação": "Classificação"})
+        base_manual["Fonte"] = "Manual de Alocação"
+        if "Classificação CVM" not in base_manual.columns:
+            base_manual["Classificação CVM"] = ""
+        bases.append(base_manual)
+    manual = pd.concat(bases, ignore_index=True, sort=False) if bases else pd.DataFrame()
+
+    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo", "manual_fonte"]:
         if col not in out.columns:
             out[col] = "" if col != "manual_liquidez" else np.nan
     if manual.empty:
         out["manual_match"] = False
         return out
 
+    for c in ["asset_nome", "asset_id", "cnpj"]:
+        if c not in out.columns:
+            out[c] = ""
+    out["_cnpj_norm"] = out["cnpj"].apply(only_digits_str)
     out["_fund_key_asset"] = out.get("asset_nome", out.get("asset_id", "")).astype(str).apply(fund_name_key)
-    manual_map = manual.set_index("manual_key").to_dict("index")
+    manual["cnpj_norm"] = manual.get("cnpj_norm", "").apply(only_digits_str)
+    manual["manual_key"] = manual.get("manual_key", manual.get("Fundo", "")).astype(str)
 
+    manual_cnpj = {r["cnpj_norm"]: r for _, r in manual[manual["cnpj_norm"].astype(str).str.len() >= 8].iterrows()}
     manual_records = manual.to_dict("records")
 
-    def find_match(key: str, original_name: str = ""):
+    def find_match(cnpj: str, key: str, original_name: str = ""):
+        cnpj = only_digits_str(cnpj)
+        if cnpj and cnpj in manual_cnpj:
+            return manual_cnpj[cnpj]
         if not key:
             return None
-        if key in manual_map:
-            return manual_map[key]
         best_score = 0.0
         best_rec = None
         source_name = original_name or key
         for rec in manual_records:
-            mk = str(rec.get("manual_key", ""))
             fundo = str(rec.get("Fundo", ""))
+            mk = str(rec.get("manual_key", ""))
             score = fund_match_score(source_name, fundo)
-            # reforço para nomes com tokens de gestora/fundo muito claros
             if len(set(key.split()) & set(mk.split())) >= 2:
-                score = max(score, 0.78)
+                score = max(score, 0.80)
             if score > best_score:
                 best_score = score
                 best_rec = rec
         return best_rec if best_score >= 0.72 else None
 
     source_names = out.get("asset_nome", out.get("asset_id", "")).astype(str)
-    matches = pd.Series([find_match(k, n) for k, n in zip(out["_fund_key_asset"], source_names)], index=out.index)
+    matches = pd.Series([find_match(c, k, n) for c, k, n in zip(out["_cnpj_norm"], out["_fund_key_asset"], source_names)], index=out.index)
     out["manual_match"] = matches.notna()
     out.loc[out["manual_match"], "manual_classe"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Classificação", "")).strip())
     out.loc[out["manual_match"], "manual_liquidez"] = matches[out["manual_match"]].apply(lambda r: r.get("Liquidez (D+)", np.nan))
     out.loc[out["manual_match"], "manual_previdencia"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Previdência", "")).strip())
     out.loc[out["manual_match"], "manual_fundo"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Fundo", "")).strip())
-    out = out.drop(columns=["_fund_key_asset"], errors="ignore")
+    out.loc[out["manual_match"], "manual_fonte"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Fonte", "")).strip())
+    out = out.drop(columns=["_fund_key_asset", "_cnpj_norm"], errors="ignore")
     return out
-
-
 def price_reference_from_positions(df: pd.DataFrame) -> dict[str, float]:
     if df.empty or "ticker_norm" not in df.columns:
         return {}
@@ -563,6 +668,29 @@ def operation_text(qtd_diff, diff_value) -> str:
         return f"Vender {q_abs}"
     return "Manter"
 
+
+
+def basket_excel_bytes(df_orders: pd.DataFrame, cliente: str = "") -> BytesIO:
+    """Gera um Excel simples de basket para acelerar a execução."""
+    base = df_orders.copy()
+    if base.empty or "Qtd a operar" not in base.columns:
+        out = pd.DataFrame(columns=["C/V", "Ativo", "Quantidade", "Preço referência", "Valor estimado", "Cliente/Grupo"])
+    else:
+        base["Qtd a operar"] = pd.to_numeric(base["Qtd a operar"], errors="coerce").fillna(0)
+        base = base[base["Qtd a operar"].round().ne(0)].copy()
+        out = pd.DataFrame({
+            "C/V": np.where(base["Qtd a operar"] > 0, "C", "V"),
+            "Ativo": base["Ativo"].astype(str),
+            "Quantidade": base["Qtd a operar"].abs().round().astype(int),
+            "Preço referência": pd.to_numeric(base.get("Preço referência", np.nan), errors="coerce"),
+            "Valor estimado": pd.to_numeric(base.get("Diferença", 0), errors="coerce").abs(),
+            "Cliente/Grupo": cliente,
+        })
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        out.to_excel(writer, index=False, sheet_name="Basket")
+    buf.seek(0)
+    return buf
 
 
 def format_usd(v) -> str:
@@ -692,6 +820,55 @@ def load_positions_cached(force_rebuild: bool = False) -> tuple[pd.DataFrame, di
 # =============================================================================
 # Classificação central dos ativos
 # =============================================================================
+
+def classify_fund_class(class_text: str, full_text: str, liquidez_days=np.nan) -> tuple[str, str]:
+    """Converte classificações XP/CVM/Manual em classe/subbucket operacional."""
+    c = norm(class_text)
+    t = norm(full_text)
+    combined = f"{c} {t}"
+    # Previdência será tratada pelo ativo, mas a classe base continua útil.
+    if any(x in combined for x in ["ACOES", "AÇÕES", "RENDA VARIAVEL", "RV BRASIL", "SMALL CAPS", "IBOV", "LONG BIASED"]):
+        return "RV Brasil", "Ações"
+    if any(x in combined for x in ["FII", "IMOBILIARIO", "IMOBILIÁRIO", "REAL ESTATE"]):
+        return "RV Brasil", "FIIs"
+    if any(x in combined for x in ["EXTERIOR", "INTERNACIONAL", "GLOBAL", "DOLAR", "DÓLAR", "CAMBIAL", "US", "USD"]):
+        # Se não vier claramente renda fixa, deixamos em renda variável internacional por conservadorismo operacional.
+        if any(x in combined for x in ["BOND", "FIXED", "RENDA FIXA", "TREASURY"]):
+            return "Internacional", "Renda Fixa Internacional"
+        return "Internacional", "Renda Variável Internacional"
+    if any(x in combined for x in ["IPCA", "INFLACAO", "INFLAÇÃO", "IMA-B", "IMA B"]):
+        return "RF Brasil", "Inflação - Bancário"
+    if any(x in combined for x in ["PRE-FIXADO", "PREFIXADO", "PRÉ-FIXADO", "IRF-M", "IRF M"]):
+        return "RF Brasil", "Pré - Bancário"
+    if any(x in combined for x in ["RENDA FIXA", "REFERENCIADO DI", "DI", "CDI", "CREDITO", "CRÉDITO", "HIGH GRADE", "HIGH YIELD", "FIDC", "DIREITOS CREDITORIOS", "DIREITOS CREDITÓRIOS", "FIRF", "RF"]):
+        return "RF Brasil", bucket_from_liquidity_days(liquidez_days)
+    if any(x in combined for x in ["MULTIMERCADO", "FIM", "MACRO", "RETORNO ABSOLUTO"]):
+        # Multimercado com prazo explícito/fundo de crédito aprovado entra como pós pelo prazo;
+        # sem prazo, fica em monitoramento.
+        if pd.notna(liquidez_days):
+            return "RF Brasil", bucket_from_liquidity_days(liquidez_days)
+        return "Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada"
+    return "Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada"
+
+
+def infer_liquidity_days_from_row(row: pd.Series) -> float:
+    vals = [
+        row.get("manual_liquidez", np.nan), row.get("liquidez", ""),
+        row.get("cotizacao_resgate", ""), row.get("liquidacao_resgate", ""),
+        row.get("asset_nome", ""), row.get("asset_id", ""),
+    ]
+    # Se temos cotização + liquidação separadas, soma os dois para prazo de disponibilidade.
+    cot = parse_days_from_text(row.get("cotizacao_resgate", ""))
+    liq = parse_days_from_text(row.get("liquidacao_resgate", ""))
+    if pd.notna(cot) or pd.notna(liq):
+        return (0 if pd.isna(cot) else cot) + (0 if pd.isna(liq) else liq)
+    for v in vals:
+        d = parse_days_from_text(v)
+        if pd.notna(d):
+            return d
+    return np.nan
+
+
 def classify_position(row: pd.Series) -> pd.Series:
     corretora = norm(row.get("corretora", ""))
     asset_id = ticker_clean(row.get("asset_id", ""))
@@ -704,61 +881,61 @@ def classify_position(row: pd.Series) -> pd.Series:
     emissor = norm(row.get("emissor", ""))
     taxa = norm(row.get("taxa", ""))
     nome = norm(row.get("asset_nome", ""))
+    cnpj = only_digits_str(row.get("cnpj", ""))
     text = " ".join([asset_id, nome, asset_tipo, mercado, sub_mercado, estrategia, indexador, liquidez, emissor, taxa])
+    liq_days = infer_liquidity_days_from_row(row)
 
-    # Caixa operacional real: não confundir com proventos/custódia remunerada.
     if bool(row.get("saldo_operacional", False)):
         if corretora == "CS":
             return pd.Series(["Internacional", "Caixa Internacional", "Caixa Internacional", "Operacional"])
         return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
 
-    # Renda fixa bancária/tesouro com indexador explícito. Vem antes de fundos genéricos
-    # para não jogar CDB/LCI/LCA prefixado ou IPCA em pós-fixado/monitoramento.
-    is_rf_local = ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or "BANCARIO" in estrategia or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF")))
-    if is_rf_local:
-        if any(x in text for x in ["PRE-FIXADO", "PRE FIXADO", "PREFIXADO", "PRÉ-FIXADO", "PRÉ FIXADO"]):
-            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Indexador"])
-        if any(x in text for x in ["IPCA", "IPC-A", "INFLACAO", "INFLAÇÃO"]):
-            return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Indexador"])
-        if any(x in text for x in ["CDI", "POS-FIXADO", "PÓS-FIXADO", "POS FIXADO", "PÓS FIXADO"]):
-            return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "Indexador"])
+    # BTG: Mercado/Sub Mercado/Estratégia normalmente já dizem exatamente o direcionamento.
+    if corretora == "BTG":
+        if mercado == "CONTA CORRENTE" or sub_mercado == "CC":
+            return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
+        if mercado == "PREVIDENCIA" or sub_mercado == "PP":
+            classe, bucket = classify_fund_class(row.get("manual_classe", "") or estrategia, text, liq_days)
+            return pd.Series([classe, bucket, bucket, "Previdência"])
+        if mercado == "RENDA FIXA":
+            if sub_mercado in ["TESOURO DIRETO", "TITULO PUBLICO", "TÍTULO PÚBLICO"]:
+                if any(x in estrategia + " " + text for x in ["INFLACAO", "INFLAÇÃO", "IPCA", "NTNB", "NTN-B"]):
+                    return pd.Series(["RF Brasil", "Inflação - Tesouro", "Inflação - Tesouro", "BTG"])
+                if any(x in estrategia + " " + text for x in ["PRE", "PRÉ", "PREFIXADO", "LTN", "NTN-F"]):
+                    return pd.Series(["RF Brasil", "Pré - Tesouro", "Pré - Tesouro", "BTG"])
+                return pd.Series(["RF Brasil", "Pós - Imediato", "Pós - Imediato", "BTG"])
+            if "INFL" in estrategia or "IPCA" in text:
+                return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "BTG"])
+            if "PRE" in estrategia or "PRÉ" in estrategia or "PREFIX" in text:
+                return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "BTG"])
+            if "POS" in estrategia or "PÓS" in estrategia or "CDI" in text:
+                return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "BTG"])
+            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "BTG fallback"])
+        if mercado == "FUNDOS":
+            classe, bucket = classify_fund_class(row.get("manual_classe", "") or estrategia, text, liq_days)
+            return pd.Series([classe, bucket, bucket, "Manual" if row.get("manual_match", False) else "BTG/Heurística"])
+        if mercado == "RENDA VARIAVEL" or mercado == "RENDA VARIÁVEL":
+            if sub_mercado == "FII" or asset_id.endswith("11"):
+                # FiInfra antes de FII comum.
+                if asset_id in FI_INFRA_TICKERS:
+                    return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Estratégia"])
+                return pd.Series(["RV Brasil", "FIIs", "FIIs", "Estratégia"])
+            if sub_mercado == "ACAO" or len(asset_id) in [5, 6]:
+                return pd.Series(["RV Brasil", "Ações", "Ações", "Estratégia"])
+        if mercado == "COE":
+            return pd.Series(["Fora da Estratégia", "COE / Estruturados", "COE / Estruturados", "Fora da Estratégia"])
 
-    # Classificação pelo Manual de Alocação > aba Gestoras e Fundos.
-    manual_classe = norm(row.get("manual_classe", ""))
-    manual_liq = row.get("manual_liquidez", np.nan)
-    manual_prev = norm(row.get("manual_previdencia", ""))
-    if manual_classe:
-        if "SIM" in manual_prev or any(x in text for x in ["PREV", "PREVIDENCIA", "PREVIDÊNCIA", "PGBL", "VGBL"]):
-            return pd.Series(["Fora da Estratégia", "Previdência", "Previdência", "Manual"])
-        if "RF POS" in manual_classe or "RF PÓS" in manual_classe:
-            bucket = bucket_from_liquidity_days(manual_liq)
-            return pd.Series(["RF Brasil", bucket, bucket, "Manual"])
-        if "RF INF" in manual_classe:
-            return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Manual"])
-        if "RV BRASIL" in manual_classe or "EQUITIES" in manual_classe or "GUEPARDO" in manual_classe:
-            return pd.Series(["RV Brasil", "Ações", "Ações", "Manual"])
-        if "INTERNACIONAL" in manual_classe or "US" in manual_classe:
-            return pd.Series(["Internacional", "Renda Variável Internacional", "Renda Variável Internacional", "Manual"])
-        if any(x in manual_classe for x in ["ESPECIALIDADE", "PRIVATE EQUITY", "VENTURE", "REAL ESTATE", "MULTI", "FUNDO"]):
-            return pd.Series(["Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada", "Fundos de Investimento / Sem Liquidez Mapeada", "Manual"])
-
-    # Heurísticas de fundos pelo nome quando não há match exato no manual.
-    if any(x in text for x in ["PREVIDENCIA", "PREVIDÊNCIA", "PGBL", "VGBL", " PREV "]):
-        return pd.Series(["Fora da Estratégia", "Previdência", "Previdência", "Heurística"])
-    if " FIA" in f" {text} " or "FUNDO DE ACOES" in text or "FUNDO DE AÇÕES" in text:
-        return pd.Series(["RV Brasil", "Ações", "Ações", "Heurística"])
-    if any(x in text for x in ["FIRF", "FI RF", "RENDA FIXA", "REFERENCIADO DI", "CRED PRIV", "CREDITO PRIVADO", "CRÉDITO PRIVADO"]):
-        m_liq = re.search(r"(?:D\+)?\b(0|1|5|10|15|30|31|32|45|60|90|120|180|360)\b", text)
-        bucket = bucket_from_liquidity_days(float(m_liq.group(1)) if m_liq else np.nan)
-        return pd.Series(["RF Brasil", bucket, bucket, "Heurística"])
-    if " FIM" in f" {text} " or "MULTIMERCADO" in text or "FIDC" in text:
-        # Alguns fundos de crédito aprovados aparecem como FIM/FIDC e carregam a liquidez no nome
-        # (ex.: Riza Meyenii 180). Quando há prazo explícito, tratamos como renda fixa pós-fixada.
-        m_liq = re.search(r"(?:D\+)?\b(0|1|5|10|15|30|31|32|45|60|90|120|180|360)\b", text)
-        if m_liq:
-            bucket = bucket_from_liquidity_days(float(m_liq.group(1)))
-            return pd.Series(["RF Brasil", bucket, bucket, "Heurística"])
-        return pd.Series(["Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada", "Fundos de Investimento / Sem Liquidez Mapeada", "Monitorar"])
+    # XP: fundos e previdência têm CNPJ/prazos na própria planilha e/ou na base Nome fundos e prev.
+    if asset_tipo in ["FUNDOS", "PREVIDENCIA", "PREVIDÊNCIA"] or any(x in text for x in ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS"]):
+        classe_base = row.get("manual_classe", "") if row.get("manual_match", False) else ""
+        if not classe_base:
+            classe_base = text
+        classe, bucket = classify_fund_class(classe_base, text, liq_days)
+        origem = "Manual/Fundos" if row.get("manual_match", False) else "XP/Heurística"
+        if asset_tipo in ["PREVIDENCIA", "PREVIDÊNCIA"] or any(x in text for x in ["PREV", "PREVIDENCIA", "PREVIDÊNCIA", "PGBL", "VGBL"]):
+            # Mantém o recurso dentro da classe econômica do fundo, mas marca a origem como previdência.
+            return pd.Series([classe, bucket, bucket, "Previdência"])
+        return pd.Series([classe, bucket, bucket, origem])
 
     # Internacional
     if corretora == "CS":
@@ -768,21 +945,19 @@ def classify_position(row: pd.Series) -> pd.Series:
             return pd.Series(["Internacional", "Renda Fixa Internacional", "Renda Fixa Internacional", "Estratégia"])
         return pd.Series(["Internacional", "Renda Variável Internacional", "Renda Variável Internacional", "Estratégia"])
 
-    # Caixa / saldo
-    if any(x in text for x in ["SALDO FINANCEIRO", "CONTA CORRENTE", "VALORDISPONIVEL", "FINANCEIRO", "CC"]):
+    # Caixa / saldo fallback conservador
+    if any(x in text for x in ["SALDO FINANCEIRO", "CONTA CORRENTE", "VALORDISPONIVEL"]):
         return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
 
-    # Previdência / COE / estruturados
-    if any(x in text for x in ["PREVIDENCIA", "PGBL", "VGBL", "PREV "]):
-        return pd.Series(["Fora da Estratégia", "Previdência", "Previdência", "Fora da Estratégia"])
+    # COE / estruturados
     if any(x in text for x in ["COE", "ESTRUTURADO", "OPCOES FLEX", "OPCAO FLEX", "OPCOES", "OPÇÃO"]):
         return pd.Series(["Fora da Estratégia", "COE / Estruturados", "COE / Estruturados", "Fora da Estratégia"])
 
-    # Fi-Infra: precisa vir antes de FII porque todos terminam em 11.
+    # Fi-Infra: antes de FII, porque todos terminam em 11.
     if asset_id in FI_INFRA_TICKERS or any(x in text for x in ["FI INFRA", "FIINFRA", "FIC INFR", "INFRA", "DEB INCENTIVADA"]):
         return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Estratégia"])
 
-    # RV Brasil
+    # Bolsa Brasil
     if asset_tipo in ["FUNDOS IMOBILIARIOS", "FUNDOS IMOBILIÁRIOS"] or any(x in text for x in ["FUNDO IMOB", "FII", "FUNDO IMOBILIARIO"]):
         return pd.Series(["RV Brasil", "FIIs", "FIIs", "Estratégia"])
     if (asset_id.endswith("11") and len(asset_id) >= 5 and asset_id[:4].isalpha()):
@@ -792,7 +967,7 @@ def classify_position(row: pd.Series) -> pd.Series:
     if len(asset_id) in [5, 6] and asset_id[:4].isalpha() and asset_id[-1].isdigit():
         return pd.Series(["RV Brasil", "Ações", "Ações", "Estratégia"])
 
-    # RF Brasil: Tesouro e indexadores
+    # Tesouro / títulos públicos são Tesouro na estratégia.
     if any(x in text for x in ["TESOURO SELIC", "LFT", "SELIC"]):
         return pd.Series(["RF Brasil", "Pós - Imediato", "Pós - Imediato", "Estratégia"])
     if any(x in text for x in ["TESOURO PRE", "NTN-F", "NTNF", "LTN"]):
@@ -800,34 +975,18 @@ def classify_position(row: pd.Series) -> pd.Series:
     if any(x in text for x in ["TESOURO IPCA", "NTN-B", "NTNB", "NTNB PRINC"]):
         return pd.Series(["RF Brasil", "Inflação - Tesouro", "Inflação - Tesouro", "Estratégia"])
 
-    # Prazo/liquidez dos pós-fixados quando informado.
-    if any(x in liquidez for x in ["D+0", "D+1", "LIQUIDEZ DIARIA", "LIQUIDEZ DIÁRIA"]) or any(x in text for x in ["IMEDIATO", "COMPROMISSADA"]):
-        return pd.Series(["RF Brasil", "Pós - Imediato", "Pós - Imediato", "Estratégia"])
-    if "D+30" in liquidez or "D+31" in liquidez or "D+59" in liquidez:
-        return pd.Series(["RF Brasil", "Pós - 31 a 180 dias", "Pós - 31 a 180 dias", "Estratégia"])
-
-    # Crédito privado antes de CDB/LCI/LCA genéricos.
-    if any(x in text for x in ["CRI", "CRA", "DEB", "DEBENTURE", "CDCA", "CREDITO PRIVADO", "CRÉDITO PRIVADO"]):
+    # Renda fixa local por indexador/taxa.
+    is_rf_local = ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF", "DEB", "CRI", "CRA", "CDCA")))
+    if is_rf_local or any(x in text for x in ["CDB", "LCI", "LCA", "LCD", "CRI", "CRA", "DEB", "DEBENTURE", "CDCA"]):
         if any(x in text for x in ["IPCA", "IPC-A", "INFLACAO", "INFLAÇÃO"]):
-            return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Estratégia"])
-        if any(x in text for x in ["PRE-FIXADO", "PRE FIXADO", "PRÉ-FIXADO", "PREFIXADO"]):
-            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Estratégia"])
-        return pd.Series(["RF Brasil", "Crédito Privado", "Crédito Privado", "Estratégia"])
-
-    if any(x in text for x in ["IPCA", "IPC-A", "INFLACAO", "INFLAÇÃO"]):
-        return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Estratégia"])
-    if any(x in text for x in ["PRE-FIXADO", "PRE FIXADO", "PRÉ-FIXADO", "PREFIXADO", "PRE FIX", "PRÉ FIX"]):
-        return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Estratégia"])
-    if any(x in text for x in ["CDB", "LCI", "LCA", "LCD", "CDI", "POS-FIXADO", "PÓS-FIXADO", "POS FIXADO", "PÓS FIXADO"]):
-        return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "Estratégia"])
-
-    # Fundos não são classe operacional de compra/venda; ficam monitorados.
-    if any(x in text for x in ["FIC", "FIM", "FIRF", "FIDC", "FUNDO", "FUNDOS"]):
-        return pd.Series(["Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada", "Fundos de Investimento / Sem Liquidez Mapeada", "Monitorar"])
+            return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Indexador"])
+        if any(x in text for x in ["PRE-FIXADO", "PRE FIXADO", "PRÉ-FIXADO", "PREFIXADO"]) or (taxa and "CDI" not in taxa and "IPCA" not in taxa):
+            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Indexador"])
+        if any(x in text for x in ["CDI", "POS-FIXADO", "PÓS-FIXADO", "POS FIXADO", "PÓS FIXADO"]):
+            return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "Indexador"])
+        return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Indexador fallback"])
 
     return pd.Series(["Fora da Estratégia", "Outros / Não Classificado", "Outros / Não Classificado", "Revisar"])
-
-
 @st.cache_data(show_spinner=False)
 def enrich_positions_cached(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -941,10 +1100,13 @@ def portfolio_tables(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float) 
     return macro, sub
 
 
+
 def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float, modelo: str, price_ref: dict[str, float] | None = None) -> pd.DataFrame:
     price_ref = price_ref or {}
     rows = []
-    for bucket, tickers in rv_universe(modelo).items():
+    universe_by_bucket = rv_universe(modelo)
+    model_tickers = {ticker_clean(t) for xs in universe_by_bucket.values() for t in xs}
+    for bucket, tickers in universe_by_bucket.items():
         alvo_total = pl * peso_get(p, bucket)
         alvo_ativo = alvo_total / len(tickers) if tickers else 0
         for t in tickers:
@@ -958,16 +1120,25 @@ def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float,
             qtd_ideal = round(alvo_ativo / preco) if pd.notna(preco) and preco > 0 else np.nan
             qtd_operar = qtd_ideal - qtd if pd.notna(qtd_ideal) else np.nan
             diff = alvo_ativo - atual
-            rows.append([
-                bucket, t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar,
-                operation_text(qtd_operar, diff), status_por_diff(diff, alvo_ativo)
-            ])
-    return pd.DataFrame(rows, columns=["Estratégia", "Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Operação", "Status"])
-
+            rows.append([t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar, bucket])
+    # Ativos de bolsa que o cliente possui e que não fazem parte da carteira modelo entram como venda/revisão.
+    bolsa = pos_cliente[pos_cliente["subbucket"].isin(["Ações", "FIIs"])].copy()
+    for tk, grp in bolsa.groupby("ticker_norm"):
+        if not tk or tk in model_tickers:
+            continue
+        ativo = str(grp["asset_id"].iloc[0])
+        atual = float(grp["valor_mercado"].sum())
+        qtd = float(grp["quantidade"].sum())
+        preco = price_ref.get(tk, np.nan)
+        if (pd.isna(preco) or preco <= 0) and qtd > 0:
+            preco = atual / qtd
+        rows.append([ativo, preco, qtd, atual, 0, 0.0, -atual, -qtd, "Fora do modelo"])
+    return pd.DataFrame(rows, columns=["Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Grupo"])
 
 def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float, price_ref: dict[str, float] | None = None) -> pd.DataFrame:
     price_ref = price_ref or {}
     rows = []
+    model_tickers = {ticker_clean(t) for t in FI_INFRA_TICKERS}
     grupos = [
         ("Infraestrutura pós-fixada", peso_get(p, "FiInfra e Cetipados"), FI_INFRA_POS_TICKERS),
         ("Infraestrutura indexada à inflação", peso_get(p, "FiInfra e Cetipado"), FI_INFRA_INFLACAO_TICKERS),
@@ -988,13 +1159,20 @@ def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: f
             qtd_ideal = round(alvo_ativo / preco) if pd.notna(preco) and preco > 0 else np.nan
             qtd_operar = qtd_ideal - qtd if pd.notna(qtd_ideal) else np.nan
             diff = alvo_ativo - atual
-            rows.append([
-                nome, t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar,
-                operation_text(qtd_operar, diff), status_por_diff(diff, alvo_ativo)
-            ])
-    return pd.DataFrame(rows, columns=["Estratégia", "Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Operação", "Status"])
-
-
+            rows.append([t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar, nome])
+    # Fi-infras fora do universo entram como venda/revisão.
+    held = pos_cliente[pos_cliente["ticker_norm"].isin({ticker_clean(x) for x in FI_INFRA_TICKERS})].copy()
+    for tk, grp in held.groupby("ticker_norm"):
+        if not tk or tk in model_tickers:
+            continue
+        ativo = str(grp["asset_id"].iloc[0])
+        atual = float(grp["valor_mercado"].sum())
+        qtd = float(grp["quantidade"].sum())
+        preco = price_ref.get(tk, np.nan)
+        if (pd.isna(preco) or preco <= 0) and qtd > 0:
+            preco = atual / qtd
+        rows.append([ativo, preco, qtd, atual, 0, 0.0, -atual, -qtd, "Fora do modelo"])
+    return pd.DataFrame(rows, columns=["Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Grupo"])
 def action_summary(pos_cliente: pd.DataFrame, sub_df: pd.DataFrame, pl: float) -> tuple[pd.DataFrame, float, float]:
     saldo = float(pos_cliente.loc[pos_cliente["subbucket"].eq("Saldo em Conta"), "valor_mercado"].sum())
     fora_liquidez = float(pos_cliente.loc[pos_cliente["classe_macro"].eq("Fora da Estratégia"), "valor_mercado"].sum())
@@ -1439,7 +1617,7 @@ if page == "Asset Allocation":
 
     st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
 
-    st.subheader("1. Visão macro atual x ideal")
+    st.subheader("Visão macro atual x ideal")
     macro_view = macro_df.copy()
     macro_view["Classe"] = macro_view["Classe"].apply(friendly_class_name)
     macro_view = macro_view.drop(columns=["Ação", "Status"], errors="ignore")
@@ -1459,8 +1637,8 @@ if page == "Asset Allocation":
             hide_index=True,
         )
 
-    st.subheader("2. Alocação por estratégia")
-    st.markdown('<div class="mw-muted">Abertura objetiva por classe e estratégia. A diferença positiva indica valor a alocar; diferença negativa indica excesso.</div>', unsafe_allow_html=True)
+    st.subheader("Abertura por estratégia")
+    st.markdown('<div class="mw-muted">Abertura objetiva por classe. A diferença positiva indica valor a alocar; diferença negativa indica excesso.</div>', unsafe_allow_html=True)
     class_order = ["RF Brasil", "RV Brasil", "Fora da Estratégia", "Internacional"]
     for classe in class_order:
         class_df = sub_df[sub_df["Classe"].eq(classe)].copy()
@@ -1509,19 +1687,20 @@ if page == "Asset Allocation":
                         hide_index=True,
                     )
 
-    st.subheader("3. Sugestão por ativo — Ações, Fundos Imobiliários e Infraestrutura")
+    st.subheader("Produtos de bolsa e infraestrutura")
     price_ref = price_reference_from_positions(df_latest)
     rv_df = rv_recommendation(pos_cliente, p, pl, modelo, price_ref)
     fi_df = fiinfra_recommendation(pos_cliente, p, pl, price_ref)
     tab_a, tab_b = st.tabs(["Ações e Fundos Imobiliários", "Infraestrutura"])
     with tab_a:
-        rv_view = rv_df[rv_df["Valor Ideal"].gt(0)].copy().drop(columns=["Status"], errors="ignore")
+        rv_view = rv_df[rv_df["Valor Ideal"].gt(0) | rv_df["Valor Atual"].gt(0)].copy()
+        rv_table = rv_view.drop(columns=["Grupo"], errors="ignore")
         if rv_view.empty:
             st.info("Este modelo não possui alvo para ações ou fundos imobiliários.")
         else:
             st.dataframe(
                 money_color_styler(
-                    rv_view,
+                    rv_table,
                     money_cols=["Preço referência", "Valor Atual", "Valor Ideal", "Diferença"],
                     qty_cols=["Qtd Atual", "Qtd Ideal", "Qtd a operar"],
                     diff_cols=["Diferença", "Qtd a operar"],
@@ -1529,14 +1708,23 @@ if page == "Asset Allocation":
                 use_container_width=True,
                 hide_index=True,
             )
+            basket = basket_excel_bytes(rv_view, grupo_sel)
+            st.download_button(
+                "Baixar basket de ações e fundos imobiliários",
+                data=basket,
+                file_name=f"basket_acoes_fiis_{str(grupo_sel).replace(' ', '_').lower()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
     with tab_b:
-        fi_view = fi_df[fi_df["Valor Ideal"].gt(0)].copy().drop(columns=["Status"], errors="ignore")
+        fi_view = fi_df[fi_df["Valor Ideal"].gt(0) | fi_df["Valor Atual"].gt(0)].copy()
+        fi_table = fi_view.drop(columns=["Grupo"], errors="ignore")
         if fi_view.empty:
             st.info("Este modelo não possui alvo para infraestrutura.")
         else:
             st.dataframe(
                 money_color_styler(
-                    fi_view,
+                    fi_table,
                     money_cols=["Preço referência", "Valor Atual", "Valor Ideal", "Diferença"],
                     qty_cols=["Qtd Atual", "Qtd Ideal", "Qtd a operar"],
                     diff_cols=["Diferença", "Qtd a operar"],
@@ -1544,8 +1732,16 @@ if page == "Asset Allocation":
                 use_container_width=True,
                 hide_index=True,
             )
+            basket = basket_excel_bytes(fi_view, grupo_sel)
+            st.download_button(
+                "Baixar basket de infraestrutura",
+                data=basket,
+                file_name=f"basket_infra_{str(grupo_sel).replace(' ', '_').lower()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
-    st.subheader("4. Detalhamento das posições")
+    st.subheader("Detalhamento das posições")
     buckets = [b for b in SUBBUCKET_ORDER if b in set(pos_cliente["subbucket"])]
     bucket_options = {friendly_strategy_name(b): b for b in buckets}
     if bucket_options:
