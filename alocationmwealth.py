@@ -59,7 +59,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "3.6"
+APP_VERSION = "4.3"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -69,11 +69,26 @@ FI_INFRA_TICKERS = ["KNDI11", "CDII11", "IFRI11", "AZQI11", "KNCE11", "AZIN11", 
 FI_INFRA_POS_TICKERS = ["KNDI11", "CDII11", "IFRI11", "AZQI11", "KNCE11", "AZIN11"]
 FI_INFRA_INFLACAO_TICKERS = ["JURO11", "IFRA11", "KDIF11", "JGPI11", "BDIF11", "JMBI11", "CPTI11"]
 
+# Ativos estratégicos negociados no Brasil que precisam ser tratados pelo código
+# antes da regra genérica de ticker terminado em 11, para não caírem como FII.
+ATIVOS_ESTRATEGICOS_B3 = {
+    "BITH11": {"classe": "Alternativos", "subbucket": "Bitcoin", "estrategia": "Bitcoin"},
+    "GOLD11": {"classe": "Alternativos", "subbucket": "Ouro", "estrategia": "Ouro"},
+    "UTLL11": {"classe": "RV Brasil", "subbucket": "Ações", "estrategia": "Utilities"},
+    "DIVD11": {"classe": "RV Brasil", "subbucket": "Ações", "estrategia": "Dividendos"},
+    "XINA11": {"classe": "Internacional", "subbucket": "Renda Variável Internacional", "estrategia": "Exposição China"},
+    "IVVB11": {"classe": "Internacional", "subbucket": "Renda Variável Internacional", "estrategia": "Exposição EUA"},
+    "NASD11": {"classe": "Internacional", "subbucket": "Renda Variável Internacional", "estrategia": "Exposição EUA"},
+    "SPYI11": {"classe": "Internacional", "subbucket": "Renda Variável Internacional", "estrategia": "Dividendos EUA"},
+    "ALUG11": {"classe": "Internacional", "subbucket": "Renda Variável Internacional", "estrategia": "Imobiliário EUA"},
+    "USTK11": {"classe": "Internacional", "subbucket": "Renda Variável Internacional", "estrategia": "Tecnologia EUA"},
+}
+
 # Mantém ordem operacional das tabelas.
 SUBBUCKET_ORDER = [
     "Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias",
     "FiInfra e Cetipados", "Pré - Bancário", "Pré - Tesouro", "Inflação - Bancário", "Inflação - Tesouro", "Crédito Privado",
-    "Ações", "FIIs", "Renda Fixa Internacional", "Renda Variável Internacional", "Caixa Internacional",
+    "Ações", "FIIs", "Bitcoin", "Ouro", "Renda Fixa Internacional", "Renda Variável Internacional", "Caixa Internacional",
     "Saldo em Conta", "Fundos de Investimento / Sem Liquidez Mapeada", "Previdência", "COE / Estruturados", "Outros / Não Classificado",
 ]
 
@@ -198,6 +213,7 @@ def friendly_class_name(x: str) -> str:
         "Internacional": "Investimentos internacionais",
         "Caixa": "Caixa",
         "Fora da Estratégia": "Fora da estratégia",
+        "Alternativos": "Alternativos",
     }
     return mapa.get(str(x), str(x))
 
@@ -217,6 +233,8 @@ def friendly_strategy_name(x: str) -> str:
         "Crédito Privado": "Crédito privado",
         "Ações": "Ações brasileiras",
         "FIIs": "Fundos imobiliários",
+        "Bitcoin": "Bitcoin",
+        "Ouro": "Ouro",
         "Renda Fixa Internacional": "Renda fixa internacional",
         "Renda Variável Internacional": "Renda variável internacional",
         "Caixa Internacional": "Caixa internacional",
@@ -310,6 +328,9 @@ def macro_hierarchy_table(sub_df: pd.DataFrame, pl: float) -> pd.DataFrame:
         ("INVESTIMENTOS INTERNACIONAIS", None, ["Internacional"], True),
         ("  Renda fixa internacional", ["Renda Fixa Internacional"], None, False),
         ("  Renda variável internacional", ["Renda Variável Internacional"], None, False),
+        ("ALTERNATIVOS", None, ["Alternativos"], True),
+        ("  Bitcoin", ["Bitcoin"], None, False),
+        ("  Ouro", ["Ouro"], None, False),
         ("FORA DA ESTRATÉGIA / MONITORAMENTO", None, ["Fora da Estratégia"], True),
         ("  Fundos sem liquidez mapeada", ["Fundos de Investimento / Sem Liquidez Mapeada"], None, False),
         ("  Previdência", ["Previdência"], None, False),
@@ -938,6 +959,9 @@ def classify_position(row: pd.Series) -> pd.Series:
             classe, bucket = classify_fund_class(row.get("manual_classe", "") or estrategia, text, liq_days)
             return pd.Series([classe, bucket, bucket, "Manual" if row.get("manual_match", False) else "BTG/Heurística"])
         if mercado == "RENDA VARIAVEL" or mercado == "RENDA VARIÁVEL":
+            if asset_id in ATIVOS_ESTRATEGICOS_B3:
+                info = ATIVOS_ESTRATEGICOS_B3[asset_id]
+                return pd.Series([info["classe"], info["subbucket"], info["subbucket"], f"ETF B3: {info['estrategia']}"])
             if sub_mercado == "FII" or asset_id.endswith("11"):
                 # FiInfra antes de FII comum.
                 if asset_id in FI_INFRA_TICKERS:
@@ -975,6 +999,11 @@ def classify_position(row: pd.Series) -> pd.Series:
     # COE / estruturados
     if any(x in text for x in ["COE", "ESTRUTURADO", "OPCOES FLEX", "OPCAO FLEX", "OPCOES", "OPÇÃO"]):
         return pd.Series(["Fora da Estratégia", "COE / Estruturados", "COE / Estruturados", "Fora da Estratégia"])
+
+    # Ativos estratégicos negociados na B3 que não podem cair na regra genérica de FII.
+    if asset_id in ATIVOS_ESTRATEGICOS_B3:
+        info = ATIVOS_ESTRATEGICOS_B3[asset_id]
+        return pd.Series([info["classe"], info["subbucket"], info["subbucket"], f"ETF B3: {info['estrategia']}"])
 
     # Fi-Infra: antes de FII, porque todos terminam em 11.
     if asset_id in FI_INFRA_TICKERS or any(x in text for x in ["FI INFRA", "FIINFRA", "FIC INFR", "INFRA", "DEB INCENTIVADA"]):
@@ -1651,10 +1680,17 @@ if page == "Asset Allocation":
     macro_hier = macro_hierarchy_table(sub_df, pl)
     col1, col2 = st.columns([0.95, 2.45])
     with col1:
-        plot = macro_df[macro_df["Valor Atual"] > 0].copy()
-        plot["Classe"] = plot["Classe"].apply(friendly_class_name)
-        fig = px.pie(plot, names="Classe", values="Valor Atual", title="Atual", hole=.48)
-        fig.update_layout(height=315, margin=dict(l=8, r=8, t=45, b=8), showlegend=True, legend_title_text="")
+        # Mesmo conceito da carteira teórica: gráfico pela abertura das estratégias,
+        # não apenas pelo macro Renda Fixa / Renda Variável / Internacional.
+        plot = macro_hier.copy()
+        plot = plot[(~plot.get("_header", False).astype(bool)) & (plot["Quanto tem"] > 0)].copy()
+        plot["Estratégia"] = plot["Estratégia"].astype(str).str.strip()
+        if plot.empty:
+            plot = macro_df[macro_df["Valor Atual"] > 0].copy()
+            plot["Estratégia"] = plot["Classe"].apply(friendly_class_name)
+            plot = plot.rename(columns={"Valor Atual": "Quanto tem"})
+        fig = px.pie(plot, names="Estratégia", values="Quanto tem", title="Distribuição atual por estratégia", hole=.48)
+        fig.update_layout(height=365, margin=dict(l=8, r=8, t=45, b=8), showlegend=True, legend_title_text="")
         st.plotly_chart(fig, use_container_width=True)
     with col2:
         st.dataframe(
@@ -1665,7 +1701,7 @@ if page == "Asset Allocation":
 
     st.subheader("Abertura por estratégia")
     st.markdown('<div class="mw-muted">Abertura objetiva por classe. A diferença positiva indica valor a alocar; diferença negativa indica excesso.</div>', unsafe_allow_html=True)
-    class_order = ["RF Brasil", "RV Brasil", "Fora da Estratégia", "Internacional"]
+    class_order = ["RF Brasil", "RV Brasil", "Alternativos", "Internacional", "Fora da Estratégia"]
     for classe in class_order:
         class_df = sub_df[sub_df["Classe"].eq(classe)].copy()
         if class_df.empty:
@@ -1787,7 +1823,7 @@ if page == "Asset Allocation":
         st.info("Nenhuma estratégia encontrada para detalhamento.")
 
     with st.expander("Revisões e exceções", expanded=False):
-        universo = set(ACOES_SEM_RENDA + ACOES_COM_RENDA + FIIS_RECOMENDADOS + FI_INFRA_TICKERS)
+        universo = set(ACOES_SEM_RENDA + ACOES_COM_RENDA + FIIS_RECOMENDADOS + FI_INFRA_TICKERS + list(ATIVOS_ESTRATEGICOS_B3.keys()))
         fora_df = pos_cliente[
             pos_cliente["classe_macro"].eq("Fora da Estratégia") |
             ((pos_cliente["classe_macro"].eq("RV Brasil")) & (~pos_cliente["ticker_norm"].isin({ticker_clean(x) for x in universo}))) |
