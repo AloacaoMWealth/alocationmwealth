@@ -59,7 +59,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "4.3"
+APP_VERSION = "4.4"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -820,20 +820,22 @@ def load_contas_cached() -> pd.DataFrame:
 
 @st.cache_data(show_spinner="Carregando base consolidada...")
 def load_positions_cached(force_rebuild: bool = False) -> tuple[pd.DataFrame, dict, str]:
+    """Abre imediatamente o último consolidado disponível.
+
+    O rebuild completo ficou restrito ao botão de atualização ou à ausência do
+    cache. Isso evita reler todos os arquivos XP/BTG/CS a cada inicialização —
+    comportamento especialmente lento em deploys onde o mtime dos arquivos muda.
+    """
     if force_rebuild:
         df = posmod.build_latest_from_repo()
         mode = "rebuild_manual"
     else:
-        if posmod.latest_is_stale():
+        df = posmod.load_latest_positions()
+        if df is None or df.empty:
             df = posmod.build_latest_from_repo()
-            mode = "rebuild_auto"
+            mode = "rebuild_empty"
         else:
-            df = posmod.load_latest_positions()
-            if df is None or df.empty:
-                df = posmod.build_latest_from_repo()
-                mode = "rebuild_empty"
-            else:
-                mode = "cache"
+            mode = "cache"
     meta = getattr(df, "attrs", {}).get("meta", {}) if hasattr(df, "attrs") else {}
     return df, meta, mode
 
@@ -847,6 +849,14 @@ def classify_fund_class(class_text: str, full_text: str, liquidez_days=np.nan) -
     c = norm(class_text)
     t = norm(full_text)
     combined = f"{c} {t}"
+    # Prioridades econômicas: infraestrutura e crédito não podem virar FIA/FII
+    # apenas porque o nome comercial contém termos de bolsa.
+    if any(x in combined for x in ["FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA", "FIC INFR", "FUNDO INCENTIVADO DE INFRA", "DEBENTURES INCENTIVADAS", "DEBÊNTURES INCENTIVADAS"]):
+        return "RF Brasil", "FiInfra e Cetipados"
+    if any(x in combined for x in ["DEBENTURE", "DEBÊNTURE", "CREDITO PRIVADO", "CRÉDITO PRIVADO", "FIDC", "DIREITOS CREDITORIOS", "DIREITOS CREDITÓRIOS"]):
+        if any(x in combined for x in ["IPCA", "INFLACAO", "INFLAÇÃO", "IMA-B", "IMA B"]):
+            return "RF Brasil", "Inflação - Bancário"
+        return "RF Brasil", "Crédito Privado"
     # Previdência será tratada pelo ativo, mas a classe base continua útil.
     if any(x in combined for x in ["ACOES", "AÇÕES", "RENDA VARIAVEL", "RV BRASIL", "SMALL CAPS", "IBOV", "LONG BIASED"]):
         return "RV Brasil", "Ações"
@@ -972,6 +982,25 @@ def classify_position(row: pd.Series) -> pd.Series:
         if mercado == "COE":
             return pd.Series(["Fora da Estratégia", "COE / Estruturados", "COE / Estruturados", "Fora da Estratégia"])
 
+    # Natureza econômica prevalece sobre a aba de origem do relatório.
+    # Isso corrige ativos que chegam em abas inadequadas (ex.: debênture em Ações)
+    # e fundos de infraestrutura cujo nome também contém FIA/FII/ações.
+    is_fiinfra = (
+        asset_id in FI_INFRA_TICKERS
+        or any(x in text for x in ["FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA", "FIC INFR", "FUNDO INCENTIVADO DE INFRA", "DEBENTURES INCENTIVADAS", "DEBÊNTURES INCENTIVADAS"])
+    )
+    if is_fiinfra:
+        return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Natureza econômica / FI-Infra"])
+
+    is_credit_title = bool(re.search(r"\b(DEBENTURE|DEBENTURES|DEBÊNTURE|DEBÊNTURES|CRI|CRA|CDCA)\b", text))
+    looks_like_fund = any(x in text for x in ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS"])
+    if is_credit_title and not looks_like_fund:
+        if has_ipca:
+            return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Natureza econômica / Crédito Privado"])
+        if pre_by_report:
+            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Natureza econômica / Crédito Privado"])
+        return pd.Series(["RF Brasil", "Crédito Privado", "Crédito Privado", "Natureza econômica / Crédito Privado"])
+
     # XP: fundos e previdência têm CNPJ/prazos na própria planilha e/ou na base Nome fundos e prev.
     if asset_tipo in ["FUNDOS", "PREVIDENCIA", "PREVIDÊNCIA"] or any(x in text for x in ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS"]):
         classe_base = row.get("manual_classe", "") if row.get("manual_match", False) else ""
@@ -1006,7 +1035,7 @@ def classify_position(row: pd.Series) -> pd.Series:
         return pd.Series([info["classe"], info["subbucket"], info["subbucket"], f"ETF B3: {info['estrategia']}"])
 
     # Fi-Infra: antes de FII, porque todos terminam em 11.
-    if asset_id in FI_INFRA_TICKERS or any(x in text for x in ["FI INFRA", "FIINFRA", "FIC INFR", "INFRA", "DEB INCENTIVADA"]):
+    if asset_id in FI_INFRA_TICKERS or any(x in text for x in ["FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA", "FIC INFR", "DEB INCENTIVADA"]):
         return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Estratégia"])
 
     # Bolsa Brasil
@@ -1559,8 +1588,8 @@ if page == "Controle de Saldo":
     force = c0.button("Atualizar base", type="primary", use_container_width=True)
     if force:
         st.cache_data.clear()
-    min_saldo_txt = c1.text_input("Saldo mínimo", value=format_brl(1000.0), help="Digite no formato financeiro. Ex.: R$ 10.000,00")
-    min_saldo = parse_brl_input(min_saldo_txt, 1000.0)
+    min_saldo_txt = c1.text_input("Saldo mínimo", value=format_brl(10000.0), help="Digite no formato financeiro. Ex.: R$ 10.000,00")
+    min_saldo = parse_brl_input(min_saldo_txt, 10000.0)
 
     try:
         df_latest, meta, mode = load_positions_cached(force_rebuild=force)
@@ -1697,11 +1726,12 @@ if page == "Asset Allocation":
             macro_hierarchy_styler(macro_hier),
             use_container_width=True,
             hide_index=True,
+            height=min(820, max(420, 37 * (len(macro_hier) + 1))),
         )
 
     st.subheader("Abertura por estratégia")
     st.markdown('<div class="mw-muted">Abertura objetiva por classe. A diferença positiva indica valor a alocar; diferença negativa indica excesso.</div>', unsafe_allow_html=True)
-    class_order = ["RF Brasil", "RV Brasil", "Alternativos", "Internacional", "Fora da Estratégia"]
+    class_order = ["RF Brasil", "Alternativos"]
     for classe in class_order:
         class_df = sub_df[sub_df["Classe"].eq(classe)].copy()
         if class_df.empty:
@@ -1710,7 +1740,7 @@ if page == "Asset Allocation":
         valor_ideal_cls = float(class_df["Valor Ideal"].sum())
         diff_cls = float(class_df["Diferença"].sum())
         titulo = f"{friendly_class_name(classe)} • Atual {format_brl_label(valor_atual_cls)} | Ideal {format_brl_label(valor_ideal_cls)} | Diferença {format_brl_label(diff_cls)}"
-        expanded = classe in ["RF Brasil", "RV Brasil", "Internacional"] or abs(diff_cls) > 300
+        expanded = classe == "RF Brasil" or abs(diff_cls) > 300
         with st.expander(titulo, expanded=expanded):
             class_view = class_df.copy()
             class_view["Estratégia"] = class_view["Subbucket"].apply(friendly_strategy_name)
