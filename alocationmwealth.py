@@ -14,6 +14,13 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+try:
+    import yfinance as yf
+    HAS_YFINANCE = True
+except Exception:
+    yf = None
+    HAS_YFINANCE = False
+
 import positions as posmod
 
 try:
@@ -59,7 +66,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "4.4"
+APP_VERSION = "4.6"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -89,7 +96,7 @@ SUBBUCKET_ORDER = [
     "Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias",
     "FiInfra e Cetipados", "Pré - Bancário", "Pré - Tesouro", "Inflação - Bancário", "Inflação - Tesouro", "Crédito Privado",
     "Ações", "FIIs", "Bitcoin", "Ouro", "Renda Fixa Internacional", "Renda Variável Internacional", "Caixa Internacional",
-    "Saldo em Conta", "Fundos de Investimento / Sem Liquidez Mapeada", "Previdência", "COE / Estruturados", "Outros / Não Classificado",
+    "Saldo em Conta", "Proventos a Receber", "Direitos de Subscrição", "Fundos de Investimento / Sem Liquidez Mapeada", "Previdência", "COE / Estruturados", "Outros / Não Classificado",
 ]
 
 st.markdown(
@@ -239,6 +246,8 @@ def friendly_strategy_name(x: str) -> str:
         "Renda Variável Internacional": "Renda variável internacional",
         "Caixa Internacional": "Caixa internacional",
         "Saldo em Conta": "Saldo em conta",
+        "Proventos a Receber": "Proventos a receber",
+        "Direitos de Subscrição": "Direitos de subscrição",
         "Fundos de Investimento / Sem Liquidez Mapeada": "Fundos de investimento sem liquidez mapeada",
         "Previdência": "Previdência",
         "COE / Estruturados": "COE e estruturados",
@@ -658,18 +667,149 @@ def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
     out.loc[out["manual_match"], "manual_fonte"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Fonte", "")).strip())
     out = out.drop(columns=["_fund_key_asset", "_cnpj_norm"], errors="ignore")
     return out
-def price_reference_from_positions(df: pd.DataFrame) -> dict[str, float]:
-    if df.empty or "ticker_norm" not in df.columns:
+def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
+    """Identifica somente posições econômicas reais negociadas em bolsa.
+
+    Exclui proventos, eventos, custódia remunerada, opções e direitos de
+    subscrição. Essas linhas não representam a quantidade efetivamente usada
+    no rebalanceamento e podem duplicar ou distorcer a posição.
+    """
+    if df.empty:
+        return pd.Series(dtype=bool, index=df.index)
+    idx = df.index
+    asset_tipo = df.get("asset_tipo", pd.Series("", index=idx)).astype(str).map(norm)
+    mercado = df.get("mercado", pd.Series("", index=idx)).astype(str).map(norm)
+    ticker = df.get("ticker_norm", pd.Series("", index=idx)).astype(str)
+    classe = df.get("subbucket", pd.Series("", index=idx)).astype(str)
+
+    real = (
+        asset_tipo.isin(["ACOES", "FUNDOS IMOBILIARIOS"])
+        | mercado.isin(["RENDA VARIAVEL", "RENDA VARIÁVEL"])
+        | classe.isin(["Ações", "FIIs", "FiInfra e Cetipados"])
+    )
+    excluded = asset_tipo.str.contains(
+        "PROVENT|CUSTODIA REMUNERADA|PROVISAO|EVENTO|OPCOES|OPÇÕES|OPCAO|OPÇÃO",
+        regex=True,
+        na=False,
+    )
+    subscription_right = ticker.str.match(r"^[A-Z]{4}12$", na=False)
+    valid_ticker = ticker.str.match(r"^[A-Z]{4}[0-9]{1,2}$", na=False)
+    return (real & ~excluded & ~subscription_right & valid_ticker).fillna(False)
+
+
+def yahoo_symbol(ticker: str) -> str:
+    """Converte ticker B3 para o padrão do Yahoo Finance."""
+    tk = ticker_clean(ticker)
+    return f"{tk}.SA" if tk else ""
+
+
+def _last_close_from_download(data: pd.DataFrame, yahoo_ticker: str) -> float:
+    """Extrai o último Close válido de respostas simples ou MultiIndex."""
+    if data is None or data.empty:
+        return np.nan
+    try:
+        if isinstance(data.columns, pd.MultiIndex):
+            # yfinance pode retornar (campo, ticker) ou (ticker, campo).
+            if ("Close", yahoo_ticker) in data.columns:
+                series = data[("Close", yahoo_ticker)]
+            elif (yahoo_ticker, "Close") in data.columns:
+                series = data[(yahoo_ticker, "Close")]
+            else:
+                candidates = [c for c in data.columns if "Close" in tuple(map(str, c)) and yahoo_ticker in tuple(map(str, c))]
+                if not candidates:
+                    return np.nan
+                series = data[candidates[0]]
+        else:
+            if "Close" not in data.columns:
+                return np.nan
+            series = data["Close"]
+        series = pd.to_numeric(series, errors="coerce").dropna()
+        return float(series.iloc[-1]) if not series.empty else np.nan
+    except Exception:
+        return np.nan
+
+
+@st.cache_data(ttl=300, show_spinner="Atualizando cotações de mercado...")
+def load_yfinance_prices(tickers: tuple[str, ...]) -> dict[str, float]:
+    """Busca preços recentes da B3 no Yahoo Finance.
+
+    Primeiro tenta o último negócio intradiário de 1 minuto. Quando o Yahoo não
+    disponibiliza intraday para algum ativo, utiliza o último fechamento diário.
+    O cache de cinco minutos evita chamadas repetidas em cada interação do app.
+    """
+    clean = sorted({ticker_clean(t) for t in tickers if ticker_clean(t)})
+    if not clean or not HAS_YFINANCE:
         return {}
-    base = df.copy()
-    base["valor_mercado"] = pd.to_numeric(base.get("valor_mercado", 0), errors="coerce").fillna(0.0)
-    base["quantidade"] = pd.to_numeric(base.get("quantidade", 0), errors="coerce").fillna(0.0)
-    base = base[(base["quantidade"] > 0) & (base["valor_mercado"] > 0) & (base["ticker_norm"].astype(str).str.len() > 0)]
-    if base.empty:
-        return {}
-    g = base.groupby("ticker_norm", as_index=False).agg(valor=("valor_mercado", "sum"), qtd=("quantidade", "sum"))
-    g["preco"] = np.where(g["qtd"] > 0, g["valor"] / g["qtd"], np.nan)
-    return dict(zip(g["ticker_norm"], g["preco"]))
+
+    symbols = {tk: yahoo_symbol(tk) for tk in clean}
+    yahoo_list = list(symbols.values())
+    prices: dict[str, float] = {}
+
+    try:
+        intraday = yf.download(
+            tickers=yahoo_list,
+            period="1d",
+            interval="1m",
+            auto_adjust=False,
+            progress=False,
+            threads=True,
+            group_by="column",
+        )
+        for tk, sym in symbols.items():
+            px = _last_close_from_download(intraday, sym)
+            if pd.notna(px) and px > 0:
+                prices[tk] = float(px)
+    except Exception:
+        pass
+
+    missing = [symbols[tk] for tk in clean if tk not in prices]
+    if missing:
+        try:
+            daily = yf.download(
+                tickers=missing,
+                period="5d",
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
+                threads=True,
+                group_by="column",
+            )
+            reverse = {v: k for k, v in symbols.items()}
+            for sym in missing:
+                px = _last_close_from_download(daily, sym)
+                if pd.notna(px) and px > 0:
+                    prices[reverse[sym]] = float(px)
+        except Exception:
+            pass
+    return prices
+
+
+def mark_exchange_positions_to_market(df: pd.DataFrame, prices: dict[str, float]) -> pd.DataFrame:
+    """Remarca posições reais de bolsa por quantidade × preço atual."""
+    out = df.copy()
+    mask = exchange_position_mask(out)
+    if mask.empty or not mask.any():
+        return out
+    out.loc[mask, "quantidade"] = pd.to_numeric(out.loc[mask, "quantidade"], errors="coerce").fillna(0.0)
+    live = out.loc[mask, "ticker_norm"].map(prices)
+    valid = live.notna() & live.gt(0)
+    idx_valid = live.index[valid]
+    out.loc[idx_valid, "preco_mercado_atual"] = live.loc[idx_valid].astype(float)
+    out.loc[idx_valid, "valor_mercado"] = (
+        out.loc[idx_valid, "quantidade"].astype(float)
+        * out.loc[idx_valid, "preco_mercado_atual"].astype(float)
+    )
+    return out
+
+
+def current_exchange_position(pos_cliente: pd.DataFrame, ticker: str, price_ref: dict[str, float]) -> tuple[float, float, float]:
+    """Retorna preço, quantidade real e valor atual remarcado de um ticker."""
+    tk = ticker_clean(ticker)
+    mask = pos_cliente.get("ticker_norm", pd.Series("", index=pos_cliente.index)).eq(tk) & exchange_position_mask(pos_cliente)
+    qtd = float(pd.to_numeric(pos_cliente.loc[mask, "quantidade"], errors="coerce").fillna(0.0).sum())
+    preco = float(price_ref.get(tk, np.nan))
+    atual = qtd * preco if pd.notna(preco) and preco > 0 else np.nan
+    return preco, qtd, atual
 
 
 def operation_text(qtd_diff, diff_value) -> str:
@@ -845,40 +985,49 @@ def load_positions_cached(force_rebuild: bool = False) -> tuple[pd.DataFrame, di
 # =============================================================================
 
 def classify_fund_class(class_text: str, full_text: str, liquidez_days=np.nan) -> tuple[str, str]:
-    """Converte classificações XP/CVM/Manual em classe/subbucket operacional."""
+    """Converte a classificação de fundos para a estrutura operacional.
+
+    Fundos de renda fixa, crédito e FIDC são distribuídos exclusivamente pelo
+    prazo de liquidez. A natureza do fundo não deve contaminar o bucket de
+    títulos de crédito privado, reservado a ativos diretos como debêntures,
+    CRI, CRA e similares.
+    """
     c = norm(class_text)
     t = norm(full_text)
     combined = f"{c} {t}"
-    # Prioridades econômicas: infraestrutura e crédito não podem virar FIA/FII
-    # apenas porque o nome comercial contém termos de bolsa.
-    if any(x in combined for x in ["FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA", "FIC INFR", "FUNDO INCENTIVADO DE INFRA", "DEBENTURES INCENTIVADAS", "DEBÊNTURES INCENTIVADAS"]):
+
+    # FI-Infra é uma estratégia própria e prevalece sobre FIA/FII e crédito.
+    if any(x in combined for x in [
+        "FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA",
+        "FIC INFR", "FUNDO INCENTIVADO DE INFRA", "DEBENTURES INCENTIVADAS"
+    ]):
         return "RF Brasil", "FiInfra e Cetipados"
-    if any(x in combined for x in ["DEBENTURE", "DEBÊNTURE", "CREDITO PRIVADO", "CRÉDITO PRIVADO", "FIDC", "DIREITOS CREDITORIOS", "DIREITOS CREDITÓRIOS"]):
-        if any(x in combined for x in ["IPCA", "INFLACAO", "INFLAÇÃO", "IMA-B", "IMA B"]):
-            return "RF Brasil", "Inflação - Bancário"
-        return "RF Brasil", "Crédito Privado"
-    # Previdência será tratada pelo ativo, mas a classe base continua útil.
-    if any(x in combined for x in ["ACOES", "AÇÕES", "RENDA VARIAVEL", "RV BRASIL", "SMALL CAPS", "IBOV", "LONG BIASED"]):
-        return "RV Brasil", "Ações"
-    if any(x in combined for x in ["FII", "IMOBILIARIO", "IMOBILIÁRIO", "REAL ESTATE"]):
-        return "RV Brasil", "FIIs"
-    if any(x in combined for x in ["EXTERIOR", "INTERNACIONAL", "GLOBAL", "DOLAR", "DÓLAR", "CAMBIAL", "US", "USD"]):
-        # Se não vier claramente renda fixa, deixamos em renda variável internacional por conservadorismo operacional.
-        if any(x in combined for x in ["BOND", "FIXED", "RENDA FIXA", "TREASURY"]):
+
+    # Internacional precisa ser identificado antes de palavras como AÇÕES/FIA.
+    if any(x in combined for x in [
+        "EXTERIOR", "INTERNACIONAL", "GLOBAL", "OFFSHORE", "DOLAR", "CAMBIAL", "USD"
+    ]):
+        if any(x in combined for x in ["BOND", "FIXED", "RENDA FIXA", "TREASURY", "CREDIT"]):
             return "Internacional", "Renda Fixa Internacional"
         return "Internacional", "Renda Variável Internacional"
-    if any(x in combined for x in ["IPCA", "INFLACAO", "INFLAÇÃO", "IMA-B", "IMA B"]):
-        return "RF Brasil", "Inflação - Bancário"
-    if any(x in combined for x in ["PRE-FIXADO", "PREFIXADO", "PRÉ-FIXADO", "IRF-M", "IRF M"]):
-        return "RF Brasil", "Pré - Bancário"
-    if any(x in combined for x in ["RENDA FIXA", "REFERENCIADO DI", "DI", "CDI", "CREDITO", "CRÉDITO", "HIGH GRADE", "HIGH YIELD", "FIDC", "DIREITOS CREDITORIOS", "DIREITOS CREDITÓRIOS", "FIRF", "RF"]):
+
+    if any(x in combined for x in ["FII", "IMOBILIARIO", "REAL ESTATE"]):
+        return "RV Brasil", "FIIs"
+    if any(x in combined for x in ["ACOES", "RENDA VARIAVEL", "RV BRASIL", "SMALL CAPS", "IBOV", "LONG BIASED", "FIA"]):
+        return "RV Brasil", "Ações"
+
+    # FIDC, fundos de crédito, FIRF, DI, multimercado etc. entram pela liquidez.
+    fund_rf_terms = [
+        "FIDC", "DIREITOS CREDITORIOS", "CREDITO PRIVADO", "HIGH GRADE", "HIGH YIELD",
+        "RENDA FIXA", "REFERENCIADO DI", "CDI", "FIRF", "MULTIMERCADO", "FIM",
+        "MACRO", "RETORNO ABSOLUTO", "IPCA", "IMA-B", "PREFIXADO", "IRF-M"
+    ]
+    if any(x in combined for x in fund_rf_terms):
         return "RF Brasil", bucket_from_liquidity_days(liquidez_days)
-    if any(x in combined for x in ["MULTIMERCADO", "FIM", "MACRO", "RETORNO ABSOLUTO"]):
-        # Multimercado com prazo explícito/fundo de crédito aprovado entra como pós pelo prazo;
-        # sem prazo, fica em monitoramento.
-        if pd.notna(liquidez_days):
-            return "RF Brasil", bucket_from_liquidity_days(liquidez_days)
-        return "Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada"
+
+    # Fundo sem classificação reconhecida: usa liquidez se disponível.
+    if pd.notna(liquidez_days):
+        return "RF Brasil", bucket_from_liquidity_days(liquidez_days)
     return "Fora da Estratégia", "Fundos de Investimento / Sem Liquidez Mapeada"
 
 
@@ -939,10 +1088,41 @@ def classify_position(row: pd.Series) -> pd.Series:
     pre_by_report = (has_pre or (indexador_blank and has_taxa_nominal and ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF", "DEB", "CRI", "CRA", "CDCA")))))
     liq_days = infer_liquidity_days_from_row(row)
 
+    # Eventos não são ativos fora da estratégia. Proventos ficam como caixa a
+    # receber e códigos final 12 são direitos de subscrição monitorados em RV.
+    if asset_tipo in ["PROVENTOS", "PROVENTOS FUNDO IMOB"] or "PROVENTO" in asset_tipo:
+        return pd.Series(["Caixa", "Proventos a Receber", "Proventos a Receber", "Evento / não rebalancear"])
+    if re.fullmatch(r"[A-Z]{4}12", asset_id):
+        return pd.Series(["RV Brasil", "Direitos de Subscrição", "Direitos de Subscrição", "Direito / não rebalancear"])
+
     if bool(row.get("saldo_operacional", False)):
         if corretora == "CS":
             return pd.Series(["Internacional", "Caixa Internacional", "Caixa Internacional", "Operacional"])
         return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
+
+    # A natureza econômica prevalece inclusive quando a corretora entrega o
+    # ativo em uma aba incorreta, como debênture dentro de Renda Variável.
+    early_is_fiinfra = (
+        asset_id in FI_INFRA_TICKERS
+        or any(x in text for x in ["FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA", "FIC INFR"])
+    )
+    if early_is_fiinfra:
+        return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Natureza econômica / FI-Infra"])
+
+    early_looks_like_fund = any(x in text for x in ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS"])
+    early_credit_title = bool(re.search(r"\b(DEBENTURE|DEBENTURES|CRI|CRA|CDCA)\b", text))
+    if early_credit_title and not early_looks_like_fund:
+        return pd.Series(["RF Brasil", "Crédito Privado", "Crédito Privado", "Natureza econômica / Crédito Privado"])
+
+    # Fundo também prevalece sobre a aba de origem. Isso corrige fundos
+    # internacionais e FIDC eventualmente entregues na aba de ações.
+    if early_looks_like_fund:
+        classe_base = row.get("manual_classe", "") if row.get("manual_match", False) else text
+        classe, bucket = classify_fund_class(classe_base, text, liq_days)
+        origem = "Manual/Fundos" if row.get("manual_match", False) else "Heurística de fundo"
+        if asset_tipo in ["PREVIDENCIA", "PREVIDÊNCIA"] or any(x in text for x in ["PREVIDENCIA", "PGBL", "VGBL"]):
+            origem = "Previdência"
+        return pd.Series([classe, bucket, bucket, origem])
 
     # BTG: Mercado/Sub Mercado/Estratégia normalmente já dizem exatamente o direcionamento.
     if corretora == "BTG":
@@ -958,13 +1138,17 @@ def classify_position(row: pd.Series) -> pd.Series:
                 if any(x in estrategia + " " + text for x in ["PRE", "PRÉ", "PREFIXADO", "LTN", "NTN-F"]):
                     return pd.Series(["RF Brasil", "Pré - Tesouro", "Pré - Tesouro", "BTG"])
                 return pd.Series(["RF Brasil", "Pós - Imediato", "Pós - Imediato", "BTG"])
+            # Fora de títulos bancários e públicos, toda renda fixa direta é crédito privado.
+            bank_title = bool(re.match(r"^(CDB|LCI|LCA|LCD|LF)\b", asset_id)) or any(
+                x in sub_mercado for x in ["BANCARIO", "BANCÁRIO"]
+            )
+            if not bank_title:
+                return pd.Series(["RF Brasil", "Crédito Privado", "Crédito Privado", "BTG / título de crédito privado"])
             if "INFL" in estrategia or has_ipca:
                 return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "BTG Estratégia/Indexador"])
             if "PRE" in estrategia or "PRÉ" in estrategia or pre_by_report or (estrategia_blank and has_taxa_nominal):
                 return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "BTG Estratégia/Taxa"])
-            if "POS" in estrategia or "PÓS" in estrategia or has_cdi:
-                return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "BTG Estratégia/Indexador"])
-            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "BTG fallback sem estratégia"])
+            return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "BTG Estratégia/Indexador"])
         if mercado == "FUNDOS":
             classe, bucket = classify_fund_class(row.get("manual_classe", "") or estrategia, text, liq_days)
             return pd.Series([classe, bucket, bucket, "Manual" if row.get("manual_match", False) else "BTG/Heurística"])
@@ -995,10 +1179,6 @@ def classify_position(row: pd.Series) -> pd.Series:
     is_credit_title = bool(re.search(r"\b(DEBENTURE|DEBENTURES|DEBÊNTURE|DEBÊNTURES|CRI|CRA|CDCA)\b", text))
     looks_like_fund = any(x in text for x in ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS"])
     if is_credit_title and not looks_like_fund:
-        if has_ipca:
-            return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Natureza econômica / Crédito Privado"])
-        if pre_by_report:
-            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Natureza econômica / Crédito Privado"])
         return pd.Series(["RF Brasil", "Crédito Privado", "Crédito Privado", "Natureza econômica / Crédito Privado"])
 
     # XP: fundos e previdência têm CNPJ/prazos na própria planilha e/ou na base Nome fundos e prev.
@@ -1059,16 +1239,14 @@ def classify_position(row: pd.Series) -> pd.Series:
     # Renda fixa local por indexador/taxa.
     is_rf_local = ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF", "DEB", "CRI", "CRA", "CDCA")))
     if is_rf_local or any(x in text for x in ["CDB", "LCI", "LCA", "LCD", "CRI", "CRA", "DEB", "DEBENTURE", "CDCA"]):
+        bank_title = asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF"))
+        if not bank_title:
+            return pd.Series(["RF Brasil", "Crédito Privado", "Crédito Privado", "Título privado não bancário"])
         if has_ipca:
             return pd.Series(["RF Brasil", "Inflação - Bancário", "Inflação - Bancário", "Relatório: indexador/taxa"])
         if pre_by_report:
             return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Relatório: indexador/taxa"])
-        if has_cdi:
-            return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "Relatório: indexador/taxa"])
-        # Se é RF local, não tem CDI/IPCA e tem taxa nominal, o comportamento mais seguro é tratar como prefixado.
-        if has_taxa_nominal or indexador_blank:
-            return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Relatório: taxa sem indexador"])
-        return pd.Series(["RF Brasil", "Pré - Bancário", "Pré - Bancário", "Indexador fallback"])
+        return pd.Series(["RF Brasil", "Pós - 361+ dias", "Pós - 361+ dias", "Relatório: indexador/taxa"])
 
     return pd.Series(["Fora da Estratégia", "Outros / Não Classificado", "Outros / Não Classificado", "Revisar"])
 @st.cache_data(show_spinner=False)
@@ -1194,30 +1372,23 @@ def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float,
         alvo_total = pl * peso_get(p, bucket)
         alvo_ativo = alvo_total / len(tickers) if tickers else 0
         for t in tickers:
-            tk = ticker_clean(t)
-            mask = pos_cliente["ticker_norm"].eq(tk)
-            atual = float(pos_cliente.loc[mask, "valor_mercado"].sum())
-            qtd = float(pos_cliente.loc[mask, "quantidade"].sum())
-            preco = price_ref.get(tk, np.nan)
-            if (pd.isna(preco) or preco <= 0) and qtd > 0:
-                preco = atual / qtd
+            preco, qtd, atual = current_exchange_position(pos_cliente, t, price_ref)
             qtd_ideal = round(alvo_ativo / preco) if pd.notna(preco) and preco > 0 else np.nan
             qtd_operar = qtd_ideal - qtd if pd.notna(qtd_ideal) else np.nan
-            diff = alvo_ativo - atual
+            diff = alvo_ativo - atual if pd.notna(atual) else np.nan
             rows.append([t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar, bucket])
-    # Ativos de bolsa que o cliente possui e que não fazem parte da carteira modelo entram como venda/revisão.
-    bolsa = pos_cliente[pos_cliente["subbucket"].isin(["Ações", "FIIs"])].copy()
+
+    bolsa = pos_cliente[pos_cliente["subbucket"].isin(["Ações", "FIIs"]) & exchange_position_mask(pos_cliente)].copy()
     for tk, grp in bolsa.groupby("ticker_norm"):
         if not tk or tk in model_tickers:
             continue
         ativo = str(grp["asset_id"].iloc[0])
-        atual = float(grp["valor_mercado"].sum())
-        qtd = float(grp["quantidade"].sum())
-        preco = price_ref.get(tk, np.nan)
-        if (pd.isna(preco) or preco <= 0) and qtd > 0:
-            preco = atual / qtd
-        rows.append([ativo, preco, qtd, atual, 0, 0.0, -atual, -qtd, "Fora do modelo"])
+        preco, qtd, atual = current_exchange_position(pos_cliente, tk, price_ref)
+        diff = -atual if pd.notna(atual) else np.nan
+        qtd_operar = -qtd if pd.notna(preco) and preco > 0 else np.nan
+        rows.append([ativo, preco, qtd, atual, 0, 0.0, diff, qtd_operar, "Fora do modelo"])
     return pd.DataFrame(rows, columns=["Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Grupo"])
+
 
 def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float, price_ref: dict[str, float] | None = None) -> pd.DataFrame:
     price_ref = price_ref or {}
@@ -1233,30 +1404,23 @@ def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: f
             continue
         alvo_ativo = alvo_total / len(tickers)
         for t in tickers:
-            tk = ticker_clean(t)
-            mask = pos_cliente["ticker_norm"].eq(tk)
-            atual = float(pos_cliente.loc[mask, "valor_mercado"].sum())
-            qtd = float(pos_cliente.loc[mask, "quantidade"].sum())
-            preco = price_ref.get(tk, np.nan)
-            if (pd.isna(preco) or preco <= 0) and qtd > 0:
-                preco = atual / qtd
+            preco, qtd, atual = current_exchange_position(pos_cliente, t, price_ref)
             qtd_ideal = round(alvo_ativo / preco) if pd.notna(preco) and preco > 0 else np.nan
             qtd_operar = qtd_ideal - qtd if pd.notna(qtd_ideal) else np.nan
-            diff = alvo_ativo - atual
+            diff = alvo_ativo - atual if pd.notna(atual) else np.nan
             rows.append([t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar, nome])
-    # Fi-infras fora do universo entram como venda/revisão.
-    held = pos_cliente[pos_cliente["ticker_norm"].isin({ticker_clean(x) for x in FI_INFRA_TICKERS})].copy()
+
+    held = pos_cliente[pos_cliente["ticker_norm"].isin(model_tickers) & exchange_position_mask(pos_cliente)].copy()
     for tk, grp in held.groupby("ticker_norm"):
         if not tk or tk in model_tickers:
             continue
         ativo = str(grp["asset_id"].iloc[0])
-        atual = float(grp["valor_mercado"].sum())
-        qtd = float(grp["quantidade"].sum())
-        preco = price_ref.get(tk, np.nan)
-        if (pd.isna(preco) or preco <= 0) and qtd > 0:
-            preco = atual / qtd
-        rows.append([ativo, preco, qtd, atual, 0, 0.0, -atual, -qtd, "Fora do modelo"])
+        preco, qtd, atual = current_exchange_position(pos_cliente, tk, price_ref)
+        diff = -atual if pd.notna(atual) else np.nan
+        qtd_operar = -qtd if pd.notna(preco) and preco > 0 else np.nan
+        rows.append([ativo, preco, qtd, atual, 0, 0.0, diff, qtd_operar, "Fora do modelo"])
     return pd.DataFrame(rows, columns=["Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Grupo"])
+
 def action_summary(pos_cliente: pd.DataFrame, sub_df: pd.DataFrame, pl: float) -> tuple[pd.DataFrame, float, float]:
     saldo = float(pos_cliente.loc[pos_cliente["subbucket"].eq("Saldo em Conta"), "valor_mercado"].sum())
     fora_liquidez = float(pos_cliente.loc[pos_cliente["classe_macro"].eq("Fora da Estratégia"), "valor_mercado"].sum())
@@ -1676,6 +1840,15 @@ if page == "Asset Allocation":
         pos_cliente = pos_cliente[pos_cliente["conta"].astype(str).eq(conta_real)].copy()
 
     p = pesos[modelo]
+
+    # Marca somente as posições reais de bolsa pelo preço atual do Yahoo Finance.
+    # O PL, os valores atuais e as diferenças passam a refletir quantidade × cotação atual.
+    held_tickers = pos_cliente.loc[exchange_position_mask(pos_cliente), "ticker_norm"].dropna().astype(str).tolist()
+    model_tickers = [t for xs in rv_universe(modelo).values() for t in xs] + FI_INFRA_TICKERS
+    quote_tickers = tuple(sorted({ticker_clean(t) for t in held_tickers + model_tickers if ticker_clean(t)}))
+    price_ref = load_yfinance_prices(quote_tickers)
+    pos_cliente = mark_exchange_positions_to_market(pos_cliente, price_ref)
+
     pl = float(pos_cliente["valor_mercado"].sum())
     macro_df, sub_df = portfolio_tables(pos_cliente, p, pl)
 
@@ -1780,7 +1953,16 @@ if page == "Asset Allocation":
                     )
 
     st.subheader("Produtos de bolsa e infraestrutura")
-    price_ref = price_reference_from_positions(df_latest)
+    if not HAS_YFINANCE:
+        st.error("A biblioteca yfinance não está instalada. Instale-a para habilitar preços atuais e cálculos de ordens.")
+    missing_quotes = sorted(set(quote_tickers) - set(price_ref))
+    if missing_quotes:
+        st.warning(
+            "Sem cotação do Yahoo Finance para: " + ", ".join(missing_quotes)
+            + ". Esses ativos ficarão sem recomendação de quantidade até a cotação estar disponível."
+        )
+    else:
+        st.caption("Preços atualizados pelo Yahoo Finance, com cache de 5 minutos. Valor atual = quantidade real × preço de mercado.")
     rv_df = rv_recommendation(pos_cliente, p, pl, modelo, price_ref)
     fi_df = fiinfra_recommendation(pos_cliente, p, pl, price_ref)
     tab_a, tab_b = st.tabs(["Ações e Fundos Imobiliários", "Infraestrutura"])
