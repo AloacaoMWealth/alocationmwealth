@@ -66,7 +66,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "4.6"
+APP_VERSION = "4.7"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -157,6 +157,39 @@ def norm(x) -> str:
 
 def ticker_clean(x) -> str:
     return norm(x).replace(" ", "").replace(".", "")
+
+
+def has_token(text: str, *terms: str) -> bool:
+    """Procura termos como tokens, evitando COE dentro de PARTICIPACOES, FIA em CONFIANCA etc."""
+    txt = norm(text)
+    for term in terms:
+        pattern = r"(?<![A-Z0-9])" + re.escape(norm(term)).replace(r"\ ", r"\s+") + r"(?![A-Z0-9])"
+        if re.search(pattern, txt):
+            return True
+    return False
+
+
+def has_any_phrase(text: str, terms: list[str] | tuple[str, ...]) -> bool:
+    return any(has_token(text, term) for term in terms)
+
+
+# Personalizações operacionais de liquidez. Chaves podem ser CNPJ (somente dígitos)
+# ou trechos inequívocos do nome normalizado. 999 representa sem liquidez operacional />720 dias.
+LIQUIDITY_OVERRIDES: dict[str, float] = {
+    "CETIPADO": 999.0,
+}
+
+
+def liquidity_override_for_row(row: pd.Series) -> float:
+    cnpj = only_digits_str(row.get("cnpj", ""))
+    text = norm(" ".join([str(row.get("asset_id", "")), str(row.get("asset_nome", "")), str(row.get("manual_fundo", "")), str(row.get("manual_classe", ""))]))
+    for key, days in LIQUIDITY_OVERRIDES.items():
+        key_digits = only_digits_str(key)
+        if key_digits and len(key_digits) >= 8 and cnpj == key_digits:
+            return float(days)
+        if not key_digits and has_token(text, key):
+            return float(days)
+    return np.nan
 
 
 def format_brl_label(v) -> str:
@@ -488,8 +521,6 @@ def fund_match_score(position_name: str, manual_name: str) -> float:
 
 
 @st.cache_data(show_spinner=False)
-
-@st.cache_data(show_spinner=False)
 def load_manual_fundos_cached(path_str: str) -> pd.DataFrame:
     """Lê o Manual de Alocação antigo, quando estiver disponível."""
     path = Path(path_str)
@@ -523,7 +554,12 @@ def load_manual_fundos_cached(path_str: str) -> pd.DataFrame:
 
 
 def only_digits_str(value) -> str:
-    return "".join(ch for ch in str(value or "") if ch.isdigit())
+    raw = str(value or "").strip()
+    # Excel frequentemente entrega CNPJ como float textual (ex.: 123...0).
+    if re.fullmatch(r"\d+\.0", raw):
+        raw = raw[:-2]
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return digits[:14] if len(digits) > 14 and raw.endswith(".0") else digits
 
 
 def parse_days_from_text(value) -> float:
@@ -581,7 +617,9 @@ def load_fundos_prev_cached(path_str: str) -> pd.DataFrame:
                 nome = str(r.get("Nome do Fundo Investido pelos planos", "")).strip()
                 if not nome or nome.lower() == "nan":
                     continue
-                prazo = parse_days_from_text(r.get("Carência inicial para Port. Internas\n(dias corridos)", np.nan))
+                prazo = parse_days_from_text(r.get("Liquidação ", r.get("Liquidação", np.nan)))
+                if pd.isna(prazo):
+                    prazo = parse_days_from_text(r.get("Carência inicial para Port. Internas\n(dias corridos)", np.nan))
                 rows.append({
                     "Fundo": nome,
                     "Classificação": str(r.get("Classificação XP", "")).strip(),
@@ -604,69 +642,83 @@ def load_fundos_prev_cached(path_str: str) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
+    """Casa fundos por hierarquia: CNPJ > nome exato > candidatos por tokens > fuzzy restrito.
+
+    Evita o custo quadrático de comparar cada posição contra toda a base e mantém
+    a base operacional Nome fundos e prev como fonte prioritária sobre o manual antigo.
+    """
     out = df.copy()
-    # une as duas bases: nova base de fundos/previdência + manual antigo.
     base_nova = load_fundos_prev_cached(str(find_file("Nome fundos e prev.xlsx")))
     base_manual = load_manual_fundos_cached(str(find_file("Manual de Alocação.xlsx")))
     bases = []
     if not base_nova.empty:
-        bases.append(base_nova)
+        bn = base_nova.copy(); bn["_priority"] = 0; bases.append(bn)
     if not base_manual.empty:
-        base_manual = base_manual.rename(columns={"Classificação": "Classificação"})
-        base_manual["Fonte"] = "Manual de Alocação"
-        if "Classificação CVM" not in base_manual.columns:
-            base_manual["Classificação CVM"] = ""
-        bases.append(base_manual)
+        bm = base_manual.copy(); bm["Fonte"] = "Manual de Alocação"; bm["_priority"] = 1
+        if "Classificação CVM" not in bm.columns: bm["Classificação CVM"] = ""
+        bases.append(bm)
     manual = pd.concat(bases, ignore_index=True, sort=False) if bases else pd.DataFrame()
 
-    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo", "manual_fonte"]:
+    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo", "manual_fonte", "manual_score", "manual_metodo"]:
         if col not in out.columns:
-            out[col] = "" if col != "manual_liquidez" else np.nan
+            out[col] = False if col == "manual_match" else (np.nan if col in ["manual_liquidez", "manual_score"] else "")
     if manual.empty:
         out["manual_match"] = False
         return out
 
     for c in ["asset_nome", "asset_id", "cnpj"]:
-        if c not in out.columns:
-            out[c] = ""
+        if c not in out.columns: out[c] = ""
     out["_cnpj_norm"] = out["cnpj"].apply(only_digits_str)
-    out["_fund_key_asset"] = out.get("asset_nome", out.get("asset_id", "")).astype(str).apply(fund_name_key)
+    out["_fund_key_asset"] = out["asset_nome"].astype(str).apply(fund_name_key)
+    empty_key = out["_fund_key_asset"].str.len().le(2)
+    out.loc[empty_key, "_fund_key_asset"] = out.loc[empty_key, "asset_id"].astype(str).apply(fund_name_key)
+
     manual["cnpj_norm"] = manual.get("cnpj_norm", "").apply(only_digits_str)
     manual["manual_key"] = manual.get("manual_key", manual.get("Fundo", "")).astype(str)
-
-    manual_cnpj = {r["cnpj_norm"]: r for _, r in manual[manual["cnpj_norm"].astype(str).str.len() >= 8].iterrows()}
-    manual_records = manual.to_dict("records")
+    manual = manual.sort_values("_priority", kind="stable").drop_duplicates(["cnpj_norm", "manual_key"], keep="first")
+    records = manual.to_dict("records")
+    by_cnpj = {}
+    by_key = {}
+    token_index: dict[str, set[int]] = {}
+    for i, rec in enumerate(records):
+        cnpj = rec.get("cnpj_norm", "")
+        key = str(rec.get("manual_key", ""))
+        if len(cnpj) >= 8 and cnpj not in by_cnpj: by_cnpj[cnpj] = i
+        if key and key not in by_key: by_key[key] = i
+        for tok in set(key.split()):
+            if len(tok) >= 4: token_index.setdefault(tok, set()).add(i)
 
     def find_match(cnpj: str, key: str, original_name: str = ""):
         cnpj = only_digits_str(cnpj)
-        if cnpj and cnpj in manual_cnpj:
-            return manual_cnpj[cnpj]
-        if not key:
-            return None
-        best_score = 0.0
-        best_rec = None
+        if cnpj and cnpj in by_cnpj: return records[by_cnpj[cnpj]], 1.0, "CNPJ"
+        if key in by_key: return records[by_key[key]], 1.0, "Nome exato"
+        tokens = {t for t in key.split() if len(t) >= 4}
+        candidate_ids: set[int] = set()
+        for tok in tokens: candidate_ids.update(token_index.get(tok, set()))
+        if not candidate_ids: return None, 0.0, ""
+        best_score, best_rec = 0.0, None
         source_name = original_name or key
-        for rec in manual_records:
-            fundo = str(rec.get("Fundo", ""))
-            mk = str(rec.get("manual_key", ""))
-            score = fund_match_score(source_name, fundo)
-            if len(set(key.split()) & set(mk.split())) >= 2:
-                score = max(score, 0.80)
-            if score > best_score:
-                best_score = score
-                best_rec = rec
-        return best_rec if best_score >= 0.72 else None
+        for i in candidate_ids:
+            rec = records[i]
+            score = fund_match_score(source_name, str(rec.get("Fundo", "")))
+            if score > best_score: best_score, best_rec = score, rec
+        return (best_rec, best_score, "Nome aproximado") if best_score >= 0.78 else (None, best_score, "")
 
-    source_names = out.get("asset_nome", out.get("asset_id", "")).astype(str)
-    matches = pd.Series([find_match(c, k, n) for c, k, n in zip(out["_cnpj_norm"], out["_fund_key_asset"], source_names)], index=out.index)
-    out["manual_match"] = matches.notna()
-    out.loc[out["manual_match"], "manual_classe"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Classificação", "")).strip())
-    out.loc[out["manual_match"], "manual_liquidez"] = matches[out["manual_match"]].apply(lambda r: r.get("Liquidez (D+)", np.nan))
-    out.loc[out["manual_match"], "manual_previdencia"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Previdência", "")).strip())
-    out.loc[out["manual_match"], "manual_fundo"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Fundo", "")).strip())
-    out.loc[out["manual_match"], "manual_fonte"] = matches[out["manual_match"]].apply(lambda r: str(r.get("Fonte", "")).strip())
-    out = out.drop(columns=["_fund_key_asset", "_cnpj_norm"], errors="ignore")
-    return out
+    matches = [find_match(c, k, n) for c, k, n in zip(out["_cnpj_norm"], out["_fund_key_asset"], out["asset_nome"].astype(str))]
+    recs = pd.Series([m[0] for m in matches], index=out.index)
+    scores = pd.Series([m[1] for m in matches], index=out.index)
+    methods = pd.Series([m[2] for m in matches], index=out.index)
+    out["manual_match"] = recs.notna()
+    mask = out["manual_match"]
+    out.loc[mask, "manual_classe"] = recs[mask].apply(lambda r: str(r.get("Classificação", "")).strip())
+    out.loc[mask, "manual_liquidez"] = recs[mask].apply(lambda r: pd.to_numeric(r.get("Liquidez (D+)", np.nan), errors="coerce"))
+    out.loc[mask, "manual_previdencia"] = recs[mask].apply(lambda r: str(r.get("Previdência", "")).strip())
+    out.loc[mask, "manual_fundo"] = recs[mask].apply(lambda r: str(r.get("Fundo", "")).strip())
+    out.loc[mask, "manual_fonte"] = recs[mask].apply(lambda r: str(r.get("Fonte", "")).strip())
+    out.loc[mask, "manual_score"] = scores[mask]
+    out.loc[mask, "manual_metodo"] = methods[mask]
+    return out.drop(columns=["_fund_key_asset", "_cnpj_norm"], errors="ignore")
+
 def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
     """Identifica somente posições econômicas reais negociadas em bolsa.
 
@@ -1011,9 +1063,9 @@ def classify_fund_class(class_text: str, full_text: str, liquidez_days=np.nan) -
             return "Internacional", "Renda Fixa Internacional"
         return "Internacional", "Renda Variável Internacional"
 
-    if any(x in combined for x in ["FII", "IMOBILIARIO", "REAL ESTATE"]):
+    if has_any_phrase(combined, ["FII", "IMOBILIARIO", "REAL ESTATE"]):
         return "RV Brasil", "FIIs"
-    if any(x in combined for x in ["ACOES", "RENDA VARIAVEL", "RV BRASIL", "SMALL CAPS", "IBOV", "LONG BIASED", "FIA"]):
+    if has_any_phrase(combined, ["ACOES", "RENDA VARIAVEL", "RV BRASIL", "SMALL CAPS", "IBOV", "LONG BIASED", "FIA"]):
         return "RV Brasil", "Ações"
 
     # FIDC, fundos de crédito, FIRF, DI, multimercado etc. entram pela liquidez.
@@ -1022,7 +1074,7 @@ def classify_fund_class(class_text: str, full_text: str, liquidez_days=np.nan) -
         "RENDA FIXA", "REFERENCIADO DI", "CDI", "FIRF", "MULTIMERCADO", "FIM",
         "MACRO", "RETORNO ABSOLUTO", "IPCA", "IMA-B", "PREFIXADO", "IRF-M"
     ]
-    if any(x in combined for x in fund_rf_terms):
+    if has_any_phrase(combined, fund_rf_terms):
         return "RF Brasil", bucket_from_liquidity_days(liquidez_days)
 
     # Fundo sem classificação reconhecida: usa liquidez se disponível.
@@ -1032,22 +1084,24 @@ def classify_fund_class(class_text: str, full_text: str, liquidez_days=np.nan) -
 
 
 def infer_liquidity_days_from_row(row: pd.Series) -> float:
-    vals = [
-        row.get("manual_liquidez", np.nan), row.get("liquidez", ""),
-        row.get("cotizacao_resgate", ""), row.get("liquidacao_resgate", ""),
-        row.get("asset_nome", ""), row.get("asset_id", ""),
-    ]
-    # Se temos cotização + liquidação separadas, soma os dois para prazo de disponibilidade.
+    """Hierarquia de liquidez: override > base manual > dados da corretora > nome.
+
+    A base curada deve prevalecer sobre campos brutos da corretora, pois contempla
+    exceções operacionais como fundos cetipados sem liquidez efetiva.
+    """
+    override = liquidity_override_for_row(row)
+    if pd.notna(override): return float(override)
+    manual = pd.to_numeric(row.get("manual_liquidez", np.nan), errors="coerce")
+    if pd.notna(manual): return float(manual)
     cot = parse_days_from_text(row.get("cotizacao_resgate", ""))
     liq = parse_days_from_text(row.get("liquidacao_resgate", ""))
-    if pd.notna(cot) or pd.notna(liq):
-        return (0 if pd.isna(cot) else cot) + (0 if pd.isna(liq) else liq)
-    for v in vals:
+    if pd.notna(cot) or pd.notna(liq): return (0 if pd.isna(cot) else cot) + (0 if pd.isna(liq) else liq)
+    direct = parse_days_from_text(row.get("liquidez", ""))
+    if pd.notna(direct): return float(direct)
+    for v in [row.get("asset_nome", ""), row.get("asset_id", "")]:
         d = parse_days_from_text(v)
-        if pd.notna(d):
-            return d
+        if pd.notna(d): return float(d)
     return np.nan
-
 
 def classify_position(row: pd.Series) -> pd.Series:
     corretora = norm(row.get("corretora", ""))
@@ -1109,8 +1163,8 @@ def classify_position(row: pd.Series) -> pd.Series:
     if early_is_fiinfra:
         return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Natureza econômica / FI-Infra"])
 
-    early_looks_like_fund = any(x in text for x in ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS"])
-    early_credit_title = bool(re.search(r"\b(DEBENTURE|DEBENTURES|CRI|CRA|CDCA)\b", text))
+    early_looks_like_fund = has_any_phrase(text, ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS", "FIF"])
+    early_credit_title = bool(re.search(r"\b(DEB|DEBENTURE|DEBENTURES|CRI|CRA|CDCA)\b", text))
     if early_credit_title and not early_looks_like_fund:
         return pd.Series(["RF Brasil", "Crédito Privado", "Crédito Privado", "Natureza econômica / Crédito Privado"])
 
@@ -1176,13 +1230,13 @@ def classify_position(row: pd.Series) -> pd.Series:
     if is_fiinfra:
         return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Natureza econômica / FI-Infra"])
 
-    is_credit_title = bool(re.search(r"\b(DEBENTURE|DEBENTURES|DEBÊNTURE|DEBÊNTURES|CRI|CRA|CDCA)\b", text))
-    looks_like_fund = any(x in text for x in ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS"])
+    is_credit_title = bool(re.search(r"\b(DEB|DEBENTURE|DEBENTURES|DEBÊNTURE|DEBÊNTURES|CRI|CRA|CDCA)\b", text))
+    looks_like_fund = has_any_phrase(text, ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS", "FIF"])
     if is_credit_title and not looks_like_fund:
         return pd.Series(["RF Brasil", "Crédito Privado", "Crédito Privado", "Natureza econômica / Crédito Privado"])
 
     # XP: fundos e previdência têm CNPJ/prazos na própria planilha e/ou na base Nome fundos e prev.
-    if asset_tipo in ["FUNDOS", "PREVIDENCIA", "PREVIDÊNCIA"] or any(x in text for x in ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS"]):
+    if asset_tipo in ["FUNDOS", "PREVIDENCIA", "PREVIDÊNCIA"] or has_any_phrase(text, ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS", "FIF"]):
         classe_base = row.get("manual_classe", "") if row.get("manual_match", False) else ""
         if not classe_base:
             classe_base = text
@@ -1206,7 +1260,7 @@ def classify_position(row: pd.Series) -> pd.Series:
         return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
 
     # COE / estruturados
-    if any(x in text for x in ["COE", "ESTRUTURADO", "OPCOES FLEX", "OPCAO FLEX", "OPCOES", "OPÇÃO"]):
+    if has_any_phrase(text, ["COE", "ESTRUTURADO", "OPCOES FLEX", "OPCAO FLEX", "OPCOES", "OPÇÃO"]):
         return pd.Series(["Fora da Estratégia", "COE / Estruturados", "COE / Estruturados", "Fora da Estratégia"])
 
     # Ativos estratégicos negociados na B3 que não podem cair na regra genérica de FII.
@@ -1219,11 +1273,11 @@ def classify_position(row: pd.Series) -> pd.Series:
         return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Estratégia"])
 
     # Bolsa Brasil
-    if asset_tipo in ["FUNDOS IMOBILIARIOS", "FUNDOS IMOBILIÁRIOS"] or any(x in text for x in ["FUNDO IMOB", "FII", "FUNDO IMOBILIARIO"]):
+    if asset_tipo in ["FUNDOS IMOBILIARIOS", "FUNDOS IMOBILIÁRIOS"] or has_any_phrase(text, ["FUNDO IMOB", "FII", "FUNDO IMOBILIARIO"]):
         return pd.Series(["RV Brasil", "FIIs", "FIIs", "Estratégia"])
     if (asset_id.endswith("11") and len(asset_id) >= 5 and asset_id[:4].isalpha()):
         return pd.Series(["RV Brasil", "FIIs", "FIIs", "Estratégia"])
-    if asset_tipo in ["ACOES", "AÇÕES"] or any(x in text for x in ["ACAO", "AÇÃO", "BOVESPA", "RENDA VARIAVEL"]):
+    if asset_tipo in ["ACOES", "AÇÕES"] or has_any_phrase(text, ["ACAO", "AÇÃO", "BOVESPA", "RENDA VARIAVEL"]):
         return pd.Series(["RV Brasil", "Ações", "Ações", "Estratégia"])
     if len(asset_id) in [5, 6] and asset_id[:4].isalpha() and asset_id[-1].isdigit():
         return pd.Series(["RV Brasil", "Ações", "Ações", "Estratégia"])
@@ -1238,7 +1292,7 @@ def classify_position(row: pd.Series) -> pd.Series:
 
     # Renda fixa local por indexador/taxa.
     is_rf_local = ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF", "DEB", "CRI", "CRA", "CDCA")))
-    if is_rf_local or any(x in text for x in ["CDB", "LCI", "LCA", "LCD", "CRI", "CRA", "DEB", "DEBENTURE", "CDCA"]):
+    if is_rf_local or has_any_phrase(text, ["CDB", "LCI", "LCA", "LCD", "LF", "CRI", "CRA", "DEB", "DEBENTURE", "CDCA"]):
         bank_title = asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF"))
         if not bank_title:
             return pd.Series(["RF Brasil", "Crédito Privado", "Crédito Privado", "Título privado não bancário"])
@@ -1410,7 +1464,7 @@ def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: f
             diff = alvo_ativo - atual if pd.notna(atual) else np.nan
             rows.append([t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar, nome])
 
-    held = pos_cliente[pos_cliente["ticker_norm"].isin(model_tickers) & exchange_position_mask(pos_cliente)].copy()
+    held = pos_cliente[pos_cliente["subbucket"].eq("FiInfra e Cetipados") & exchange_position_mask(pos_cliente)].copy()
     for tk, grp in held.groupby("ticker_norm"):
         if not tk or tk in model_tickers:
             continue
@@ -2041,7 +2095,7 @@ if page == "Asset Allocation":
             ((pos_cliente["classe_macro"].eq("RV Brasil")) & (~pos_cliente["ticker_norm"].isin({ticker_clean(x) for x in universo}))) |
             (pos_cliente["subbucket"].str.contains("Sem Liquidez|Não Classificado|COE|Previdência", case=False, na=False))
         ].sort_values("valor_mercado", ascending=False)
-        cols = ["corretora", "conta", "CLIENTE", "asset_id", "asset_nome", "classe_macro", "subbucket", "tratamento", "manual_fundo", "manual_classe", "manual_liquidez", "valor_mercado", "quantidade", "indexador", "liquidez", "vencimento"]
+        cols = ["corretora", "conta", "CLIENTE", "asset_id", "asset_nome", "classe_macro", "subbucket", "tratamento", "manual_fundo", "manual_classe", "manual_liquidez", "manual_metodo", "manual_score", "valor_mercado", "quantidade", "indexador", "liquidez", "vencimento"]
         view = fora_df[[c for c in cols if c in fora_df.columns]].copy()
         for c in ["classe_macro", "subbucket"]:
             if c in view.columns:
