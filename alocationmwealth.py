@@ -66,7 +66,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "4.7"
+APP_VERSION = "4.8"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -79,6 +79,9 @@ FI_INFRA_INFLACAO_TICKERS = ["JURO11", "IFRA11", "KDIF11", "BDIF11", "JMBI11", "
 # Ativos estratégicos negociados no Brasil que precisam ser tratados pelo código
 # antes da regra genérica de ticker terminado em 11, para não caírem como FII.
 ATIVOS_ESTRATEGICOS_B3 = {
+    # Regras explícitas têm prioridade sobre a heurística genérica de ticker final 11.
+    "BPAC11": {"classe": "RV Brasil", "subbucket": "Ações", "estrategia": "Ação / Unit"},
+    "NTNS11": {"classe": "RF Brasil", "subbucket": "Inflação - Tesouro", "estrategia": "ETF de renda fixa — Tesouro IPCA 0 a 4 anos"},
     "BITH11": {"classe": "Alternativos", "subbucket": "Bitcoin", "estrategia": "Bitcoin"},
     "GOLD11": {"classe": "Alternativos", "subbucket": "Ouro", "estrategia": "Ouro"},
     "UTLL11": {"classe": "RV Brasil", "subbucket": "Ações", "estrategia": "Utilities"},
@@ -521,7 +524,7 @@ def fund_match_score(position_name: str, manual_name: str) -> float:
 
 
 @st.cache_data(show_spinner=False)
-def load_manual_fundos_cached(path_str: str) -> pd.DataFrame:
+def load_manual_fundos_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) -> pd.DataFrame:
     """Lê o Manual de Alocação antigo, quando estiver disponível."""
     path = Path(path_str)
     if not path.exists():
@@ -563,24 +566,48 @@ def only_digits_str(value) -> str:
 
 
 def parse_days_from_text(value) -> float:
-    txt = norm(value)
-    if not txt or txt in ["NAN", "NONE"]:
+    """Extrai qualquer prazo de liquidez válido.
+
+    A versão anterior aceitava apenas uma lista fechada de números. Assim, prazos
+    reais como 44, 85, 119, 365 e 999 eram ignorados; quando a liquidação era D+1,
+    o fundo acabava incorretamente no bucket de liquidez imediata.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
         return np.nan
-    # casos como D+59, D+1, 180 Dias Corridos ou apenas 180 no nome do fundo.
-    m = re.search(r"D\s*\+\s*(\d+)", txt)
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value) if float(value) >= 0 else np.nan
+    txt = norm(value)
+    if not txt or txt in ["NAN", "NONE", "NULL", "-"]:
+        return np.nan
+    m = re.search(r"D\s*\+\s*(\d+(?:[.,]\d+)?)", txt)
     if not m:
-        m = re.search(r"\b(0|1|2|5|10|15|30|31|32|45|59|60|90|120|180|360|361|720)\b", txt)
-    return float(m.group(1)) if m else np.nan
+        # Aceita qualquer inteiro/decimal isolado, não apenas uma lista pré-definida.
+        m = re.search(r"(?<![A-Z0-9])(\d+(?:[.,]\d+)?)(?![A-Z0-9])", txt)
+    if not m:
+        return np.nan
+    try:
+        return float(m.group(1).replace(",", "."))
+    except Exception:
+        return np.nan
+
+
+def file_cache_signature(path: Path) -> tuple[int, int]:
+    """Assinatura usada para invalidar cache quando uma planilha é substituída."""
+    try:
+        stt = path.stat()
+        return int(stt.st_mtime_ns), int(stt.st_size)
+    except Exception:
+        return 0, 0
 
 
 @st.cache_data(show_spinner=False)
-def load_fundos_prev_cached(path_str: str) -> pd.DataFrame:
+def load_fundos_prev_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) -> pd.DataFrame:
     """Lê a planilha Nome fundos e prev.xlsx, priorizando CNPJ, classificação e liquidez.
 
     Esta base é mais operacional para casar fundos da XP e BTG do que o manual antigo.
     """
     path = Path(path_str)
-    cols = ["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "CNPJ", "manual_key", "cnpj_norm", "Fonte"]
+    cols = ["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "CNPJ", "manual_key", "cnpj_norm", "Fonte", "Liquidez Operacional", "Classe Operacional", "Subbucket Operacional"]
     if not path.exists():
         return pd.DataFrame(columns=cols)
     rows = []
@@ -589,6 +616,8 @@ def load_fundos_prev_cached(path_str: str) -> pd.DataFrame:
         if "Fundos de Investimentos" in xls.sheet_names:
             df = pd.read_excel(path, sheet_name="Fundos de Investimentos")
             df.columns = [str(c).strip() for c in df.columns]
+            # Colunas opcionais permitem exceções no próprio arquivo mestre, sem editar código.
+            # Exemplos: LIQUIDEZ_OPERACIONAL=999 e SUBBUCKET_OPERACIONAL="FiInfra e Cetipados".
             for _, r in df.iterrows():
                 nome = str(r.get("NOME_FUNDO", "")).strip()
                 if not nome or nome.lower() == "nan":
@@ -609,6 +638,9 @@ def load_fundos_prev_cached(path_str: str) -> pd.DataFrame:
                     "manual_key": fund_name_key(nome),
                     "cnpj_norm": only_digits_str(r.get("CNPJ_FUNDO", "")),
                     "Fonte": "Nome fundos e prev",
+                    "Liquidez Operacional": parse_days_from_text(r.get("LIQUIDEZ_OPERACIONAL", np.nan)),
+                    "Classe Operacional": str(r.get("CLASSE_OPERACIONAL", "")).strip(),
+                    "Subbucket Operacional": str(r.get("SUBBUCKET_OPERACIONAL", "")).strip(),
                 })
         if "Previdência" in xls.sheet_names:
             df = pd.read_excel(path, sheet_name="Previdência")
@@ -634,6 +666,9 @@ def load_fundos_prev_cached(path_str: str) -> pd.DataFrame:
     except Exception:
         pass
     out = pd.DataFrame(rows, columns=cols + ["Classificação CVM"])
+    if not out.empty and "Liquidez Operacional" in out.columns:
+        op = pd.to_numeric(out["Liquidez Operacional"], errors="coerce")
+        out.loc[op.notna(), "Liquidez (D+)"] = op[op.notna()]
     if out.empty:
         return pd.DataFrame(columns=cols)
     out = out[out["manual_key"].astype(str).str.len() > 2].copy()
@@ -648,8 +683,12 @@ def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
     a base operacional Nome fundos e prev como fonte prioritária sobre o manual antigo.
     """
     out = df.copy()
-    base_nova = load_fundos_prev_cached(str(find_file("Nome fundos e prev.xlsx")))
-    base_manual = load_manual_fundos_cached(str(find_file("Manual de Alocação.xlsx")))
+    fundos_path = find_file("Nome fundos e prev.xlsx")
+    manual_path = find_file("Manual de Alocação.xlsx")
+    fundos_sig = file_cache_signature(fundos_path)
+    manual_sig = file_cache_signature(manual_path)
+    base_nova = load_fundos_prev_cached(str(fundos_path), *fundos_sig)
+    base_manual = load_manual_fundos_cached(str(manual_path), *manual_sig)
     bases = []
     if not base_nova.empty:
         bn = base_nova.copy(); bn["_priority"] = 0; bases.append(bn)
@@ -659,7 +698,7 @@ def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
         bases.append(bm)
     manual = pd.concat(bases, ignore_index=True, sort=False) if bases else pd.DataFrame()
 
-    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo", "manual_fonte", "manual_score", "manual_metodo"]:
+    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo", "manual_fonte", "manual_score", "manual_metodo", "manual_classe_operacional", "manual_subbucket_operacional"]:
         if col not in out.columns:
             out[col] = False if col == "manual_match" else (np.nan if col in ["manual_liquidez", "manual_score"] else "")
     if manual.empty:
@@ -715,6 +754,8 @@ def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
     out.loc[mask, "manual_previdencia"] = recs[mask].apply(lambda r: str(r.get("Previdência", "")).strip())
     out.loc[mask, "manual_fundo"] = recs[mask].apply(lambda r: str(r.get("Fundo", "")).strip())
     out.loc[mask, "manual_fonte"] = recs[mask].apply(lambda r: str(r.get("Fonte", "")).strip())
+    out.loc[mask, "manual_classe_operacional"] = recs[mask].apply(lambda r: str(r.get("Classe Operacional", "")).strip())
+    out.loc[mask, "manual_subbucket_operacional"] = recs[mask].apply(lambda r: str(r.get("Subbucket Operacional", "")).strip())
     out.loc[mask, "manual_score"] = scores[mask]
     out.loc[mask, "manual_metodo"] = methods[mask]
     return out.drop(columns=["_fund_key_asset", "_cnpj_norm"], errors="ignore")
@@ -1142,6 +1183,12 @@ def classify_position(row: pd.Series) -> pd.Series:
     pre_by_report = (has_pre or (indexador_blank and has_taxa_nominal and ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF", "DEB", "CRI", "CRA", "CDCA")))))
     liq_days = infer_liquidity_days_from_row(row)
 
+    # Exceção operacional cadastrada no próprio Nome fundos e prev.xlsx.
+    op_classe = str(row.get("manual_classe_operacional", "") or "").strip()
+    op_bucket = str(row.get("manual_subbucket_operacional", "") or "").strip()
+    if op_classe and op_bucket:
+        return pd.Series([op_classe, op_bucket, op_bucket, "Override operacional / base de fundos"])
+
     # Eventos não são ativos fora da estratégia. Proventos ficam como caixa a
     # receber e códigos final 12 são direitos de subscrição monitorados em RV.
     if asset_tipo in ["PROVENTOS", "PROVENTOS FUNDO IMOB"] or "PROVENTO" in asset_tipo:
@@ -1304,7 +1351,7 @@ def classify_position(row: pd.Series) -> pd.Series:
 
     return pd.Series(["Fora da Estratégia", "Outros / Não Classificado", "Outros / Não Classificado", "Revisar"])
 @st.cache_data(show_spinner=False)
-def enrich_positions_cached(df: pd.DataFrame) -> pd.DataFrame:
+def enrich_positions_cached(df: pd.DataFrame, mapping_signature: tuple = ()) -> pd.DataFrame:
     df = df.copy()
     df = df.loc[:, ~df.columns.duplicated()].copy()
     df = df.drop(columns=[c for c in ["classe_macro", "subclasse", "subbucket", "tratamento"] if c in df.columns], errors="ignore")
@@ -1768,6 +1815,13 @@ def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente:
     return buf
 
 
+def mapping_files_signature() -> tuple:
+    """Invalida o enriquecimento quando as bases de fundos/manual forem trocadas."""
+    fp = find_file("Nome fundos e prev.xlsx")
+    mp = find_file("Manual de Alocação.xlsx")
+    return (*file_cache_signature(fp), *file_cache_signature(mp))
+
+
 # =============================================================================
 # Layout global
 # =============================================================================
@@ -1811,7 +1865,7 @@ if page == "Controle de Saldo":
 
     try:
         df_latest, meta, mode = load_positions_cached(force_rebuild=force)
-        df_latest = enrich_positions_cached(df_latest)
+        df_latest = enrich_positions_cached(df_latest, mapping_files_signature())
         df_latest = ensure_saldo_operacional(df_latest)
     except Exception as e:
         st.error(f"Falha ao carregar/consolidar posições: {e}")
@@ -1857,7 +1911,7 @@ if page == "Asset Allocation":
     st.header("Asset Allocation - Cliente / Grupo Familiar")
     try:
         df_latest, meta, mode = load_positions_cached(force_rebuild=False)
-        df_latest = enrich_positions_cached(df_latest)
+        df_latest = enrich_positions_cached(df_latest, mapping_files_signature())
         df_latest = ensure_saldo_operacional(df_latest)
     except Exception as e:
         st.error(f"Não consegui carregar a base: {e}")
