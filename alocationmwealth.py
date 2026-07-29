@@ -162,6 +162,15 @@ def ticker_clean(x) -> str:
     return norm(x).replace(" ", "").replace(".", "")
 
 
+def expand_fund_compounds(text: str) -> str:
+    """Separa abreviações compostas comuns em nomes de fundos (ex.: FICFIDC, FICFIRF,
+    FICFIA, FICFIM), muito usadas por BTG/XP como "FIC" + tipo colados sem espaço.
+    Sem isso, o has_token/has_any_phrase não reconhece o tipo do fundo, porque não há
+    borda de palavra entre FIC e o restante (ex.: 'BTG Apolo II FICFIDC RL' não batia
+    com FIDC nem com FIC isoladamente)."""
+    return re.sub(r"\bFIC(FIDC|FIRF|FIA|FIM)\b", r"FIC \1", text)
+
+
 def has_token(text: str, *terms: str) -> bool:
     """Procura termos como tokens, evitando COE dentro de PARTICIPACOES, FIA em CONFIANCA etc."""
     txt = norm(text)
@@ -1087,12 +1096,12 @@ def classify_fund_class(class_text: str, full_text: str, liquidez_days=np.nan) -
     """
     c = norm(class_text)
     t = norm(full_text)
-    combined = f"{c} {t}"
+    combined = expand_fund_compounds(f"{c} {t}")
 
     # FI-Infra é uma estratégia própria e prevalece sobre FIA/FII e crédito.
     if any(x in combined for x in [
         "FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA",
-        "FIC INFR", "FUNDO INCENTIVADO DE INFRA", "DEBENTURES INCENTIVADAS"
+        "FIC INFR", "FUNDO INCENTIVADO DE INFRA", "DEBENTURES INCENTIVADAS", "DEBENTURES INC"
     ]):
         return "RF Brasil", "FiInfra e Cetipados"
 
@@ -1157,7 +1166,7 @@ def classify_position(row: pd.Series) -> pd.Series:
     taxa = norm(row.get("taxa", ""))
     nome = norm(row.get("asset_nome", ""))
     cnpj = only_digits_str(row.get("cnpj", ""))
-    text = " ".join([asset_id, nome, asset_tipo, mercado, sub_mercado, estrategia, indexador, liquidez, emissor, taxa])
+    text = expand_fund_compounds(" ".join([asset_id, nome, asset_tipo, mercado, sub_mercado, estrategia, indexador, liquidez, emissor, taxa]))
     # Flags robustas de indexador. Alguns relatórios trazem prefixado como
     # "CDB PRE DU", "CRA PRE DU" ou apenas "PRE" no nome, sem escrever
     # "prefixado". Usamos regex com borda de palavra para não confundir com
@@ -1193,6 +1202,11 @@ def classify_position(row: pd.Series) -> pd.Series:
     # receber e códigos final 12 são direitos de subscrição monitorados em RV.
     if asset_tipo in ["PROVENTOS", "PROVENTOS FUNDO IMOB"] or "PROVENTO" in asset_tipo:
         return pd.Series(["Caixa", "Proventos a Receber", "Proventos a Receber", "Evento / não rebalancear"])
+    # BTG: dividendos, JCP e contribuições de previdência aparecem na aba "Valor em
+    # Trânsito" enquanto aguardam liquidação. Sem esta regra caíam em "Outros / Não
+    # Classificado" e ficavam de fora do casamento de estratégia.
+    if mercado == "VALOR EM TRANSITO":
+        return pd.Series(["Caixa", "Proventos a Receber", "Proventos a Receber", "Evento / não rebalancear / BTG Valor em Trânsito"])
     if re.fullmatch(r"[A-Z]{4}12", asset_id):
         return pd.Series(["RV Brasil", "Direitos de Subscrição", "Direitos de Subscrição", "Direito / não rebalancear"])
 
@@ -1272,7 +1286,7 @@ def classify_position(row: pd.Series) -> pd.Series:
     # e fundos de infraestrutura cujo nome também contém FIA/FII/ações.
     is_fiinfra = (
         asset_id in FI_INFRA_TICKERS
-        or any(x in text for x in ["FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA", "FIC INFR", "FUNDO INCENTIVADO DE INFRA", "DEBENTURES INCENTIVADAS", "DEBÊNTURES INCENTIVADAS"])
+        or any(x in text for x in ["FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA", "FIC INFR", "FUNDO INCENTIVADO DE INFRA", "DEBENTURES INCENTIVADAS", "DEBÊNTURES INCENTIVADAS", "DEBENTURES INC"])
     )
     if is_fiinfra:
         return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Natureza econômica / FI-Infra"])
