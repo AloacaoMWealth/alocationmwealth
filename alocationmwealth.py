@@ -66,7 +66,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "5.1"
+APP_VERSION = "5.3"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -135,14 +135,49 @@ def find_file(filename: str) -> Path:
     return POS_DIR / filename
 
 def master_products_path() -> Path:
-    """Localiza o cadastro mestre centralizado; mantém compatibilidade com a base antiga."""
-    candidates = [
-        "Cadastro_Mestre_Produtos_M_Wealth.xlsx",
-        "Cadastro Mestre de Produtos M Wealth.xlsx",
-        "Cadastro Mestre de Produtos.xlsx",
-        "Nome fundos e prev.xlsx",
+    """Localiza o cadastro mestre mais recente, inclusive cópias como ``(1)``.
+
+    O Excel/navegador pode salvar o arquivo como ``Cadastro...(1).xlsx``. A
+    versão anterior procurava apenas nomes exatos e acabava usando uma base
+    antiga ou o fallback ``Nome fundos e prev.xlsx``.
+    """
+    search_dirs = []
+    for directory in [POS_DIR, BASE_DIR, Path.cwd()]:
+        try:
+            resolved = directory.resolve()
+        except Exception:
+            resolved = directory
+        if resolved not in search_dirs:
+            search_dirs.append(resolved)
+
+    patterns = [
+        "Cadastro_Mestre_Produtos_M_Wealth*.xlsx",
+        "Cadastro Mestre de Produtos M Wealth*.xlsx",
+        "Cadastro Mestre de Produtos*.xlsx",
     ]
-    for filename in candidates:
+    candidates: list[Path] = []
+    for directory in search_dirs:
+        if not directory.exists():
+            continue
+        for pattern in patterns:
+            candidates.extend(
+                p for p in directory.glob(pattern)
+                if p.is_file() and not p.name.startswith("~$")
+            )
+
+    if candidates:
+        unique = {str(p.resolve()): p for p in candidates}
+        return max(
+            unique.values(),
+            key=lambda p: (
+                p.stat().st_mtime_ns if p.exists() else 0,
+                p.stat().st_size if p.exists() else 0,
+                p.name,
+            ),
+        )
+
+    # Compatibilidade com a base legada.
+    for filename in ["Nome fundos e prev.xlsx", "Nome fundos e prev (1).xlsx"]:
         p = find_file(filename)
         if p.exists():
             return p
@@ -163,6 +198,25 @@ def optional_text(value) -> str:
         return ""
     txt = str(value).strip()
     return "" if norm(txt) in {"", "NAN", "NONE", "NULL"} else txt
+
+
+def canonicalize_master_columns(df: pd.DataFrame, expected: list[str]) -> pd.DataFrame:
+    """Corrige cabeçalhos que o Excel renomeou para TICKER2, NOME_ATIVO3 etc.
+
+    Tabelas estruturadas do Excel podem acrescentar números aos cabeçalhos ao
+    detectar nomes duplicados. O cadastro continua legível porque comparamos a
+    versão normalizada do cabeçalho sem o sufixo numérico.
+    """
+    out = df.copy()
+    expected_by_norm = {norm(col): col for col in expected}
+    rename = {}
+    for col in out.columns:
+        raw = str(col).strip()
+        base = re.sub(r"\d+$", "", raw).strip()
+        target = expected_by_norm.get(norm(raw)) or expected_by_norm.get(norm(base))
+        if target:
+            rename[col] = target
+    return out.rename(columns=rename)
 
 
 def logo_path() -> Path | None:
@@ -658,6 +712,16 @@ def load_fundos_prev_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0
         if "Fundos de Investimentos" in xls.sheet_names:
             df = pd.read_excel(path, sheet_name="Fundos de Investimentos")
             df.columns = [str(c).strip() for c in df.columns]
+            df = canonicalize_master_columns(df, [
+                "NOME_FUNDO", "CNPJ_FUNDO", "NOME_GESTORA", "CLASSIFICAÇÃO_CVM",
+                "CLASSIFICAÇÃO_XP", "CAPTAÇÃO", "TIPO_INVESTIDOR",
+                "MOVIMENTAÇÃO_MÍNIMA", "APLICAÇÃO_INICIAL_MÍNIMA",
+                "COTIZAÇÃO_RESGATE", "PERÍODO_COTIZAÇÃO",
+                "LIQUIDAÇÃO_RESGATE", "PERÍODO_LIQUIDAÇÃO",
+                "CLASSE_OPERACIONAL", "SUBBUCKET_OPERACIONAL",
+                "LIQUIDEZ_OPERACIONAL", "REBALANCEAR", "STATUS_MAPEAMENTO",
+                "OBSERVACAO_OPERACIONAL",
+            ])
             # Colunas opcionais permitem exceções no próprio arquivo mestre, sem editar código.
             # Exemplos: LIQUIDEZ_OPERACIONAL=999 e SUBBUCKET_OPERACIONAL="FiInfra Pós" ou "FiInfra Inflação".
             for _, r in df.iterrows():
@@ -690,6 +754,14 @@ def load_fundos_prev_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0
         if "Previdência" in xls.sheet_names:
             df = pd.read_excel(path, sheet_name="Previdência")
             df.columns = [str(c).strip() for c in df.columns]
+            df = canonicalize_master_columns(df, [
+                "Nome do Fundo Investido pelos planos", "CNPJ", "Status",
+                "Liquidação ", "Liquidação", "Gestor Estratégico",
+                "Classificação XP", "CLASSE_OPERACIONAL",
+                "SUBBUCKET_OPERACIONAL", "LIQUIDEZ_OPERACIONAL",
+                "REBALANCEAR", "STATUS_MAPEAMENTO",
+                "OBSERVACAO_OPERACIONAL",
+            ])
             for _, r in df.iterrows():
                 nome = str(r.get("Nome do Fundo Investido pelos planos", "")).strip()
                 if not nome or nome.lower() == "nan":
@@ -833,6 +905,12 @@ def load_b3_master_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) 
             return pd.DataFrame(columns=cols)
         raw = pd.read_excel(path, sheet_name="Ativos B3")
         raw.columns = [str(c).strip() for c in raw.columns]
+        raw = canonicalize_master_columns(raw, [
+            "TICKER", "NOME_ATIVO", "TIPO_PRODUTO", "CLASSE_OPERACIONAL",
+            "SUBBUCKET_OPERACIONAL", "ESTRATEGIA", "REBALANCEAR",
+            "STATUS_MAPEAMENTO", "OBSERVACAO_OPERACIONAL",
+            "LIQUIDEZ_OPERACIONAL", "FONTE_PRECO",
+        ])
         out = pd.DataFrame({
             "ticker_norm": raw.get("TICKER", "").astype(str).apply(ticker_clean),
             "b3_nome": raw.get("NOME_ATIVO", "").astype(str).str.strip(),
@@ -1359,6 +1437,13 @@ def classify_position(row: pd.Series) -> pd.Series:
     if early_is_fiinfra:
         bucket_infra = "FiInfra Pós" if asset_id in FI_INFRA_POS_TICKERS else "FiInfra Inflação"
         return pd.Series(["RF Brasil", bucket_infra, bucket_infra, "Natureza econômica / FI-Infra listado"])
+
+    # Linhas vindas da aba de Fundos Imobiliários da corretora são posições
+    # listadas. Essa regra vem antes da heurística de fundos, pois o texto
+    # "Fundos Imobiliários" contém a palavra FUNDOS e, sem esta proteção,
+    # FIAGROs/FIPs como KNCA11, RZAG11 e VIGT11 caíam em fundo sem liquidez.
+    if asset_tipo in ["FUNDOS IMOBILIARIOS", "FUNDOS IMOBILIÁRIOS"] or mercado in ["FUNDOS IMOBILIARIOS", "FUNDOS IMOBILIÁRIOS"]:
+        return pd.Series(["RV Brasil", "FIIs", "FIIs", "Aba de Fundos Imobiliários / fallback"])
 
     early_looks_like_fund = has_any_phrase(text, ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS", "FIF"])
     early_credit_title = bool(re.search(r"\b(DEB|DEBENTURE|DEBENTURES|CRI|CRA|CDCA)\b", text))
@@ -1984,10 +2069,15 @@ def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente:
 
 
 def mapping_files_signature() -> tuple:
-    """Invalida o enriquecimento quando as bases de fundos/manual forem trocadas."""
+    """Invalida o cache quando o arquivo escolhido ou seu conteúdo mudar."""
     fp = master_products_path()
     mp = find_file("Manual de Alocação.xlsx")
-    return (*file_cache_signature(fp), *file_cache_signature(mp))
+    return (
+        str(fp.resolve()) if fp.exists() else str(fp),
+        *file_cache_signature(fp),
+        str(mp.resolve()) if mp.exists() else str(mp),
+        *file_cache_signature(mp),
+    )
 
 
 # =============================================================================
@@ -2077,6 +2167,8 @@ if page == "Controle de Saldo":
 # =============================================================================
 if page == "Asset Allocation":
     st.header("Asset Allocation - Cliente / Grupo Familiar")
+    cadastro_ativo = master_products_path()
+    st.caption(f"Cadastro mestre carregado: **{cadastro_ativo.name}**")
     try:
         df_latest, meta, mode = load_positions_cached(force_rebuild=False)
         df_latest = enrich_positions_cached(df_latest, mapping_files_signature())
