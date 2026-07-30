@@ -66,7 +66,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "4.8"
+APP_VERSION = "4.9"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -133,6 +133,36 @@ def find_file(filename: str) -> Path:
         if p.exists():
             return p
     return POS_DIR / filename
+
+def master_products_path() -> Path:
+    """Localiza o cadastro mestre centralizado; mantém compatibilidade com a base antiga."""
+    candidates = [
+        "Cadastro_Mestre_Produtos_M_Wealth.xlsx",
+        "Cadastro Mestre de Produtos M Wealth.xlsx",
+        "Cadastro Mestre de Produtos.xlsx",
+        "Nome fundos e prev.xlsx",
+    ]
+    for filename in candidates:
+        p = find_file(filename)
+        if p.exists():
+            return p
+    return find_file("Cadastro_Mestre_Produtos_M_Wealth.xlsx")
+
+
+def parse_yes_no(value, default: bool = True) -> bool:
+    txt = norm(value)
+    if txt in {"NAO", "N", "FALSE", "0", "NÃO"}:
+        return False
+    if txt in {"SIM", "S", "TRUE", "1"}:
+        return True
+    return bool(default)
+
+def optional_text(value) -> str:
+    """Normaliza campos opcionais vindos do Excel, eliminando NaN/None textuais."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    txt = str(value).strip()
+    return "" if norm(txt) in {"", "NAN", "NONE", "NULL"} else txt
 
 
 def logo_path() -> Path | None:
@@ -284,7 +314,7 @@ def friendly_strategy_name(x: str) -> str:
         "Inflação - Tesouro": "Tesouro indexado à inflação",
         "Crédito Privado": "Crédito privado",
         "Ações": "Ações brasileiras",
-        "FIIs": "Fundos imobiliários",
+        "FIIs": "Fundos Imobiliários / FIAGROs",
         "Bitcoin": "Bitcoin",
         "Ouro": "Ouro",
         "Renda Fixa Internacional": "Renda fixa internacional",
@@ -378,7 +408,7 @@ def macro_hierarchy_table(sub_df: pd.DataFrame, pl: float) -> pd.DataFrame:
         ("  Crédito privado", ["Crédito Privado"], None, False),
         ("RENDA VARIÁVEL NO BRASIL", None, ["RV Brasil"], True),
         ("  Ações brasileiras", ["Ações"], None, False),
-        ("  Fundos imobiliários", ["FIIs"], None, False),
+        ("  Fundos Imobiliários / FIAGROs", ["FIIs"], None, False),
         ("INVESTIMENTOS INTERNACIONAIS", None, ["Internacional"], True),
         ("  Renda fixa internacional", ["Renda Fixa Internacional"], None, False),
         ("  Renda variável internacional", ["Renda Variável Internacional"], None, False),
@@ -616,7 +646,7 @@ def load_fundos_prev_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0
     Esta base é mais operacional para casar fundos da XP e BTG do que o manual antigo.
     """
     path = Path(path_str)
-    cols = ["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "CNPJ", "manual_key", "cnpj_norm", "Fonte", "Liquidez Operacional", "Classe Operacional", "Subbucket Operacional"]
+    cols = ["Fundo", "Classificação", "Liquidez (D+)", "Previdência", "CNPJ", "manual_key", "cnpj_norm", "Fonte", "Liquidez Operacional", "Classe Operacional", "Subbucket Operacional", "Rebalancear", "Status Mapeamento", "Observacao Operacional"]
     if not path.exists():
         return pd.DataFrame(columns=cols)
     rows = []
@@ -646,10 +676,13 @@ def load_fundos_prev_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0
                     "CNPJ": str(r.get("CNPJ_FUNDO", "")).strip(),
                     "manual_key": fund_name_key(nome),
                     "cnpj_norm": only_digits_str(r.get("CNPJ_FUNDO", "")),
-                    "Fonte": "Nome fundos e prev",
+                    "Fonte": "Cadastro Mestre - Fundos",
                     "Liquidez Operacional": parse_days_from_text(r.get("LIQUIDEZ_OPERACIONAL", np.nan)),
                     "Classe Operacional": str(r.get("CLASSE_OPERACIONAL", "")).strip(),
                     "Subbucket Operacional": str(r.get("SUBBUCKET_OPERACIONAL", "")).strip(),
+                    "Rebalancear": str(r.get("REBALANCEAR", "")).strip(),
+                    "Status Mapeamento": str(r.get("STATUS_MAPEAMENTO", "")).strip(),
+                    "Observacao Operacional": str(r.get("OBSERVACAO_OPERACIONAL", "")).strip(),
                 })
         if "Previdência" in xls.sheet_names:
             df = pd.read_excel(path, sheet_name="Previdência")
@@ -670,7 +703,13 @@ def load_fundos_prev_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0
                     "CNPJ": str(r.get("CNPJ", "")).strip(),
                     "manual_key": fund_name_key(nome),
                     "cnpj_norm": only_digits_str(r.get("CNPJ", "")),
-                    "Fonte": "Nome fundos e prev - Prev",
+                    "Fonte": "Cadastro Mestre - Previdência",
+                    "Liquidez Operacional": parse_days_from_text(r.get("LIQUIDEZ_OPERACIONAL", np.nan)),
+                    "Classe Operacional": str(r.get("CLASSE_OPERACIONAL", "")).strip(),
+                    "Subbucket Operacional": str(r.get("SUBBUCKET_OPERACIONAL", "")).strip(),
+                    "Rebalancear": str(r.get("REBALANCEAR", "")).strip(),
+                    "Status Mapeamento": str(r.get("STATUS_MAPEAMENTO", "")).strip(),
+                    "Observacao Operacional": str(r.get("OBSERVACAO_OPERACIONAL", "")).strip(),
                 })
     except Exception:
         pass
@@ -692,7 +731,7 @@ def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
     a base operacional Nome fundos e prev como fonte prioritária sobre o manual antigo.
     """
     out = df.copy()
-    fundos_path = find_file("Nome fundos e prev.xlsx")
+    fundos_path = master_products_path()
     manual_path = find_file("Manual de Alocação.xlsx")
     fundos_sig = file_cache_signature(fundos_path)
     manual_sig = file_cache_signature(manual_path)
@@ -707,7 +746,7 @@ def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
         bases.append(bm)
     manual = pd.concat(bases, ignore_index=True, sort=False) if bases else pd.DataFrame()
 
-    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo", "manual_fonte", "manual_score", "manual_metodo", "manual_classe_operacional", "manual_subbucket_operacional"]:
+    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo", "manual_fonte", "manual_score", "manual_metodo", "manual_classe_operacional", "manual_subbucket_operacional", "manual_rebalancear", "manual_status_mapeamento", "manual_observacao_operacional"]:
         if col not in out.columns:
             out[col] = False if col == "manual_match" else (np.nan if col in ["manual_liquidez", "manual_score"] else "")
     if manual.empty:
@@ -765,9 +804,60 @@ def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
     out.loc[mask, "manual_fonte"] = recs[mask].apply(lambda r: str(r.get("Fonte", "")).strip())
     out.loc[mask, "manual_classe_operacional"] = recs[mask].apply(lambda r: str(r.get("Classe Operacional", "")).strip())
     out.loc[mask, "manual_subbucket_operacional"] = recs[mask].apply(lambda r: str(r.get("Subbucket Operacional", "")).strip())
+    out.loc[mask, "manual_rebalancear"] = recs[mask].apply(lambda r: str(r.get("Rebalancear", "")).strip())
+    out.loc[mask, "manual_status_mapeamento"] = recs[mask].apply(lambda r: str(r.get("Status Mapeamento", "")).strip())
+    out.loc[mask, "manual_observacao_operacional"] = recs[mask].apply(lambda r: str(r.get("Observacao Operacional", "")).strip())
     out.loc[mask, "manual_score"] = scores[mask]
     out.loc[mask, "manual_metodo"] = methods[mask]
     return out.drop(columns=["_fund_key_asset", "_cnpj_norm"], errors="ignore")
+
+
+@st.cache_data(show_spinner=False)
+def load_b3_master_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) -> pd.DataFrame:
+    """Lê o cadastro explícito por ticker da aba Ativos B3."""
+    path = Path(path_str)
+    cols = [
+        "ticker_norm", "b3_nome", "b3_tipo_produto", "b3_classe_operacional",
+        "b3_subbucket_operacional", "b3_estrategia", "b3_rebalancear",
+        "b3_status_mapeamento", "b3_observacao_operacional",
+    ]
+    if not path.exists():
+        return pd.DataFrame(columns=cols)
+    try:
+        xls = pd.ExcelFile(path)
+        if "Ativos B3" not in xls.sheet_names:
+            return pd.DataFrame(columns=cols)
+        raw = pd.read_excel(path, sheet_name="Ativos B3")
+        raw.columns = [str(c).strip() for c in raw.columns]
+        out = pd.DataFrame({
+            "ticker_norm": raw.get("TICKER", "").astype(str).apply(ticker_clean),
+            "b3_nome": raw.get("NOME_ATIVO", "").astype(str).str.strip(),
+            "b3_tipo_produto": raw.get("TIPO_PRODUTO", "").astype(str).str.strip(),
+            "b3_classe_operacional": raw.get("CLASSE_OPERACIONAL", "").astype(str).str.strip(),
+            "b3_subbucket_operacional": raw.get("SUBBUCKET_OPERACIONAL", "").astype(str).str.strip(),
+            "b3_estrategia": raw.get("ESTRATEGIA", "").astype(str).str.strip(),
+            "b3_rebalancear": raw.get("REBALANCEAR", "").astype(str).str.strip(),
+            "b3_status_mapeamento": raw.get("STATUS_MAPEAMENTO", "").astype(str).str.strip(),
+            "b3_observacao_operacional": raw.get("OBSERVACAO_OPERACIONAL", "").astype(str).str.strip(),
+        })
+        out = out[out["ticker_norm"].str.match(r"^[A-Z]{4}[0-9]{1,2}$", na=False)].copy()
+        return out.drop_duplicates("ticker_norm", keep="first").reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+
+def apply_b3_master_mapping(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "ticker_norm" not in out.columns:
+        out["ticker_norm"] = out.get("asset_id", "").astype(str).apply(ticker_clean)
+    path = master_products_path()
+    master = load_b3_master_cached(str(path), *file_cache_signature(path))
+    if master.empty:
+        out["b3_match"] = False
+        return out
+    out = out.merge(master, how="left", on="ticker_norm")
+    out["b3_match"] = out["b3_classe_operacional"].fillna("").astype(str).str.len().gt(0) & out["b3_subbucket_operacional"].fillna("").astype(str).str.len().gt(0)
+    return out
 
 def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
     """Identifica somente posições econômicas reais negociadas em bolsa.
@@ -796,7 +886,8 @@ def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
     )
     subscription_right = ticker.str.match(r"^[A-Z]{4}12$", na=False)
     valid_ticker = ticker.str.match(r"^[A-Z]{4}[0-9]{1,2}$", na=False)
-    return (real & ~excluded & ~subscription_right & valid_ticker).fillna(False)
+    allowed = df.get("rebalancear", pd.Series(True, index=idx)).fillna(True).astype(bool)
+    return (real & allowed & ~excluded & ~subscription_right & valid_ticker).fillna(False)
 
 
 def yahoo_symbol(ticker: str) -> str:
@@ -1193,8 +1284,8 @@ def classify_position(row: pd.Series) -> pd.Series:
     liq_days = infer_liquidity_days_from_row(row)
 
     # Exceção operacional cadastrada no próprio Nome fundos e prev.xlsx.
-    op_classe = str(row.get("manual_classe_operacional", "") or "").strip()
-    op_bucket = str(row.get("manual_subbucket_operacional", "") or "").strip()
+    op_classe = optional_text(row.get("manual_classe_operacional", ""))
+    op_bucket = optional_text(row.get("manual_subbucket_operacional", ""))
     if op_classe and op_bucket:
         return pd.Series([op_classe, op_bucket, op_bucket, "Override operacional / base de fundos"])
 
@@ -1214,6 +1305,13 @@ def classify_position(row: pd.Series) -> pd.Series:
         if corretora == "CS":
             return pd.Series(["Internacional", "Caixa Internacional", "Caixa Internacional", "Operacional"])
         return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
+
+    # Cadastro mestre por ticker prevalece sobre qualquer heurística de final 11.
+    if bool(row.get("b3_match", False)):
+        b3_classe = optional_text(row.get("b3_classe_operacional", ""))
+        b3_bucket = optional_text(row.get("b3_subbucket_operacional", ""))
+        b3_tipo = optional_text(row.get("b3_tipo_produto", ""))
+        return pd.Series([b3_classe, b3_bucket, b3_bucket, f"Cadastro Mestre B3{(' / ' + b3_tipo) if b3_tipo else ''}"])
 
     # A natureza econômica prevalece inclusive quando a corretora entrega o
     # ativo em uma aba incorreta, como debênture dentro de Renda Variável.
@@ -1372,12 +1470,25 @@ def enrich_positions_cached(df: pd.DataFrame, mapping_signature: tuple = ()) -> 
     for c in ["valor_mercado", "quantidade", "valor_original"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    df["ticker_norm"] = df.get("asset_id", "").astype(str).apply(ticker_clean)
     df = apply_manual_fund_mapping(df)
+    df = apply_b3_master_mapping(df)
+
+    # REBALANCEAR do cadastro mestre é aplicado sem apagar o comportamento padrão.
+    manual_flag = df.get("manual_rebalancear", pd.Series("", index=df.index)).astype(str)
+    b3_flag = df.get("b3_rebalancear", pd.Series("", index=df.index)).astype(str)
+    df["rebalancear"] = True
+    has_manual_flag = manual_flag.map(norm).isin(["SIM", "NAO", "NÃO", "S", "N", "TRUE", "FALSE", "1", "0"])
+    has_b3_flag = b3_flag.map(norm).isin(["SIM", "NAO", "NÃO", "S", "N", "TRUE", "FALSE", "1", "0"])
+    if has_manual_flag.any():
+        df.loc[has_manual_flag, "rebalancear"] = manual_flag.loc[has_manual_flag].map(parse_yes_no).astype(bool).to_numpy()
+    if has_b3_flag.any():
+        df.loc[has_b3_flag, "rebalancear"] = b3_flag.loc[has_b3_flag].map(parse_yes_no).astype(bool).to_numpy()
+
     cols = df.apply(classify_position, axis=1)
     cols.columns = ["classe_macro", "subclasse", "subbucket", "tratamento"]
     out = pd.concat([df, cols], axis=1)
     out = out.loc[:, ~out.columns.duplicated()].copy()
-    out["ticker_norm"] = out["asset_id"].apply(ticker_clean)
     return out
 
 
@@ -1563,7 +1674,7 @@ GROUP_DESCRIPTIONS = {
     "Fundos de infraestrutura e crédito incentivado": "Parcela destinada a instrumentos ligados a infraestrutura e crédito incentivado, com potencial de diversificação e geração de renda.",
     "Crédito privado": "Parcela destinada a títulos emitidos por empresas ou estruturas de crédito, buscando retorno adicional mediante análise de risco.",
     "Ações brasileiras": "Parcela de crescimento da carteira, composta por empresas listadas na bolsa brasileira conforme a estratégia definida pela gestão.",
-    "Fundos imobiliários": "Parcela de renda variável voltada ao mercado imobiliário, com potencial de geração de renda e diversificação setorial.",
+    "Fundos Imobiliários / FIAGROs": "Parcela composta por fundos imobiliários e FIAGROs negociados em bolsa, com potencial de geração de renda e diversificação entre imóveis, recebíveis e agronegócio.",
     "Investimentos internacionais": "Parcela voltada à diversificação geográfica e cambial, reduzindo a dependência exclusiva do mercado brasileiro.",
     "Outros instrumentos": "Parcela complementar para instrumentos específicos, quando aplicável à estratégia selecionada.",
 }
@@ -1608,7 +1719,7 @@ def friendly_group_for_weight(key: str) -> tuple[str | None, str | None]:
     if "ACOES" in k or "AÇÕES" in k or k == "ACOES" or k == "AÇÕES":
         return "Ações brasileiras", "Carteira de ações brasileiras"
     if "FII" in k:
-        return "Fundos imobiliários", "Fundos imobiliários"
+        return "Fundos Imobiliários / FIAGROs", "Fundos Imobiliários / FIAGROs"
     if k == "RENDA FIXA":
         return "Investimentos internacionais", "Renda fixa internacional"
     if k == "RENDA VARIAVEL" or k == "RENDA VARIÁVEL":
@@ -1631,7 +1742,7 @@ def component_explanation(group: str, component: str) -> str:
         return "Seleção estratégica de instrumentos ligados a infraestrutura e crédito incentivado."
     if group == "Ações brasileiras":
         return "Carteira estratégica de empresas brasileiras definida pela gestão."
-    if group == "Fundos imobiliários":
+    if group == "Fundos Imobiliários / FIAGROs":
         return "Carteira estratégica de fundos imobiliários definida pela gestão."
     if group == "Investimentos internacionais":
         return "Exposição internacional para diversificação geográfica e cambial."
@@ -1642,7 +1753,7 @@ def display_order_group(group: str) -> int:
     order = [
         "Renda fixa pós-fixada", "Renda fixa prefixada", "Renda fixa indexada à inflação",
         "Fundos de infraestrutura e crédito incentivado", "Crédito privado", "Ações brasileiras",
-        "Fundos imobiliários", "Investimentos internacionais", "Outros instrumentos"
+        "Fundos Imobiliários / FIAGROs", "Investimentos internacionais", "Outros instrumentos"
     ]
     return order.index(group) if group in order else 999
 
@@ -1679,7 +1790,7 @@ def theoretical_portfolio(p: dict[str, float], valor: float, modelo: str) -> pd.
             tickers = rv_universe(modelo).get("Ações", [])
             for t in tickers:
                 rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(tickers) if tickers else 0, "Valor": valor * w / len(tickers) if tickers else 0, "Explicação": "Empresa brasileira da carteira estratégica."})
-        elif group == "Fundos imobiliários":
+        elif group == "Fundos Imobiliários / FIAGROs":
             tickers = rv_universe(modelo).get("FIIs", [])
             for t in tickers:
                 rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(tickers) if tickers else 0, "Valor": valor * w / len(tickers) if tickers else 0, "Explicação": "Fundo imobiliário da carteira estratégica."})
@@ -1831,7 +1942,7 @@ def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente:
 
 def mapping_files_signature() -> tuple:
     """Invalida o enriquecimento quando as bases de fundos/manual forem trocadas."""
-    fp = find_file("Nome fundos e prev.xlsx")
+    fp = master_products_path()
     mp = find_file("Manual de Alocação.xlsx")
     return (*file_cache_signature(fp), *file_cache_signature(mp))
 
@@ -2053,7 +2164,7 @@ if page == "Asset Allocation":
 
             ativos_cls = pos_cliente[pos_cliente["classe_macro"].eq(classe)].copy()
             if not ativos_cls.empty:
-                cols_pos = ["subbucket", "asset_id", "asset_nome", "corretora", "valor_mercado", "quantidade", "manual_fundo", "manual_liquidez", "tratamento"]
+                cols_pos = ["subbucket", "asset_id", "asset_nome", "corretora", "valor_mercado", "quantidade", "manual_fundo", "manual_liquidez", "b3_estrategia", "rebalancear", "tratamento"]
                 ativos_cls = ativos_cls[[c for c in cols_pos if c in ativos_cls.columns]].sort_values("valor_mercado", ascending=False).head(80)
                 ativos_cls["subbucket"] = ativos_cls["subbucket"].apply(friendly_strategy_name)
                 ativos_cls = ativos_cls.rename(columns={
@@ -2065,6 +2176,8 @@ if page == "Asset Allocation":
                     "quantidade": "Quantidade",
                     "manual_fundo": "Fundo no manual",
                     "manual_liquidez": "Liquidez D+",
+                    "b3_estrategia": "Estratégia cadastrada",
+                    "rebalancear": "Rebalancear",
                     "tratamento": "Origem do match",
                 })
                 with st.expander("Ver ativos classificados nessa classe", expanded=False):
@@ -2087,7 +2200,7 @@ if page == "Asset Allocation":
         st.caption("Preços atualizados pelo Yahoo Finance, com cache de 5 minutos. Valor atual = quantidade real × preço de mercado.")
     rv_df = rv_recommendation(pos_cliente, p, pl, modelo, price_ref)
     fi_df = fiinfra_recommendation(pos_cliente, p, pl, price_ref)
-    tab_a, tab_b = st.tabs(["Ações e Fundos Imobiliários", "Infraestrutura"])
+    tab_a, tab_b = st.tabs(["Ações e Fundos Imobiliários / FIAGROs", "Infraestrutura"])
     with tab_a:
         rv_view = rv_df[rv_df["Valor Ideal"].gt(0) | rv_df["Valor Atual"].gt(0)].copy()
         rv_table = rv_view.drop(columns=["Grupo"], errors="ignore")
@@ -2163,7 +2276,7 @@ if page == "Asset Allocation":
             ((pos_cliente["classe_macro"].eq("RV Brasil")) & (~pos_cliente["ticker_norm"].isin({ticker_clean(x) for x in universo}))) |
             (pos_cliente["subbucket"].str.contains("Sem Liquidez|Não Classificado|COE|Previdência", case=False, na=False))
         ].sort_values("valor_mercado", ascending=False)
-        cols = ["corretora", "conta", "CLIENTE", "asset_id", "asset_nome", "classe_macro", "subbucket", "tratamento", "manual_fundo", "manual_classe", "manual_liquidez", "manual_metodo", "manual_score", "valor_mercado", "quantidade", "indexador", "liquidez", "vencimento"]
+        cols = ["corretora", "conta", "CLIENTE", "asset_id", "asset_nome", "classe_macro", "subbucket", "tratamento", "manual_fundo", "manual_classe", "manual_liquidez", "manual_metodo", "manual_score", "b3_match", "b3_tipo_produto", "b3_estrategia", "b3_status_mapeamento", "rebalancear", "valor_mercado", "quantidade", "indexador", "liquidez", "vencimento"]
         view = fora_df[[c for c in cols if c in fora_df.columns]].copy()
         for c in ["classe_macro", "subbucket"]:
             if c in view.columns:
@@ -2200,7 +2313,7 @@ if page == "Carteira Teórica":
 
     macro = portfolio_macro_cliente(df_teor)
     renda_fixa = macro[macro["Classe de investimento"].str.contains("Renda fixa|infraestrutura|Crédito privado", case=False, na=False)]["Valor sugerido"].sum()
-    renda_variavel = macro[macro["Classe de investimento"].str.contains("Ações|Fundos imobiliários", case=False, na=False)]["Valor sugerido"].sum()
+    renda_variavel = macro[macro["Classe de investimento"].str.contains("Ações|Fundos Imobiliários|FIAGROs", case=False, na=False)]["Valor sugerido"].sum()
     internacional = macro[macro["Classe de investimento"].str.contains("internacionais", case=False, na=False)]["Valor sugerido"].sum()
 
     k1, k2, k3, k4 = st.columns(4)
