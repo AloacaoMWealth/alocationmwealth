@@ -66,7 +66,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "5.4"
+APP_VERSION = "5.4.1"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -2388,7 +2388,7 @@ if page == "Asset Allocation":
 
     st.subheader("Abertura por estratégia")
     st.markdown('<div class="mw-muted">Abertura objetiva por classe. A diferença positiva indica valor a alocar; diferença negativa indica excesso.</div>', unsafe_allow_html=True)
-    class_order = ["RF Brasil", "RV Brasil", "Internacional", "Alternativos", "Fora da Estratégia"]
+    class_order = ["RF Brasil", "Alternativos"]
     for classe in class_order:
         class_df = sub_df[sub_df["Classe"].eq(classe)].copy()
         if class_df.empty:
