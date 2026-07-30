@@ -5,6 +5,7 @@ import math
 import re
 import unicodedata
 from datetime import datetime
+from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -66,7 +67,11 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "5.4.1"
+APP_VERSION = "6.0"
+DATA_DIR = BASE_DIR / "data"
+PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
+MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
+
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -119,6 +124,15 @@ st.markdown(
     .mw-warn { color: #ffd166; font-weight: 700; }
     .mw-bad { color: #ff6b6b; font-weight: 700; }
     .mw-line { border-top: 1px solid rgba(255,255,255,.10); margin: .9rem 0 1.1rem 0; }
+    .mw-page-intro { border: 1px solid rgba(255,255,255,.10); border-radius: 18px; padding: 20px 22px; margin: 0 0 1rem 0; background: radial-gradient(circle at 85% 15%, rgba(70,104,180,.20), transparent 34%), linear-gradient(135deg, rgba(33,50,84,.75), rgba(14,18,27,.82)); }
+    .mw-eyebrow { color: #9fb5e5; font-size: .75rem; font-weight: 800; letter-spacing: .10em; text-transform: uppercase; }
+    .mw-page-title { color: #fff; font-size: 1.65rem; font-weight: 850; margin: .20rem 0 .25rem 0; }
+    .mw-page-text { color: rgba(250,250,250,.67); max-width: 980px; font-size: .91rem; }
+    .mw-section-title { font-size: 1.13rem; font-weight: 800; margin: 1.15rem 0 .20rem 0; }
+    .mw-pill { display:inline-block; border:1px solid rgba(255,255,255,.14); border-radius:999px; padding:.25rem .55rem; margin-right:.25rem; color:rgba(255,255,255,.75); font-size:.74rem; }
+    div[data-testid="stTabs"] button { font-weight: 750; }
+    div[data-testid="stDataFrame"] { border: 1px solid rgba(255,255,255,.08); border-radius: 12px; overflow: hidden; }
+    div[data-testid="stExpander"] { border-radius: 12px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -331,6 +345,25 @@ def metric_card(label: str, value: str) -> None:
         '</div>'
     )
     st.markdown(html, unsafe_allow_html=True)
+
+
+def page_intro(eyebrow: str, title: str, text: str, pills: list[str] | None = None) -> None:
+    pill_html = "".join(f'<span class="mw-pill">{escape(str(p))}</span>' for p in (pills or []))
+    st.markdown(
+        '<div class="mw-page-intro">'
+        f'<div class="mw-eyebrow">{escape(eyebrow)}</div>'
+        f'<div class="mw-page-title">{escape(title)}</div>'
+        f'<div class="mw-page-text">{escape(text)}</div>'
+        + (f'<div style="margin-top:.65rem">{pill_html}</div>' if pill_html else '')
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def section_title(title: str, subtitle: str = "") -> None:
+    st.markdown(f'<div class="mw-section-title">{escape(title)}</div>', unsafe_allow_html=True)
+    if subtitle:
+        st.markdown(f'<div class="mw-muted">{escape(subtitle)}</div>', unsafe_allow_html=True)
 
 
 def ensure_saldo_operacional(df: pd.DataFrame) -> pd.DataFrame:
@@ -1223,6 +1256,14 @@ def basket_excel_bytes(df_orders: pd.DataFrame, cliente: str = "") -> BytesIO:
     return buf
 
 
+def dataframe_excel_bytes(df: pd.DataFrame, sheet_name: str = "Recomendações") -> BytesIO:
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name[:31])
+    buf.seek(0)
+    return buf
+
+
 def format_usd(v) -> str:
     try:
         return f"US$ {float(v):,.2f}"
@@ -2083,39 +2124,76 @@ def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente:
         raise RuntimeError("ReportLab não está instalado.")
     register_pdf_fonts()
     buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.25 * cm, leftMargin=1.25 * cm, topMargin=1.0 * cm, bottomMargin=1.0 * cm)
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.25 * cm, leftMargin=1.25 * cm, topMargin=1.55 * cm, bottomMargin=1.35 * cm)
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="MWTitle", parent=styles["Title"], fontName=PDF_FONT_BOLD, fontSize=18, alignment=TA_CENTER, leading=22, textColor=colors.HexColor("#111111")))
-    styles.add(ParagraphStyle(name="MWSub", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=9, alignment=TA_CENTER, textColor=colors.HexColor("#555555")))
-    styles.add(ParagraphStyle(name="MWSection", parent=styles["Heading2"], fontName=PDF_FONT_BOLD, fontSize=12, leading=15, textColor=colors.HexColor("#172b4d"), spaceBefore=8, spaceAfter=4))
-    styles.add(ParagraphStyle(name="MWText", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=8.2, leading=10.5, textColor=colors.HexColor("#333333")))
-    styles.add(ParagraphStyle(name="MWSmall", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=7.2, leading=9, textColor=colors.HexColor("#555555")))
+    styles.add(ParagraphStyle(name="MWCover", parent=styles["Title"], fontName=PDF_FONT_BOLD, fontSize=22, leading=26, textColor=colors.white))
+    styles.add(ParagraphStyle(name="MWCoverSub", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=10, leading=14, textColor=colors.HexColor("#dce5f8")))
+    styles.add(ParagraphStyle(name="MWSection", parent=styles["Heading2"], fontName=PDF_FONT_BOLD, fontSize=12, leading=15, textColor=colors.HexColor("#172b4d"), spaceBefore=10, spaceAfter=5))
+    styles.add(ParagraphStyle(name="MWText", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=8.5, leading=11, textColor=colors.HexColor("#333333")))
+    styles.add(ParagraphStyle(name="MWSmall", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=7.2, leading=9.2, textColor=colors.HexColor("#5b6472")))
+
+    def footer(canvas, doc_obj):
+        canvas.saveState()
+        width, height = A4
+        canvas.setStrokeColor(colors.HexColor("#dfe4ed"))
+        canvas.line(1.25 * cm, 0.95 * cm, width - 1.25 * cm, 0.95 * cm)
+        canvas.setFont(PDF_FONT_REGULAR, 7)
+        canvas.setFillColor(colors.HexColor("#667085"))
+        canvas.drawString(1.25 * cm, 0.58 * cm, "M Wealth | Estudo de Alocação")
+        canvas.drawRightString(width - 1.25 * cm, 0.58 * cm, f"Página {doc_obj.page}")
+        canvas.restoreState()
+
     story = []
     lp = logo_pdf_path()
-    if lp:
-        story.append(Image(str(lp), width=5.8 * cm, height=1.8 * cm, kind="proportional"))
-        story.append(Spacer(1, .2 * cm))
-    story.append(Paragraph("Estudo de Alocação Teórica", styles["MWTitle"]))
-    story.append(Paragraph("Simulação ilustrativa de carteira por perfil de investimento", styles["MWSub"]))
-    story.append(Spacer(1, .4 * cm))
-
-    info = [["Cliente", cliente.strip() or "Não informado"], ["Perfil utilizado", modelo], ["Valor simulado", format_brl(valor)], ["Data", datetime.now().strftime("%d/%m/%Y")]]
-    story.append(Table(info, colWidths=[4.0 * cm, 12.5 * cm], style=[
-        ("GRID", (0,0), (-1,-1), .25, colors.HexColor("#d9dde5")),
-        ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#eef1f6")),
-        ("FONTNAME", (0,0), (0,-1), PDF_FONT_BOLD),
-        ("FONTSIZE", (0,0), (-1,-1), 8),
-        ("VALIGN", (0,0), (-1,-1), "TOP"),
+    logo_flow = Image(str(lp), width=4.7 * cm, height=1.45 * cm, kind="proportional") if lp else Spacer(1, .1 * cm)
+    cover_left = [
+        logo_flow,
+        Spacer(1, .35 * cm),
+        Paragraph("Estudo de Alocação", styles["MWCover"]),
+        Paragraph("Carteira teórica personalizada e organizada por objetivos, liquidez e classes de investimento.", styles["MWCoverSub"]),
+        Spacer(1, .5 * cm),
+        Paragraph(f"<b>Cliente:</b> {escape(cliente.strip() or 'Não informado')}<br/><b>Perfil:</b> {escape(modelo)}<br/><b>Valor analisado:</b> {escape(format_brl(valor))}<br/><b>Data:</b> {datetime.now().strftime('%d/%m/%Y')}", styles["MWCoverSub"]),
+    ]
+    banner = Table([[cover_left]], colWidths=[17.1 * cm], rowHeights=[6.7 * cm])
+    banner.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#172b4d")),
+        ("BOX", (0,0), (-1,-1), 0, colors.HexColor("#172b4d")),
+        ("LEFTPADDING", (0,0), (-1,-1), 20), ("RIGHTPADDING", (0,0), (-1,-1), 20),
+        ("TOPPADDING", (0,0), (-1,-1), 18), ("BOTTOMPADDING", (0,0), (-1,-1), 18),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
     ]))
-    story.append(Spacer(1, .35 * cm))
+    story.append(banner)
+    story.append(Spacer(1, .45 * cm))
 
     macro = portfolio_macro_cliente(df_teor)
-    data = [["Classe de investimento", "Peso sugerido", "Valor sugerido"]]
+    cards = []
+    for _, r in macro.head(4).iterrows():
+        cards.append([pdf_paragraph(r["Classe de investimento"], font_size=7.2, bold=True, color="#172b4d"), pdf_paragraph(fmt_pct(r["Peso sugerido"]), font_size=11, bold=True, color="#172b4d", align=1), pdf_paragraph(format_brl(r["Valor sugerido"]), font_size=7.5, color="#475467", align=1)])
+    if cards:
+        card_tbl = Table(cards, colWidths=[7.2 * cm, 3.1 * cm, 5.0 * cm])
+        card_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#f4f6fa")),
+            ("GRID", (0,0), (-1,-1), .25, colors.HexColor("#dfe4ed")),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("LEFTPADDING", (0,0), (-1,-1), 8), ("RIGHTPADDING", (0,0), (-1,-1), 8),
+            ("TOPPADDING", (0,0), (-1,-1), 7), ("BOTTOMPADDING", (0,0), (-1,-1), 7),
+        ]))
+        story.append(card_tbl)
+
+    story.append(Paragraph("Resumo executivo", styles["MWSection"]))
+    story.append(Paragraph(
+        "A carteira apresentada traduz o perfil selecionado em uma distribuição objetiva entre liquidez, proteção, geração de renda, crescimento e diversificação internacional. Os valores são indicativos e devem ser confirmados conforme disponibilidade dos produtos, condições de mercado e particularidades do investidor.",
+        styles["MWText"],
+    ))
+
+    hierarchy = theoretical_hierarchy_table({r["Composição"]: r["Peso"] for _, r in df_teor[df_teor["Nível"].eq("Composição")].iterrows()}, valor)
+    # Usa diretamente a estrutura do dataframe teórico quando as chaves amigáveis não são as do modelo.
+    data = [["Estratégia", "Peso sugerido", "Valor sugerido"]]
     for _, r in macro.iterrows():
         data.append([r["Classe de investimento"], fmt_pct(r["Peso sugerido"]), format_brl(r["Valor sugerido"])])
-    story.append(Paragraph("Resumo da alocação sugerida", styles["MWSection"]))
-    story.append(table_for_pdf(data, [8.2, 3.0, 4.0], font_size=7.8, numeric_cols=[1, 2]))
-    story.append(Spacer(1, .25 * cm))
+    story.append(Paragraph("Alocação recomendada", styles["MWSection"]))
+    story.append(table_for_pdf(data, [8.4, 3.0, 4.2], font_size=7.8, numeric_cols=[1,2]))
+    story.append(PageBreak())
 
     for group in macro["Classe de investimento"].tolist():
         comp = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Composição"))].copy()
@@ -2123,30 +2201,25 @@ def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente:
         story.append(Paragraph(group, styles["MWSection"]))
         story.append(Paragraph(GROUP_DESCRIPTIONS.get(group, "Componente da estratégia de alocação."), styles["MWText"]))
         story.append(Spacer(1, .12 * cm))
-        data = [["Composição", "Peso", "Valor", "Explicação"]]
+        data = [["Estratégia", "Peso", "Valor", "Objetivo"]]
         for _, r in comp.iterrows():
             data.append([r["Composição"], fmt_pct(r["Peso"]), format_brl(r["Valor"]), r["Explicação"]])
-        story.append(table_for_pdf(data, [4.5, 2.1, 3.1, 7.0], font_size=6.9, numeric_cols=[1, 2]))
+        story.append(table_for_pdf(data, [4.5, 2.0, 3.0, 7.2], font_size=6.9, numeric_cols=[1,2]))
         if not ativos.empty:
-            story.append(Spacer(1, .12 * cm))
-            for component_name, ativos_component in ativos.groupby("Composição", sort=False):
-                if len(ativos["Composição"].dropna().unique()) > 1:
-                    story.append(Paragraph(f"Ativos — {component_name}", styles["MWSmall"]))
-                    story.append(Spacer(1, .06 * cm))
-                data = [["Ativo", "Peso", "Valor"]]
-                for _, r in ativos_component.iterrows():
-                    data.append([r["Ativo"], fmt_pct(r["Peso"]), format_brl(r["Valor"])])
-                story.append(table_for_pdf(data, [6.0, 3.0, 4.0], font_size=7.0, numeric_cols=[1, 2]))
-                story.append(Spacer(1, .10 * cm))
-        story.append(Spacer(1, .18 * cm))
+            story.append(Spacer(1, .16 * cm))
+            data = [["Produto / ativo", "Estratégia", "Peso", "Valor"]]
+            for _, r in ativos.iterrows():
+                data.append([r["Ativo"], r["Composição"], fmt_pct(r["Peso"]), format_brl(r["Valor"])])
+            story.append(table_for_pdf(data, [3.2, 6.1, 2.2, 3.5], font_size=7.0, numeric_cols=[2,3]))
+        story.append(Spacer(1, .25 * cm))
 
-    story.append(Spacer(1, .3 * cm))
+    story.append(Paragraph("Premissas e observações", styles["MWSection"]))
+    story.append(Paragraph("A indicação de produtos depende do cadastro mestre, da corretora disponível, dos limites de concentração, dos aportes mínimos e das restrições específicas do cliente. Produtos podem ser substituídos por equivalentes do mesmo objetivo sem alterar a arquitetura estratégica.", styles["MWText"]))
     story.append(Paragraph("Disclaimer", styles["MWSection"]))
-    story.append(Paragraph("Este material é meramente informativo e apresenta uma simulação baseada em parâmetros internos de alocação. A composição final da carteira depende da análise individual do investidor, de sua política de suitability, disponibilidade de produtos, condições de mercado e avaliação da equipe responsável. Rentabilidade passada não representa garantia de rentabilidade futura.", styles["MWSmall"]))
-    doc.build(story)
+    story.append(Paragraph("Este material é meramente informativo e não constitui promessa de rentabilidade. A composição final depende da análise individual do investidor, suitability, disponibilidade de produtos e condições de mercado. Rentabilidade passada não representa garantia de rentabilidade futura.", styles["MWSmall"]))
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
     buf.seek(0)
     return buf
-
 
 def mapping_files_signature() -> tuple:
     """Invalida o cache quando o arquivo escolhido ou seu conteúdo mudar."""
@@ -2160,11 +2233,318 @@ def mapping_files_signature() -> tuple:
     )
 
 
+
+
+# =============================================================================
+# Pool de produtos, restrições e governança de modelos
+# =============================================================================
+@st.cache_data(show_spinner=False)
+def load_product_pool_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) -> pd.DataFrame:
+    path = Path(path_str)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        xls = pd.ExcelFile(path)
+        if "Pool de Produtos" not in xls.sheet_names:
+            return pd.DataFrame()
+        df = pd.read_excel(path, sheet_name="Pool de Produtos")
+        df.columns = [str(c).strip() for c in df.columns]
+        expected = [
+            "ID_PRODUTO", "NOME_PRODUTO", "TIPO_IDENTIFICADOR", "IDENTIFICADOR",
+            "CLASSE", "SUBBUCKET", "POOL", "CORRETORA", "PERFIL_MINIMO",
+            "PRIORIDADE_COMPRA", "PESO_NO_POOL", "APORTE_MINIMO",
+            "LIMITE_POR_CLIENTE", "ELEGIVEL_COMPRA", "APENAS_MANUTENCAO",
+            "PRODUTO_FECHADO", "INDEXADOR", "GESTORA_EMISSOR", "SETOR", "OBSERVACAO",
+        ]
+        df = canonicalize_master_columns(df, expected)
+        for c in expected:
+            if c not in df.columns:
+                df[c] = np.nan if c in {"PRIORIDADE_COMPRA", "PESO_NO_POOL", "APORTE_MINIMO", "LIMITE_POR_CLIENTE"} else ""
+        df = df[df["NOME_PRODUTO"].fillna("").astype(str).str.strip().ne("")].copy()
+        df["IDENTIFICADOR_NORM"] = df["IDENTIFICADOR"].fillna("").astype(str).map(norm)
+        df["PRIORIDADE_COMPRA"] = pd.to_numeric(df["PRIORIDADE_COMPRA"], errors="coerce").fillna(999)
+        df["PESO_NO_POOL"] = pd.to_numeric(df["PESO_NO_POOL"], errors="coerce").fillna(0.0)
+        df["APORTE_MINIMO"] = pd.to_numeric(df["APORTE_MINIMO"], errors="coerce").fillna(0.0)
+        df["LIMITE_POR_CLIENTE"] = pd.to_numeric(df["LIMITE_POR_CLIENTE"], errors="coerce").fillna(1.0)
+        return df.reset_index(drop=True)
+    except Exception as exc:
+        st.session_state["pool_load_error"] = str(exc)
+        return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def load_client_restrictions_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) -> pd.DataFrame:
+    path = Path(path_str)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        xls = pd.ExcelFile(path)
+        if "Restrições por Cliente" not in xls.sheet_names:
+            return pd.DataFrame()
+        df = pd.read_excel(path, sheet_name="Restrições por Cliente")
+        df.columns = [str(c).strip() for c in df.columns]
+        expected = ["GRUPO_CLIENTE", "NIVEL", "TIPO_REGRA", "IDENTIFICADOR", "ACAO", "LIMITE_PERCENTUAL", "SUBSTITUTO", "ATIVO", "DATA_INICIO", "DATA_FIM", "MOTIVO", "STATUS"]
+        df = canonicalize_master_columns(df, expected)
+        for c in expected:
+            if c not in df.columns:
+                df[c] = ""
+        df = df[df["GRUPO_CLIENTE"].fillna("").astype(str).str.strip().ne("")].copy()
+        df["LIMITE_PERCENTUAL"] = pd.to_numeric(df["LIMITE_PERCENTUAL"], errors="coerce")
+        return df.reset_index(drop=True)
+    except Exception as exc:
+        st.session_state["restriction_load_error"] = str(exc)
+        return pd.DataFrame()
+
+
+def applicable_restrictions(restrictions: pd.DataFrame, grupo: str, cliente: str = "", conta: str = "") -> pd.DataFrame:
+    if restrictions.empty:
+        return restrictions.copy()
+    now = pd.Timestamp.now().normalize()
+    out = restrictions.copy()
+    out = out[~out["STATUS"].fillna("").astype(str).map(norm).isin({"INATIVA", "EXEMPLO"})]
+    target = out["GRUPO_CLIENTE"].fillna("").astype(str).map(norm)
+    level = out["NIVEL"].fillna("").astype(str).map(norm)
+    match = (
+        (level.eq("GRUPO") & target.eq(norm(grupo))) |
+        (level.eq("CLIENTE") & target.eq(norm(cliente))) |
+        (level.eq("CONTA") & target.eq(norm(conta)))
+    )
+    out = out[match].copy()
+    if "DATA_INICIO" in out.columns:
+        ini = pd.to_datetime(out["DATA_INICIO"], errors="coerce")
+        out = out[ini.isna() | ini.le(now)]
+    if "DATA_FIM" in out.columns:
+        fim = pd.to_datetime(out["DATA_FIM"], errors="coerce")
+        out = out[fim.isna() | fim.ge(now)]
+    return out
+
+
+def restriction_action_for_product(row: pd.Series, restrictions: pd.DataFrame) -> tuple[str, str, float | None]:
+    if restrictions.empty:
+        return "", "", None
+    candidates = {
+        "TICKER": norm(row.get("IDENTIFICADOR", row.get("Ativo", ""))),
+        "CNPJ": only_digits_str(row.get("IDENTIFICADOR", "")),
+        "PRODUTO": norm(row.get("NOME_PRODUTO", row.get("Ativo", ""))),
+        "SETOR": norm(row.get("SETOR", "")),
+        "GESTORA": norm(row.get("GESTORA_EMISSOR", "")),
+        "SUBBUCKET": norm(row.get("SUBBUCKET", row.get("Grupo", ""))),
+    }
+    for _, rr in restrictions.iterrows():
+        tipo = norm(rr.get("TIPO_REGRA", ""))
+        ident = norm(rr.get("IDENTIFICADOR", ""))
+        if tipo == "CNPJ":
+            matched = only_digits_str(rr.get("IDENTIFICADOR", "")) == candidates["CNPJ"] and bool(candidates["CNPJ"])
+        else:
+            matched = ident and ident == candidates.get(tipo, "")
+        if matched:
+            limite = pd.to_numeric(rr.get("LIMITE_PERCENTUAL", np.nan), errors="coerce")
+            return str(rr.get("ACAO", "")).strip(), str(rr.get("MOTIVO", "")).strip(), (float(limite) if pd.notna(limite) else None)
+    return "", "", None
+
+
+def apply_restrictions_to_market_orders(df_orders: pd.DataFrame, restrictions: pd.DataFrame) -> pd.DataFrame:
+    if df_orders.empty or restrictions.empty:
+        return df_orders
+    out = df_orders.copy()
+    out["Restrição"] = ""
+    out["Motivo da restrição"] = ""
+    for idx, row in out.iterrows():
+        probe = pd.Series({"IDENTIFICADOR": row.get("Ativo", ""), "NOME_PRODUTO": row.get("Ativo", ""), "SUBBUCKET": row.get("Grupo", "")})
+        action, reason, _ = restriction_action_for_product(probe, restrictions)
+        action_n = norm(action)
+        if action_n == "NAO COMPRAR" and pd.to_numeric(row.get("Qtd a operar", 0), errors="coerce") > 0:
+            out.at[idx, "Qtd a operar"] = 0
+            out.at[idx, "Diferença"] = 0.0
+        elif action_n in {"NAO VENDER", "MANTER POSICAO"} and pd.to_numeric(row.get("Qtd a operar", 0), errors="coerce") < 0:
+            out.at[idx, "Qtd a operar"] = 0
+            out.at[idx, "Diferença"] = 0.0
+        if action:
+            out.at[idx, "Restrição"] = action
+            out.at[idx, "Motivo da restrição"] = reason
+    return out
+
+
+def recommend_exact_products(
+    sub_df: pd.DataFrame,
+    pos_cliente: pd.DataFrame,
+    pool: pd.DataFrame,
+    restrictions: pd.DataFrame,
+    pl_base: float,
+    corretoras_cliente: set[str],
+) -> pd.DataFrame:
+    columns = ["Estratégia", "Produto recomendado", "Identificador", "Corretora", "Valor recomendado", "Prioridade", "Peso no pool", "Limite", "Restrição", "Observação"]
+    if pool.empty or sub_df.empty or pl_base <= 0:
+        return pd.DataFrame(columns=columns)
+    current_by_identifier = pos_cliente.groupby(pos_cliente.get("ticker_norm", pd.Series("", index=pos_cliente.index)), dropna=False)["valor_mercado"].sum().to_dict()
+    rows = []
+    needs = sub_df[(pd.to_numeric(sub_df["Diferença"], errors="coerce") > 300) & (~sub_df["Classe"].isin(["Caixa", "Fora da Estratégia"]))]
+    for _, need in needs.iterrows():
+        candidates = pool[
+            pool["CLASSE"].fillna("").astype(str).map(norm).eq(norm(need["Classe"])) &
+            pool["SUBBUCKET"].fillna("").astype(str).map(norm).eq(norm(need["Subbucket"]))
+        ].copy()
+        if candidates.empty:
+            continue
+        candidates = candidates[
+            candidates["ELEGIVEL_COMPRA"].map(lambda x: parse_yes_no(x, False)) &
+            ~candidates["APENAS_MANUTENCAO"].map(lambda x: parse_yes_no(x, False)) &
+            ~candidates["PRODUTO_FECHADO"].map(lambda x: parse_yes_no(x, False))
+        ].copy()
+        if corretoras_cliente:
+            candidates = candidates[candidates["CORRETORA"].fillna("Todas").astype(str).map(norm).isin({"TODAS", "", *{norm(x) for x in corretoras_cliente}})]
+        if candidates.empty:
+            continue
+        allowed = []
+        for idx, prod in candidates.iterrows():
+            action, reason, limit_override = restriction_action_for_product(prod, restrictions)
+            if norm(action) in {"NAO COMPRAR", "EXCLUIR DA CARTEIRA"}:
+                continue
+            prod = prod.copy()
+            prod["_restriction"] = action
+            prod["_reason"] = reason
+            prod["_limit_override"] = limit_override
+            allowed.append(prod)
+        if not allowed:
+            continue
+        candidates = pd.DataFrame(allowed).sort_values(["PRIORIDADE_COMPRA", "PESO_NO_POOL"], ascending=[True, False])
+        weights = pd.to_numeric(candidates["PESO_NO_POOL"], errors="coerce").clip(lower=0)
+        if weights.sum() <= 0:
+            weights = pd.Series(1.0, index=candidates.index)
+        weights = weights / weights.sum()
+        remaining = float(need["Diferença"])
+        allocations = []
+        for idx, prod in candidates.iterrows():
+            target = float(need["Diferença"]) * float(weights.loc[idx])
+            min_aporte = float(pd.to_numeric(prod.get("APORTE_MINIMO", 0), errors="coerce") or 0)
+            limit_pct = prod.get("_limit_override")
+            if limit_pct is None:
+                limit_pct = float(pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", 1), errors="coerce") or 1)
+            identifier = norm(prod.get("IDENTIFICADOR", ""))
+            current = float(current_by_identifier.get(identifier, 0.0))
+            capacity = max(0.0, pl_base * float(limit_pct) - current)
+            amount = min(target, capacity, remaining)
+            if amount >= min_aporte and amount > 0:
+                allocations.append((idx, amount))
+                remaining -= amount
+        if remaining > 300:
+            for idx, prod in candidates.iterrows():
+                if remaining <= 300:
+                    break
+                if any(i == idx for i, _ in allocations):
+                    continue
+                min_aporte = float(pd.to_numeric(prod.get("APORTE_MINIMO", 0), errors="coerce") or 0)
+                limit_pct = prod.get("_limit_override")
+                if limit_pct is None:
+                    limit_pct = float(pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", 1), errors="coerce") or 1)
+                capacity = max(0.0, pl_base * float(limit_pct))
+                amount = min(remaining, capacity)
+                if amount >= min_aporte:
+                    allocations.append((idx, amount))
+                    remaining -= amount
+        for idx, amount in allocations:
+            prod = candidates.loc[idx]
+            rows.append([
+                friendly_strategy_name(str(need["Subbucket"])), str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]),
+                str(prod["CORRETORA"]), float(amount), int(prod["PRIORIDADE_COMPRA"]), float(weights.loc[idx]),
+                float(prod.get("_limit_override") if prod.get("_limit_override") is not None else prod["LIMITE_POR_CLIENTE"]),
+                str(prod.get("_restriction", "")), str(prod.get("OBSERVACAO", "")),
+            ])
+    return pd.DataFrame(rows, columns=columns)
+
+
+def load_published_models(base: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    merged = deepcopy(base)
+    if not PUBLISHED_MODELS_PATH.exists():
+        return merged
+    try:
+        payload = json.loads(PUBLISHED_MODELS_PATH.read_text(encoding="utf-8"))
+        for name, info in payload.get("models", {}).items():
+            weights = info.get("weights", {}) if isinstance(info, dict) else {}
+            if weights:
+                merged[str(name)] = {str(k): float(v) for k, v in weights.items()}
+    except Exception:
+        pass
+    return merged
+
+
+def publish_model(name: str, weights: dict[str, float], author: str, reason: str) -> tuple[bool, str]:
+    total = sum(float(v or 0) for k, v in weights.items() if norm(k) not in PARENT_WEIGHT_KEYS)
+    if abs(total - 1.0) > 0.0005:
+        return False, f"A soma dos componentes precisa ser 100,00%. Soma atual: {fmt_pct(total)}"
+    DATA_DIR.mkdir(exist_ok=True)
+    payload = {"models": {}}
+    if PUBLISHED_MODELS_PATH.exists():
+        try:
+            payload = json.loads(PUBLISHED_MODELS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {"models": {}}
+    current = payload.setdefault("models", {}).get(name, {})
+    version = int(current.get("version", 0)) + 1
+    record = {
+        "version": version,
+        "published_at": datetime.now().isoformat(timespec="seconds"),
+        "published_by": author.strip() or "Não informado",
+        "reason": reason.strip(),
+        "weights": {str(k): float(v) for k, v in weights.items()},
+    }
+    payload["models"][name] = record
+    PUBLISHED_MODELS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    with MODEL_HISTORY_PATH.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"model": name, **record}, ensure_ascii=False) + "\n")
+    return True, f"Modelo publicado na versão {version}."
+
+
+def model_history() -> pd.DataFrame:
+    if not MODEL_HISTORY_PATH.exists():
+        return pd.DataFrame()
+    rows = []
+    try:
+        for line in MODEL_HISTORY_PATH.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rec = json.loads(line)
+                rows.append({k: v for k, v in rec.items() if k != "weights"})
+    except Exception:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+def theoretical_hierarchy_table(p: dict[str, float], valor: float) -> pd.DataFrame:
+    sub = subbucket_targets_from_model(p, valor).rename(columns={"Peso Ideal": "Peso sugerido", "Valor Ideal": "Valor sugerido"})
+    rows = []
+    groups = [
+        ("RENDA FIXA NO BRASIL", ["RF Brasil"]),
+        ("RENDA VARIÁVEL NO BRASIL", ["RV Brasil"]),
+        ("INVESTIMENTOS INTERNACIONAIS", ["Internacional"]),
+        ("ALTERNATIVOS", ["Alternativos"]),
+    ]
+    for label, classes in groups:
+        part = sub[sub["Classe"].isin(classes)]
+        if part.empty:
+            continue
+        rows.append({"Estratégia": label, "Peso sugerido": float(part["Peso sugerido"].sum()), "Valor sugerido": float(part["Valor sugerido"].sum()), "_header": True})
+        for _, r in part.iterrows():
+            rows.append({"Estratégia": "  " + friendly_strategy_name(r["Subbucket"]), "Peso sugerido": float(r["Peso sugerido"]), "Valor sugerido": float(r["Valor sugerido"]), "_header": False})
+    rows.append({"Estratégia": "TOTAL", "Peso sugerido": sum(x["Peso sugerido"] for x in rows if not x["_header"]), "Valor sugerido": sum(x["Valor sugerido"] for x in rows if not x["_header"]), "_header": True})
+    return pd.DataFrame(rows)
+
+
+def theoretical_hierarchy_styler(df: pd.DataFrame):
+    view = df[["Estratégia", "Peso sugerido", "Valor sugerido"]].copy()
+    header_mask = df["_header"].astype(bool).tolist()
+    def row_style(row):
+        if header_mask[row.name]:
+            return ["background-color: rgba(93,115,170,.34); font-weight:900; border-top:1px solid rgba(255,255,255,.22);" for _ in row]
+        return ["" for _ in row]
+    return view.style.format({"Peso sugerido": fmt_pct, "Valor sugerido": format_brl}).apply(row_style, axis=1)
+
+
 # =============================================================================
 # Layout global
 # =============================================================================
 pesos_path = find_file("Pesos-alocacao.xlsx")
-pesos = load_pesos_xlsx(str(pesos_path), *file_cache_signature(pesos_path))
+pesos_base = load_pesos_xlsx(str(pesos_path), *file_cache_signature(pesos_path))
+pesos = load_published_models(pesos_base)
 df_contas = load_contas_cached()
 
 lp = logo_path()
@@ -2181,7 +2561,7 @@ else:
 
 page = st.segmented_control(
     "",
-    ["Controle de Saldo", "Asset Allocation", "Carteira Teórica"],
+    ["Controle de Saldo", "Asset Allocation", "Carteira Teórica", "Gestão"],
     default="Controle de Saldo",
 )
 if page is None:
@@ -2193,7 +2573,7 @@ st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
 # Página 1 - Controle de saldo
 # =============================================================================
 if page == "Controle de Saldo":
-    st.header("Controle de Saldo para Operação")
+    page_intro("Rotina operacional", "Controle de saldo", "Identifique rapidamente contas com caixa disponível, saldos negativos e prioridades de aplicação.", ["Atualização controlada", "Filtro por saldo", "Visão por conta"])
 
     c0, c1, c2 = st.columns([1.0, 1.35, 4.2], vertical_alignment="bottom")
     force = c0.button("Atualizar base", type="primary", use_container_width=True)
@@ -2247,9 +2627,12 @@ if page == "Controle de Saldo":
 # Página 2 - Asset Allocation
 # =============================================================================
 if page == "Asset Allocation":
-    st.header("Asset Allocation - Cliente / Grupo Familiar")
+    page_intro("Diagnóstico e execução", "Asset Allocation", "Compare a carteira atual com o modelo, entenda os desvios e transforme necessidades por estratégia em recomendações executáveis.", ["Atual x ideal", "Produtos exatos", "Restrições", "Qualidade da base"])
     cadastro_ativo = master_products_path()
     st.caption(f"Cadastro mestre carregado: **{cadastro_ativo.name}**")
+    cadastro_sig = file_cache_signature(cadastro_ativo)
+    pool_produtos = load_product_pool_cached(str(cadastro_ativo), *cadastro_sig)
+    restricoes_base = load_client_restrictions_cached(str(cadastro_ativo), *cadastro_sig)
     try:
         _b3_health = load_b3_master_cached(str(cadastro_ativo), *file_cache_signature(cadastro_ativo))
         _fund_health = load_fundos_prev_cached(str(cadastro_ativo), *file_cache_signature(cadastro_ativo))
@@ -2306,9 +2689,14 @@ if page == "Asset Allocation":
         modelo = st.selectbox("Modelo de alocação", modelos, index=idx)
 
     pos_cliente = df_latest[df_latest["GRUPO GERAL"].astype(str).eq(str(grupo_sel))].copy()
+    conta_real = ""
+    cliente_referencia = ""
     if conta_sel != "Todas as contas":
         conta_real = conta_sel.split("(")[-1].strip(")")
         pos_cliente = pos_cliente[pos_cliente["conta"].astype(str).eq(conta_real)].copy()
+    if not pos_cliente.empty and "CLIENTE" in pos_cliente.columns:
+        cliente_referencia = str(pos_cliente["CLIENTE"].dropna().astype(str).iloc[0]) if pos_cliente["CLIENTE"].notna().any() else ""
+    restricoes_cliente = applicable_restrictions(restricoes_base, str(grupo_sel), cliente_referencia, conta_real)
 
     p = pesos[modelo]
 
@@ -2333,6 +2721,8 @@ if page == "Asset Allocation":
     pl = pl_patrimonial if base_mode == "PL patrimonial total" else pl_investivel
     pos_calculo = pos_cliente if base_mode == "PL patrimonial total" else pos_cliente.loc[investible_mask].copy()
     macro_df, sub_df = portfolio_tables(pos_calculo, p, pl)
+    corretoras_cliente = set(pos_cliente.get("corretora", pd.Series(dtype=str)).dropna().astype(str).unique())
+    recomendacoes_produtos = recommend_exact_products(sub_df, pos_cliente, pool_produtos, restricoes_cliente, pl, corretoras_cliente)
 
     pl_xp = float(pos_cliente.loc[pos_cliente["corretora"].eq("XP"), "valor_mercado"].sum())
     pl_btg = float(pos_cliente.loc[pos_cliente["corretora"].eq("BTG"), "valor_mercado"].sum())
@@ -2440,7 +2830,29 @@ if page == "Asset Allocation":
                         hide_index=True,
                     )
 
-    st.subheader("Produtos de bolsa e infraestrutura")
+    section_title("Produtos recomendados para execução", "O motor cruza a necessidade por estratégia com o pool elegível, corretora, mínimos, limites e restrições do cliente.")
+    if recomendacoes_produtos.empty:
+        st.info("Nenhum produto exato foi sugerido. Preencha o Pool de Produtos para os subbuckets que precisam de compra.")
+    else:
+        st.dataframe(
+            money_color_styler(
+                recomendacoes_produtos,
+                money_cols=["Valor recomendado"],
+                pct_cols=["Peso no pool", "Limite"],
+                diff_cols=["Valor recomendado"],
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.download_button(
+            "Baixar recomendação de produtos",
+            data=dataframe_excel_bytes(recomendacoes_produtos, "Produtos recomendados"),
+            file_name=f"produtos_recomendados_{str(grupo_sel).replace(' ', '_').lower()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+    section_title("Produtos de bolsa e infraestrutura", "Ativos listados utilizam preço de mercado quando permitido pelo cadastro mestre.")
     if not HAS_YFINANCE:
         st.error("A biblioteca yfinance não está instalada. Instale-a para habilitar preços atuais e cálculos de ordens.")
     missing_quotes = sorted(set(quote_tickers) - set(price_ref))
@@ -2451,8 +2863,8 @@ if page == "Asset Allocation":
         )
     else:
         st.caption("Preços atualizados pelo Yahoo Finance, com cache de 5 minutos. Valor atual = quantidade real × preço de mercado.")
-    rv_df = rv_recommendation(pos_cliente, p, pl, modelo, price_ref)
-    fi_df = fiinfra_recommendation(pos_cliente, p, pl, price_ref)
+    rv_df = apply_restrictions_to_market_orders(rv_recommendation(pos_cliente, p, pl_base if "pl_base" in locals() else pl, modelo, price_ref), restricoes_cliente)
+    fi_df = apply_restrictions_to_market_orders(fiinfra_recommendation(pos_cliente, p, pl_base if "pl_base" in locals() else pl, price_ref), restricoes_cliente)
     tab_a, tab_b = st.tabs(["Ações e Fundos Imobiliários / FIAGROs", "Infraestrutura"])
     with tab_a:
         rv_view = rv_df[rv_df["Valor Ideal"].gt(0) | rv_df["Valor Atual"].gt(0)].copy()
@@ -2541,11 +2953,7 @@ if page == "Asset Allocation":
 # Página 3 - Carteira Teórica
 # =============================================================================
 if page == "Carteira Teórica":
-    st.header("Carteira Teórica - Simulador para Cliente")
-    st.markdown(
-        '<div class="mw-muted">Visualização da carteira modelo de forma simples, organizada e apresentável para o cliente final.</div>',
-        unsafe_allow_html=True,
-    )
+    page_intro("Simulação para cliente", "Carteira teórica", "Visualize a carteira modelo com a mesma lógica do Asset Allocation e gere um material institucional pronto para apresentação.", ["Tabela hierárquica", "Produtos da estratégia", "PDF institucional"])
     modelos = list(pesos.keys())
     if not modelos:
         st.error("Pesos-alocacao.xlsx não foi encontrado ou não pôde ser lido.")
@@ -2581,11 +2989,13 @@ if page == "Carteira Teórica":
         fig.update_layout(height=330, margin=dict(l=8, r=8, t=45, b=8), legend_title_text="")
         st.plotly_chart(fig, use_container_width=True)
     with col_b:
-        st.subheader("Resumo da alocação")
+        section_title("Resumo da alocação", "Mesma hierarquia utilizada no Asset Allocation.")
+        teor_hier = theoretical_hierarchy_table(pesos[modelo], valor)
         st.dataframe(
-            prepare_display(macro, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
+            theoretical_hierarchy_styler(teor_hier),
             use_container_width=True,
             hide_index=True,
+            height=min(760, max(390, 36 * (len(teor_hier) + 1))),
         )
 
     st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
@@ -2636,6 +3046,87 @@ if page == "Carteira Teórica":
         )
     except Exception as e:
         st.info(f"PDF indisponível: {e}")
+
+
+# =============================================================================
+# Página 4 - Gestão
+# =============================================================================
+if page == "Gestão":
+    page_intro("Governança", "Gestão de modelos e regras", "Edite pesos em ambiente controlado, publique versões e acompanhe a qualidade do cadastro operacional.", ["Validação de 100%", "Publicação versionada", "Histórico", "Cadastros auxiliares"])
+    cadastro_ativo = master_products_path()
+    sig = file_cache_signature(cadastro_ativo)
+    pool_admin = load_product_pool_cached(str(cadastro_ativo), *sig)
+    restrictions_admin = load_client_restrictions_cached(str(cadastro_ativo), *sig)
+    b3_admin = load_b3_master_cached(str(cadastro_ativo), *sig)
+    fundos_admin = load_fundos_prev_cached(str(cadastro_ativo), *sig)
+
+    k1, k2, k3, k4 = st.columns(4)
+    with k1: metric_card("Produtos no pool", str(len(pool_admin)))
+    with k2: metric_card("Restrições cadastradas", str(len(restrictions_admin)))
+    with k3: metric_card("Ativos B3", str(len(b3_admin)))
+    with k4: metric_card("Fundos e previdência", str(len(fundos_admin)))
+
+    tab_modelos, tab_regras, tab_historico = st.tabs(["Modelos de alocação", "Cadastros e regras", "Histórico de publicação"])
+    with tab_modelos:
+        section_title("Editar modelo", "As alterações só entram nos balanceamentos depois da publicação.")
+        nomes_modelos = list(pesos.keys())
+        modelo_admin = st.selectbox("Modelo", nomes_modelos, key="modelo_admin")
+        base_weights = pesos[modelo_admin]
+        editable = pd.DataFrame([{"Componente": k, "Peso": float(v)} for k, v in base_weights.items() if norm(k) not in PARENT_WEIGHT_KEYS])
+        edited = st.data_editor(
+            editable,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["Componente"],
+            column_config={"Peso": st.column_config.NumberColumn("Peso", min_value=0.0, max_value=1.0, step=0.005, format="%.4f")},
+            key=f"editor_{modelo_admin}",
+        )
+        total = float(pd.to_numeric(edited["Peso"], errors="coerce").fillna(0).sum())
+        c1, c2, c3 = st.columns([1, 1, 2])
+        with c1: metric_card("Soma do modelo", fmt_pct(total))
+        with c2: metric_card("Status", "Válido" if abs(total - 1) <= .0005 else "Revisar")
+        with c3:
+            if abs(total - 1) > .0005:
+                st.warning("A soma precisa ser exatamente 100% para publicar.")
+            else:
+                st.success("Modelo validado e pronto para publicação.")
+        author = st.text_input("Responsável pela publicação")
+        reason = st.text_area("Motivo da alteração", placeholder="Ex.: atualização do comitê de alocação de julho/2026")
+        if st.button("Publicar nova versão", type="primary", use_container_width=True, disabled=abs(total - 1) > .0005):
+            new_weights = {str(r["Componente"]): float(r["Peso"]) for _, r in edited.iterrows()}
+            ok, message = publish_model(modelo_admin, new_weights, author, reason)
+            if ok:
+                st.success(message + " Recarregue a página para aplicar a nova versão em todas as abas.")
+                st.cache_data.clear()
+            else:
+                st.error(message)
+
+    with tab_regras:
+        section_title("Resumo das regras operacionais", f"Arquivo ativo: {cadastro_ativo.name}")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Pool de Produtos**")
+            if pool_admin.empty:
+                st.info("A aba Pool de Produtos está vazia ou ausente.")
+            else:
+                cols = [c for c in ["NOME_PRODUTO", "IDENTIFICADOR", "SUBBUCKET", "CORRETORA", "PRIORIDADE_COMPRA", "PESO_NO_POOL", "ELEGIVEL_COMPRA", "PRODUTO_FECHADO"] if c in pool_admin.columns]
+                st.dataframe(prepare_display(pool_admin[cols], pct_cols=["PESO_NO_POOL"], max_rows=300), use_container_width=True, hide_index=True)
+        with c2:
+            st.markdown("**Restrições por Cliente**")
+            if restrictions_admin.empty:
+                st.info("A aba Restrições por Cliente está vazia ou ausente.")
+            else:
+                cols = [c for c in ["GRUPO_CLIENTE", "NIVEL", "TIPO_REGRA", "IDENTIFICADOR", "ACAO", "LIMITE_PERCENTUAL", "MOTIVO", "STATUS"] if c in restrictions_admin.columns]
+                st.dataframe(prepare_display(restrictions_admin[cols], pct_cols=["LIMITE_PERCENTUAL"], max_rows=300), use_container_width=True, hide_index=True)
+        st.caption("A edição detalhada continua no Cadastro Mestre. Esta tela serve para validação operacional e conferência antes do uso.")
+
+    with tab_historico:
+        section_title("Histórico de versões publicadas")
+        hist = model_history()
+        if hist.empty:
+            st.info("Nenhuma versão foi publicada pelo app até o momento.")
+        else:
+            st.dataframe(hist.sort_values("published_at", ascending=False), use_container_width=True, hide_index=True)
 
 
 
