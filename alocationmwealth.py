@@ -66,7 +66,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "5.0"
+APP_VERSION = "5.1"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -821,8 +821,9 @@ def load_b3_master_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) 
     path = Path(path_str)
     cols = [
         "ticker_norm", "b3_nome", "b3_tipo_produto", "b3_classe_operacional",
-        "b3_subbucket_operacional", "b3_estrategia", "b3_rebalancear",
-        "b3_status_mapeamento", "b3_observacao_operacional",
+        "b3_subbucket_operacional", "b3_estrategia", "b3_liquidez_operacional",
+        "b3_fonte_preco", "b3_rebalancear", "b3_status_mapeamento",
+        "b3_observacao_operacional",
     ]
     if not path.exists():
         return pd.DataFrame(columns=cols)
@@ -839,6 +840,8 @@ def load_b3_master_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) 
             "b3_classe_operacional": raw.get("CLASSE_OPERACIONAL", "").astype(str).str.strip(),
             "b3_subbucket_operacional": raw.get("SUBBUCKET_OPERACIONAL", "").astype(str).str.strip(),
             "b3_estrategia": raw.get("ESTRATEGIA", "").astype(str).str.strip(),
+            "b3_liquidez_operacional": pd.to_numeric(raw.get("LIQUIDEZ_OPERACIONAL", np.nan), errors="coerce"),
+            "b3_fonte_preco": raw.get("FONTE_PRECO", "").astype(str).str.strip(),
             "b3_rebalancear": raw.get("REBALANCEAR", "").astype(str).str.strip(),
             "b3_status_mapeamento": raw.get("STATUS_MAPEAMENTO", "").astype(str).str.strip(),
             "b3_observacao_operacional": raw.get("OBSERVACAO_OPERACIONAL", "").astype(str).str.strip(),
@@ -861,6 +864,32 @@ def apply_b3_master_mapping(df: pd.DataFrame) -> pd.DataFrame:
     out = out.merge(master, how="left", on="ticker_norm")
     out["b3_match"] = out["b3_classe_operacional"].fillna("").astype(str).str.len().gt(0) & out["b3_subbucket_operacional"].fillna("").astype(str).str.len().gt(0)
     return out
+
+
+
+def price_source_for_row(row: pd.Series) -> str:
+    """Resolve a fonte de preço operacional do cadastro mestre.
+
+    Valores aceitos:
+    - Yahoo Finance: ativo listado, remarcado por quantidade × cotação;
+    - Valor da posição: mantém o valor informado pela corretora;
+    - Não precificar: não tenta buscar cotação e não gera ordem por quantidade.
+
+    Quando o campo estiver vazio, preserva o comportamento legado: fundos
+    cetipados usam o valor da posição e os demais ativos elegíveis usam Yahoo.
+    """
+    fonte = norm(row.get("b3_fonte_preco", ""))
+    tipo = norm(row.get("b3_tipo_produto", ""))
+    if fonte in {"VALOR DA POSICAO", "VALOR POSICAO", "POSICAO", "CORRETORA"}:
+        return "Valor da posição"
+    if fonte in {"NAO PRECIFICAR", "SEM PRECIFICACAO", "NAO PRECIFICA"}:
+        return "Não precificar"
+    if fonte in {"YAHOO", "YAHOO FINANCE", "MERCADO"}:
+        return "Yahoo Finance"
+    if "CETIPADO" in tipo:
+        return "Valor da posição"
+    return "Yahoo Finance"
+
 
 def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
     """Identifica somente posições econômicas reais negociadas em bolsa.
@@ -1235,6 +1264,8 @@ def infer_liquidity_days_from_row(row: pd.Series) -> float:
     A base curada deve prevalecer sobre campos brutos da corretora, pois contempla
     exceções operacionais como fundos cetipados sem liquidez efetiva.
     """
+    b3_operacional = pd.to_numeric(row.get("b3_liquidez_operacional", np.nan), errors="coerce")
+    if pd.notna(b3_operacional): return float(b3_operacional)
     override = liquidity_override_for_row(row)
     if pd.notna(override): return float(override)
     manual = pd.to_numeric(row.get("manual_liquidez", np.nan), errors="coerce")
@@ -1480,6 +1511,10 @@ def enrich_positions_cached(df: pd.DataFrame, mapping_signature: tuple = ()) -> 
     df["ticker_norm"] = df.get("asset_id", "").astype(str).apply(ticker_clean)
     df = apply_manual_fund_mapping(df)
     df = apply_b3_master_mapping(df)
+
+    # Consolida os campos operacionais para auditoria e uso no motor.
+    df["fonte_preco"] = df.apply(price_source_for_row, axis=1)
+    df["liquidez_operacional_aplicada"] = df.apply(infer_liquidity_days_from_row, axis=1)
 
     # REBALANCEAR do cadastro mestre é aplicado sem apagar o comportamento padrão.
     manual_flag = df.get("manual_rebalancear", pd.Series("", index=df.index)).astype(str)
@@ -2172,7 +2207,7 @@ if page == "Asset Allocation":
 
             ativos_cls = pos_cliente[pos_cliente["classe_macro"].eq(classe)].copy()
             if not ativos_cls.empty:
-                cols_pos = ["subbucket", "asset_id", "asset_nome", "corretora", "valor_mercado", "quantidade", "manual_fundo", "manual_liquidez", "b3_estrategia", "rebalancear", "tratamento"]
+                cols_pos = ["subbucket", "asset_id", "asset_nome", "corretora", "valor_mercado", "quantidade", "manual_fundo", "manual_liquidez", "b3_estrategia", "b3_liquidez_operacional", "fonte_preco", "rebalancear", "tratamento"]
                 ativos_cls = ativos_cls[[c for c in cols_pos if c in ativos_cls.columns]].sort_values("valor_mercado", ascending=False).head(80)
                 ativos_cls["subbucket"] = ativos_cls["subbucket"].apply(friendly_strategy_name)
                 ativos_cls = ativos_cls.rename(columns={
@@ -2185,6 +2220,8 @@ if page == "Asset Allocation":
                     "manual_fundo": "Fundo no manual",
                     "manual_liquidez": "Liquidez D+",
                     "b3_estrategia": "Estratégia cadastrada",
+                    "b3_liquidez_operacional": "Liquidez operacional B3",
+                    "fonte_preco": "Fonte de preço",
                     "rebalancear": "Rebalancear",
                     "tratamento": "Origem do match",
                 })
@@ -2284,7 +2321,7 @@ if page == "Asset Allocation":
             ((pos_cliente["classe_macro"].eq("RV Brasil")) & (~pos_cliente["ticker_norm"].isin({ticker_clean(x) for x in universo}))) |
             (pos_cliente["subbucket"].str.contains("Sem Liquidez|Não Classificado|COE|Previdência", case=False, na=False))
         ].sort_values("valor_mercado", ascending=False)
-        cols = ["corretora", "conta", "CLIENTE", "asset_id", "asset_nome", "classe_macro", "subbucket", "tratamento", "manual_fundo", "manual_classe", "manual_liquidez", "manual_metodo", "manual_score", "b3_match", "b3_tipo_produto", "b3_estrategia", "b3_status_mapeamento", "rebalancear", "valor_mercado", "quantidade", "indexador", "liquidez", "vencimento"]
+        cols = ["corretora", "conta", "CLIENTE", "asset_id", "asset_nome", "classe_macro", "subbucket", "tratamento", "manual_fundo", "manual_classe", "manual_liquidez", "manual_metodo", "manual_score", "b3_match", "b3_tipo_produto", "b3_estrategia", "b3_liquidez_operacional", "b3_fonte_preco", "fonte_preco", "liquidez_operacional_aplicada", "b3_status_mapeamento", "rebalancear", "valor_mercado", "quantidade", "indexador", "liquidez", "vencimento"]
         view = fora_df[[c for c in cols if c in fora_df.columns]].copy()
         for c in ["classe_macro", "subbucket"]:
             if c in view.columns:
