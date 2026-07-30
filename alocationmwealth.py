@@ -66,7 +66,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "5.3"
+APP_VERSION = "5.4"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -244,6 +244,17 @@ def norm(x) -> str:
 
 def ticker_clean(x) -> str:
     return norm(x).replace(" ", "").replace(".", "")
+
+
+def is_valid_b3_ticker(value) -> bool:
+    """Aceita tickers B3 alfanuméricos como B3SA3, BPAC11 e NTNS11."""
+    tk = ticker_clean(value)
+    return bool(
+        5 <= len(tk) <= 7
+        and re.fullmatch(r"[A-Z0-9]+", tk)
+        and re.search(r"[A-Z]", tk)
+        and re.search(r"\d", tk)
+    )
 
 
 def expand_fund_compounds(text: str) -> str:
@@ -924,7 +935,7 @@ def load_b3_master_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) 
             "b3_status_mapeamento": raw.get("STATUS_MAPEAMENTO", "").astype(str).str.strip(),
             "b3_observacao_operacional": raw.get("OBSERVACAO_OPERACIONAL", "").astype(str).str.strip(),
         })
-        out = out[out["ticker_norm"].str.match(r"^[A-Z]{4}[0-9]{1,2}$", na=False)].copy()
+        out = out[out["ticker_norm"].apply(is_valid_b3_ticker)].copy()
         return out.drop_duplicates("ticker_norm", keep="first").reset_index(drop=True)
     except Exception:
         return pd.DataFrame(columns=cols)
@@ -970,11 +981,12 @@ def price_source_for_row(row: pd.Series) -> str:
 
 
 def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
-    """Identifica somente posições econômicas reais negociadas em bolsa.
+    """Posições listadas elegíveis para marcação a mercado pelo Yahoo.
 
-    Exclui proventos, eventos, custódia remunerada, opções e direitos de
-    subscrição. Essas linhas não representam a quantidade efetivamente usada
-    no rebalanceamento e podem duplicar ou distorcer a posição.
+    A posição continua sendo contabilizada mesmo quando REBALANCEAR=Não. Esse
+    campo controla somente a geração da ordem. FONTE_PRECO controla a marcação.
+    Custódia remunerada só entra na quantidade quando não existir a mesma ação
+    na posição principal da mesma conta, evitando dupla contagem.
     """
     if df.empty:
         return pd.Series(dtype=bool, index=df.index)
@@ -983,25 +995,53 @@ def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
     mercado = df.get("mercado", pd.Series("", index=idx)).astype(str).map(norm)
     ticker = df.get("ticker_norm", pd.Series("", index=idx)).astype(str)
     classe = df.get("subbucket", pd.Series("", index=idx)).astype(str)
+    fonte = df.get("fonte_preco", pd.Series("Yahoo Finance", index=idx)).astype(str).map(norm)
+    tipo_cadastro = df.get("b3_tipo_produto", pd.Series("", index=idx)).astype(str).map(norm)
 
     real = (
-        asset_tipo.isin(["ACOES", "FUNDOS IMOBILIARIOS"])
-        | mercado.isin(["RENDA VARIAVEL", "RENDA VARIÁVEL"])
+        asset_tipo.isin(["ACOES", "FUNDOS IMOBILIARIOS", "CUSTODIA REMUNERADA"])
+        | mercado.isin(["RENDA VARIAVEL", "RENDA VARIÁVEL", "CUSTODIA REMUNERADA"])
         | classe.isin(["Ações", "FIIs", "FiInfra Pós", "FiInfra Inflação", "FiInfra e Cetipados"])
     )
     excluded = asset_tipo.str.contains(
-        "PROVENT|CUSTODIA REMUNERADA|PROVISAO|EVENTO|OPCOES|OPÇÕES|OPCAO|OPÇÃO",
-        regex=True,
-        na=False,
+        "PROVENT|PROVISAO|EVENTO|OPCOES|OPÇÕES|OPCAO|OPÇÃO", regex=True, na=False
     )
-    subscription_right = ticker.str.match(r"^[A-Z]{4}12$", na=False)
-    valid_ticker = ticker.str.match(r"^[A-Z]{4}[0-9]{1,2}$", na=False)
-    allowed = df.get("rebalancear", pd.Series(True, index=idx)).fillna(True).astype(bool)
-    tipo_cadastro = df.get("b3_tipo_produto", pd.Series("", index=idx)).astype(str).map(norm)
-    # Códigos cetipados podem terminar em 11, mas não são negociados em bolsa e
-    # não possuem cotação pública no Yahoo Finance. Mantêm o valor da corretora.
+    subscription_right = ticker.str.match(r"^[A-Z0-9]+12$", na=False)
+    valid_ticker = ticker.apply(is_valid_b3_ticker)
     non_listed = tipo_cadastro.str.contains("CETIPADO|NAO LISTADO|NÃO LISTADO", regex=True, na=False)
-    return (real & allowed & ~non_listed & ~excluded & ~subscription_right & valid_ticker).fillna(False)
+    yahoo = fonte.eq("YAHOO FINANCE")
+
+    # Evita somar a aba de aluguel quando a mesma conta/ticker já aparece na
+    # posição principal. Quando só existe na custódia remunerada, ela é usada.
+    custody = asset_tipo.eq("CUSTODIA REMUNERADA") | mercado.eq("CUSTODIA REMUNERADA")
+    if custody.any() and "conta" in df.columns:
+        keys = pd.DataFrame({
+            "conta": df.get("conta", pd.Series("", index=idx)).astype(str),
+            "ticker": ticker,
+            "custody": custody,
+        }, index=idx)
+        regular_keys = set(map(tuple, keys.loc[~keys["custody"], ["conta", "ticker"]].values.tolist()))
+        duplicated_custody = pd.Series(
+            [(c, t) in regular_keys for c, t in keys[["conta", "ticker"]].itertuples(index=False, name=None)],
+            index=idx,
+        ) & custody
+    else:
+        duplicated_custody = pd.Series(False, index=idx)
+
+    return (real & yahoo & ~non_listed & ~excluded & ~subscription_right & valid_ticker & ~duplicated_custody).fillna(False)
+
+
+def ticker_rows(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """Retorna linhas econômicas do ticker, incluindo Valor da posição."""
+    tk = ticker_clean(ticker)
+    if df.empty or not tk:
+        return df.iloc[0:0].copy()
+    rows = df[df.get("ticker_norm", pd.Series("", index=df.index)).astype(str).eq(tk)].copy()
+    if rows.empty:
+        return rows
+    asset_tipo = rows.get("asset_tipo", pd.Series("", index=rows.index)).astype(str).map(norm)
+    rows = rows[~asset_tipo.str.contains("PROVENT|PROVISAO|EVENTO|OPCOES|OPÇÕES|OPCAO|OPÇÃO", regex=True, na=False)]
+    return rows
 
 
 def yahoo_symbol(ticker: str) -> str:
@@ -1110,13 +1150,35 @@ def mark_exchange_positions_to_market(df: pd.DataFrame, prices: dict[str, float]
 
 
 def current_exchange_position(pos_cliente: pd.DataFrame, ticker: str, price_ref: dict[str, float]) -> tuple[float, float, float]:
-    """Retorna preço, quantidade real e valor atual remarcado de um ticker."""
+    """Preço, quantidade e valor atual respeitando a fonte de preço cadastrada."""
     tk = ticker_clean(ticker)
-    mask = pos_cliente.get("ticker_norm", pd.Series("", index=pos_cliente.index)).eq(tk) & exchange_position_mask(pos_cliente)
-    qtd = float(pd.to_numeric(pos_cliente.loc[mask, "quantidade"], errors="coerce").fillna(0.0).sum())
+    rows = ticker_rows(pos_cliente, tk)
+    if rows.empty:
+        return float(price_ref.get(tk, np.nan)), 0.0, 0.0
+
+    fonte = rows.get("fonte_preco", pd.Series("Yahoo Finance", index=rows.index)).astype(str).map(norm)
+    yahoo_rows = rows[fonte.eq("YAHOO FINANCE")].copy()
+    position_rows = rows[~fonte.eq("YAHOO FINANCE")].copy()
     preco = float(price_ref.get(tk, np.nan))
-    atual = qtd * preco if pd.notna(preco) and preco > 0 else np.nan
-    return preco, qtd, atual
+    qtd = float(pd.to_numeric(yahoo_rows.get("quantidade", 0.0), errors="coerce").fillna(0.0).sum()) if not yahoo_rows.empty else 0.0
+    atual_yahoo = qtd * preco if pd.notna(preco) and preco > 0 else (float(pd.to_numeric(yahoo_rows.get("valor_mercado", 0.0), errors="coerce").fillna(0.0).sum()) if not yahoo_rows.empty else 0.0)
+    atual_posicao = float(pd.to_numeric(position_rows.get("valor_mercado", 0.0), errors="coerce").fillna(0.0).sum()) if not position_rows.empty else 0.0
+    return preco, qtd, atual_yahoo + atual_posicao
+
+
+def ticker_can_rebalance(pos_cliente: pd.DataFrame, ticker: str) -> bool:
+    rows = ticker_rows(pos_cliente, ticker)
+    if rows.empty:
+        return True
+    return bool(rows.get("rebalancear", pd.Series(True, index=rows.index)).fillna(True).astype(bool).all())
+
+
+def ticker_uses_quantity(pos_cliente: pd.DataFrame, ticker: str) -> bool:
+    rows = ticker_rows(pos_cliente, ticker)
+    if rows.empty:
+        return True
+    fonte = rows.get("fonte_preco", pd.Series("Yahoo Finance", index=rows.index)).astype(str).map(norm)
+    return bool(fonte.eq("YAHOO FINANCE").all())
 
 
 def operation_text(qtd_diff, diff_value) -> str:
@@ -1229,7 +1291,7 @@ def prepare_display(
 
 
 @st.cache_data(show_spinner=False)
-def load_pesos_xlsx(path_str: str) -> dict[str, dict[str, float]]:
+def load_pesos_xlsx(path_str: str, mtime_ns: int = 0, file_size: int = 0) -> dict[str, dict[str, float]]:
     path = Path(path_str)
     if not path.exists():
         return {}
@@ -1397,7 +1459,18 @@ def classify_position(row: pd.Series) -> pd.Series:
     pre_by_report = (has_pre or (indexador_blank and has_taxa_nominal and ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF", "DEB", "CRI", "CRA", "CDCA")))))
     liq_days = infer_liquidity_days_from_row(row)
 
-    # Exceção operacional cadastrada no próprio Nome fundos e prev.xlsx.
+    # Cadastro explícito por ticker tem prioridade sobre a base de fundos.
+    # Isso evita conflito quando um código listado também aparece em cadastros
+    # legados de fundos.
+    if bool(row.get("b3_match", False)):
+        b3_classe = optional_text(row.get("b3_classe_operacional", ""))
+        b3_bucket = optional_text(row.get("b3_subbucket_operacional", ""))
+        b3_tipo = optional_text(row.get("b3_tipo_produto", ""))
+        if b3_bucket == "FiInfra e Cetipados" and asset_id in FI_INFRA_TICKERS:
+            b3_bucket = "FiInfra Pós" if asset_id in FI_INFRA_POS_TICKERS else "FiInfra Inflação"
+        return pd.Series([b3_classe, b3_bucket, b3_bucket, f"Cadastro Mestre B3{(' / ' + b3_tipo) if b3_tipo else ''}"])
+
+    # Exceção operacional por CNPJ/nome na base de fundos.
     op_classe = optional_text(row.get("manual_classe_operacional", ""))
     op_bucket = optional_text(row.get("manual_subbucket_operacional", ""))
     if op_classe and op_bucket:
@@ -1420,17 +1493,6 @@ def classify_position(row: pd.Series) -> pd.Series:
             return pd.Series(["Internacional", "Caixa Internacional", "Caixa Internacional", "Operacional"])
         return pd.Series(["Caixa", "Saldo em Conta", "Saldo em Conta", "Operacional"])
 
-    # Cadastro mestre por ticker prevalece sobre qualquer heurística de final 11.
-    if bool(row.get("b3_match", False)):
-        b3_classe = optional_text(row.get("b3_classe_operacional", ""))
-        b3_bucket = optional_text(row.get("b3_subbucket_operacional", ""))
-        b3_tipo = optional_text(row.get("b3_tipo_produto", ""))
-        # Compatibilidade com cadastros preenchidos antes da separação dos dois
-        # indexadores de FI-Infra. O ticker define o bucket correto.
-        if b3_bucket == "FiInfra e Cetipados" and asset_id in FI_INFRA_TICKERS:
-            b3_bucket = "FiInfra Pós" if asset_id in FI_INFRA_POS_TICKERS else "FiInfra Inflação"
-        return pd.Series([b3_classe, b3_bucket, b3_bucket, f"Cadastro Mestre B3{(' / ' + b3_tipo) if b3_tipo else ''}"])
-
     # A natureza econômica prevalece inclusive quando a corretora entrega o
     # ativo em uma aba incorreta, como debênture dentro de Renda Variável.
     early_is_fiinfra = asset_id in FI_INFRA_TICKERS
@@ -1444,6 +1506,12 @@ def classify_position(row: pd.Series) -> pd.Series:
     # FIAGROs/FIPs como KNCA11, RZAG11 e VIGT11 caíam em fundo sem liquidez.
     if asset_tipo in ["FUNDOS IMOBILIARIOS", "FUNDOS IMOBILIÁRIOS"] or mercado in ["FUNDOS IMOBILIARIOS", "FUNDOS IMOBILIÁRIOS"]:
         return pd.Series(["RV Brasil", "FIIs", "FIIs", "Aba de Fundos Imobiliários / fallback"])
+
+    # Ações emprestadas via "Custódia Remunerada" (XP) continuam sendo a mesma ação
+    # do cliente, só que remunerada; a aba não é reconhecida por nenhuma outra regra.
+    if asset_tipo == "CUSTODIA REMUNERADA" or mercado == "CUSTODIA REMUNERADA":
+        if re.fullmatch(r"[A-Z0-9]{4}\d{1,2}", asset_id):
+            return pd.Series(["RV Brasil", "Ações", "Ações", "Custódia remunerada / aluguel de ações"])
 
     early_looks_like_fund = has_any_phrase(text, ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS", "FIF"])
     early_credit_title = bool(re.search(r"\b(DEB|DEBENTURE|DEBENTURES|CRI|CRA|CDCA)\b", text))
@@ -1727,19 +1795,25 @@ def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float,
         alvo_ativo = alvo_total / len(tickers) if tickers else 0
         for t in tickers:
             preco, qtd, atual = current_exchange_position(pos_cliente, t, price_ref)
-            qtd_ideal = round(alvo_ativo / preco) if pd.notna(preco) and preco > 0 else np.nan
-            qtd_operar = qtd_ideal - qtd if pd.notna(qtd_ideal) else np.nan
+            can_rebalance = ticker_can_rebalance(pos_cliente, t)
+            uses_qty = ticker_uses_quantity(pos_cliente, t)
+            qtd_ideal = round(alvo_ativo / preco) if uses_qty and pd.notna(preco) and preco > 0 else np.nan
+            qtd_operar = (qtd_ideal - qtd) if can_rebalance and pd.notna(qtd_ideal) else (0.0 if not can_rebalance else np.nan)
             diff = alvo_ativo - atual if pd.notna(atual) else np.nan
             rows.append([t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar, bucket])
 
-    bolsa = pos_cliente[pos_cliente["subbucket"].isin(["Ações", "FIIs"]) & exchange_position_mask(pos_cliente)].copy()
+    bolsa_mask = pos_cliente["subbucket"].isin(["Ações", "FIIs"]) & pos_cliente["ticker_norm"].apply(is_valid_b3_ticker)
+    nonlisted_mask = pos_cliente.get("b3_tipo_produto", pd.Series("", index=pos_cliente.index)).astype(str).map(norm).str.contains("CETIPADO|NAO LISTADO|NÃO LISTADO", regex=True, na=False)
+    bolsa = pos_cliente[bolsa_mask & ~nonlisted_mask].copy()
     for tk, grp in bolsa.groupby("ticker_norm"):
         if not tk or tk in model_tickers:
             continue
         ativo = str(grp["asset_id"].iloc[0])
         preco, qtd, atual = current_exchange_position(pos_cliente, tk, price_ref)
+        can_rebalance = ticker_can_rebalance(pos_cliente, tk)
+        uses_qty = ticker_uses_quantity(pos_cliente, tk)
         diff = -atual if pd.notna(atual) else np.nan
-        qtd_operar = -qtd if pd.notna(preco) and preco > 0 else np.nan
+        qtd_operar = (-qtd if uses_qty and pd.notna(preco) and preco > 0 else np.nan) if can_rebalance else 0.0
         rows.append([ativo, preco, qtd, atual, 0, 0.0, diff, qtd_operar, "Fora do modelo"])
     return pd.DataFrame(rows, columns=["Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Grupo"])
 
@@ -1759,19 +1833,25 @@ def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: f
         alvo_ativo = alvo_total / len(tickers)
         for t in tickers:
             preco, qtd, atual = current_exchange_position(pos_cliente, t, price_ref)
-            qtd_ideal = round(alvo_ativo / preco) if pd.notna(preco) and preco > 0 else np.nan
-            qtd_operar = qtd_ideal - qtd if pd.notna(qtd_ideal) else np.nan
+            can_rebalance = ticker_can_rebalance(pos_cliente, t)
+            uses_qty = ticker_uses_quantity(pos_cliente, t)
+            qtd_ideal = round(alvo_ativo / preco) if uses_qty and pd.notna(preco) and preco > 0 else np.nan
+            qtd_operar = (qtd_ideal - qtd) if can_rebalance and pd.notna(qtd_ideal) else (0.0 if not can_rebalance else np.nan)
             diff = alvo_ativo - atual if pd.notna(atual) else np.nan
             rows.append([t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar, nome])
 
-    held = pos_cliente[pos_cliente["subbucket"].isin(["FiInfra Pós", "FiInfra Inflação", "FiInfra e Cetipados"]) & exchange_position_mask(pos_cliente)].copy()
+    held_mask = pos_cliente["subbucket"].isin(["FiInfra Pós", "FiInfra Inflação", "FiInfra e Cetipados"]) & pos_cliente["ticker_norm"].apply(is_valid_b3_ticker)
+    nonlisted_mask = pos_cliente.get("b3_tipo_produto", pd.Series("", index=pos_cliente.index)).astype(str).map(norm).str.contains("CETIPADO|NAO LISTADO|NÃO LISTADO", regex=True, na=False)
+    held = pos_cliente[held_mask & ~nonlisted_mask].copy()
     for tk, grp in held.groupby("ticker_norm"):
         if not tk or tk in model_tickers:
             continue
         ativo = str(grp["asset_id"].iloc[0])
         preco, qtd, atual = current_exchange_position(pos_cliente, tk, price_ref)
+        can_rebalance = ticker_can_rebalance(pos_cliente, tk)
+        uses_qty = ticker_uses_quantity(pos_cliente, tk)
         diff = -atual if pd.notna(atual) else np.nan
-        qtd_operar = -qtd if pd.notna(preco) and preco > 0 else np.nan
+        qtd_operar = (-qtd if uses_qty and pd.notna(preco) and preco > 0 else np.nan) if can_rebalance else 0.0
         rows.append([ativo, preco, qtd, atual, 0, 0.0, diff, qtd_operar, "Fora do modelo"])
     return pd.DataFrame(rows, columns=["Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Grupo"])
 
@@ -2083,7 +2163,8 @@ def mapping_files_signature() -> tuple:
 # =============================================================================
 # Layout global
 # =============================================================================
-pesos = load_pesos_xlsx(str(find_file("Pesos-alocacao.xlsx")))
+pesos_path = find_file("Pesos-alocacao.xlsx")
+pesos = load_pesos_xlsx(str(pesos_path), *file_cache_signature(pesos_path))
 df_contas = load_contas_cached()
 
 lp = logo_path()
@@ -2170,6 +2251,28 @@ if page == "Asset Allocation":
     cadastro_ativo = master_products_path()
     st.caption(f"Cadastro mestre carregado: **{cadastro_ativo.name}**")
     try:
+        _b3_health = load_b3_master_cached(str(cadastro_ativo), *file_cache_signature(cadastro_ativo))
+        _fund_health = load_fundos_prev_cached(str(cadastro_ativo), *file_cache_signature(cadastro_ativo))
+        with st.expander("Saúde das bases e cadastros", expanded=False):
+            h1, h2, h3, h4 = st.columns(4)
+            h1.metric("Ativos B3 cadastrados", len(_b3_health))
+            h2.metric("Fundos/Previdência", len(_fund_health))
+            h3.metric("Arquivo mestre", cadastro_ativo.name)
+            h4.metric("Pesos carregados", len(pesos))
+            invalid_models = []
+            for _model_name, _model_weights in pesos.items():
+                _total_children = sum(float(v or 0) for k, v in _model_weights.items() if norm(k) not in PARENT_WEIGHT_KEYS)
+                if abs(_total_children - 1.0) > 0.015:
+                    invalid_models.append(f"{_model_name}: {_total_children:.2%}")
+            if invalid_models:
+                st.warning("Modelos cuja soma dos componentes difere de 100%: " + ", ".join(invalid_models))
+            if _b3_health.empty:
+                st.error("A aba Ativos B3 não foi carregada ou não possui registros válidos.")
+            if _fund_health.empty:
+                st.warning("As abas de Fundos/Previdência estão vazias ou não puderam ser lidas.")
+    except Exception as _health_error:
+        st.error(f"Falha ao validar o cadastro mestre: {_health_error}")
+    try:
         df_latest, meta, mode = load_positions_cached(force_rebuild=False)
         df_latest = enrich_positions_cached(df_latest, mapping_files_signature())
         df_latest = ensure_saldo_operacional(df_latest)
@@ -2209,6 +2312,13 @@ if page == "Asset Allocation":
 
     p = pesos[modelo]
 
+    base_mode = st.radio(
+        "Base usada no balanceamento",
+        ["PL patrimonial total", "PL investível"],
+        horizontal=True,
+        help="PL investível exclui caixa, proventos e ativos fora da estratégia do denominador dos alvos.",
+    )
+
     # Marca somente as posições reais de bolsa pelo preço atual do Yahoo Finance.
     # O PL, os valores atuais e as diferenças passam a refletir quantidade × cotação atual.
     held_tickers = pos_cliente.loc[exchange_position_mask(pos_cliente), "ticker_norm"].dropna().astype(str).tolist()
@@ -2217,8 +2327,12 @@ if page == "Asset Allocation":
     price_ref = load_yfinance_prices(quote_tickers)
     pos_cliente = mark_exchange_positions_to_market(pos_cliente, price_ref)
 
-    pl = float(pos_cliente["valor_mercado"].sum())
-    macro_df, sub_df = portfolio_tables(pos_cliente, p, pl)
+    pl_patrimonial = float(pos_cliente["valor_mercado"].sum())
+    investible_mask = ~pos_cliente["classe_macro"].isin(["Caixa", "Fora da Estratégia"])
+    pl_investivel = float(pos_cliente.loc[investible_mask, "valor_mercado"].sum())
+    pl = pl_patrimonial if base_mode == "PL patrimonial total" else pl_investivel
+    pos_calculo = pos_cliente if base_mode == "PL patrimonial total" else pos_cliente.loc[investible_mask].copy()
+    macro_df, sub_df = portfolio_tables(pos_calculo, p, pl)
 
     pl_xp = float(pos_cliente.loc[pos_cliente["corretora"].eq("XP"), "valor_mercado"].sum())
     pl_btg = float(pos_cliente.loc[pos_cliente["corretora"].eq("BTG"), "valor_mercado"].sum())
@@ -2227,16 +2341,18 @@ if page == "Asset Allocation":
     manual_matches = int(pos_cliente.get("manual_match", pd.Series([False] * len(pos_cliente), index=pos_cliente.index)).fillna(False).astype(bool).sum())
     nao_class = float(pos_cliente.loc[pos_cliente["subbucket"].eq("Outros / Não Classificado"), "valor_mercado"].sum())
 
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
     with k1:
-        metric_card("PL Total", format_brl(pl))
+        metric_card("PL Patrimonial", format_brl(pl_patrimonial))
     with k2:
-        metric_card("XP", format_brl(pl_xp))
+        metric_card("Base de Alocação", format_brl(pl))
     with k3:
-        metric_card("BTG", format_brl(pl_btg))
+        metric_card("XP", format_brl(pl_xp))
     with k4:
-        metric_card("CS", format_brl(pl_cs))
+        metric_card("BTG", format_brl(pl_btg))
     with k5:
+        metric_card("CS", format_brl(pl_cs))
+    with k6:
         metric_card("Saldo", format_brl(saldo))
     st.caption(f"Perfil: **{perfil_cliente}** • Modelo aplicado: **{modelo}** • Fundos reconhecidos pelo manual: **{manual_matches}** • Não classificado: **{format_brl(nao_class)}**")
 
@@ -2272,7 +2388,7 @@ if page == "Asset Allocation":
 
     st.subheader("Abertura por estratégia")
     st.markdown('<div class="mw-muted">Abertura objetiva por classe. A diferença positiva indica valor a alocar; diferença negativa indica excesso.</div>', unsafe_allow_html=True)
-    class_order = ["RF Brasil", "Alternativos"]
+    class_order = ["RF Brasil", "RV Brasil", "Internacional", "Alternativos", "Fora da Estratégia"]
     for classe in class_order:
         class_df = sub_df[sub_df["Classe"].eq(classe)].copy()
         if class_df.empty:
