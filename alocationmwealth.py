@@ -66,7 +66,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "4.9"
+APP_VERSION = "5.0"
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
 ACOES_SEM_RENDA = ["AXIA3", "EQTL3", "SBSP3", "ITUB3", "BPAC11", "PSSA3", "PRIO3", "VALE3", "WEGE3", "RENT3"]
@@ -97,7 +97,7 @@ ATIVOS_ESTRATEGICOS_B3 = {
 # Mantém ordem operacional das tabelas.
 SUBBUCKET_ORDER = [
     "Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias",
-    "FiInfra e Cetipados", "Pré - Bancário", "Pré - Tesouro", "Inflação - Bancário", "Inflação - Tesouro", "Crédito Privado",
+    "FiInfra Pós", "FiInfra Inflação", "Pré - Bancário", "Pré - Tesouro", "Inflação - Bancário", "Inflação - Tesouro", "Crédito Privado",
     "Ações", "FIIs", "Bitcoin", "Ouro", "Renda Fixa Internacional", "Renda Variável Internacional", "Caixa Internacional",
     "Saldo em Conta", "Proventos a Receber", "Direitos de Subscrição", "Fundos de Investimento / Sem Liquidez Mapeada", "Previdência", "COE / Estruturados", "Outros / Não Classificado",
 ]
@@ -307,6 +307,8 @@ def friendly_strategy_name(x: str) -> str:
         "Pós - 31 a 180 dias": "Pós-fixado — resgate entre 31 e 180 dias",
         "Pós - 181 a 360 dias": "Pós-fixado — resgate entre 181 e 360 dias",
         "Pós - 361+ dias": "Pós-fixado — resgate acima de 361 dias",
+        "FiInfra Pós": "FI-Infra pós-fixado",
+        "FiInfra Inflação": "FI-Infra indexado à inflação",
         "FiInfra e Cetipados": "Fundos de infraestrutura e crédito incentivado",
         "Pré - Bancário": "Prefixado bancário",
         "Pré - Tesouro": "Tesouro prefixado",
@@ -404,7 +406,8 @@ def macro_hierarchy_table(sub_df: pd.DataFrame, pl: float) -> pd.DataFrame:
         ("  Pós-fixado", ["Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias"], None, False),
         ("  Prefixado", ["Pré - Bancário", "Pré - Tesouro"], None, False),
         ("  Inflação", ["Inflação - Bancário", "Inflação - Tesouro"], None, False),
-        ("  Infraestrutura e crédito incentivado", ["FiInfra e Cetipados"], None, False),
+        ("  FI-Infra pós-fixado", ["FiInfra Pós"], None, False),
+        ("  FI-Infra indexado à inflação", ["FiInfra Inflação"], None, False),
         ("  Crédito privado", ["Crédito Privado"], None, False),
         ("RENDA VARIÁVEL NO BRASIL", None, ["RV Brasil"], True),
         ("  Ações brasileiras", ["Ações"], None, False),
@@ -656,7 +659,7 @@ def load_fundos_prev_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0
             df = pd.read_excel(path, sheet_name="Fundos de Investimentos")
             df.columns = [str(c).strip() for c in df.columns]
             # Colunas opcionais permitem exceções no próprio arquivo mestre, sem editar código.
-            # Exemplos: LIQUIDEZ_OPERACIONAL=999 e SUBBUCKET_OPERACIONAL="FiInfra e Cetipados".
+            # Exemplos: LIQUIDEZ_OPERACIONAL=999 e SUBBUCKET_OPERACIONAL="FiInfra Pós" ou "FiInfra Inflação".
             for _, r in df.iterrows():
                 nome = str(r.get("NOME_FUNDO", "")).strip()
                 if not nome or nome.lower() == "nan":
@@ -877,7 +880,7 @@ def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
     real = (
         asset_tipo.isin(["ACOES", "FUNDOS IMOBILIARIOS"])
         | mercado.isin(["RENDA VARIAVEL", "RENDA VARIÁVEL"])
-        | classe.isin(["Ações", "FIIs", "FiInfra e Cetipados"])
+        | classe.isin(["Ações", "FIIs", "FiInfra Pós", "FiInfra Inflação", "FiInfra e Cetipados"])
     )
     excluded = asset_tipo.str.contains(
         "PROVENT|CUSTODIA REMUNERADA|PROVISAO|EVENTO|OPCOES|OPÇÕES|OPCAO|OPÇÃO",
@@ -887,7 +890,11 @@ def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
     subscription_right = ticker.str.match(r"^[A-Z]{4}12$", na=False)
     valid_ticker = ticker.str.match(r"^[A-Z]{4}[0-9]{1,2}$", na=False)
     allowed = df.get("rebalancear", pd.Series(True, index=idx)).fillna(True).astype(bool)
-    return (real & allowed & ~excluded & ~subscription_right & valid_ticker).fillna(False)
+    tipo_cadastro = df.get("b3_tipo_produto", pd.Series("", index=idx)).astype(str).map(norm)
+    # Códigos cetipados podem terminar em 11, mas não são negociados em bolsa e
+    # não possuem cotação pública no Yahoo Finance. Mantêm o valor da corretora.
+    non_listed = tipo_cadastro.str.contains("CETIPADO|NAO LISTADO|NÃO LISTADO", regex=True, na=False)
+    return (real & allowed & ~non_listed & ~excluded & ~subscription_right & valid_ticker).fillna(False)
 
 
 def yahoo_symbol(ticker: str) -> str:
@@ -1189,12 +1196,10 @@ def classify_fund_class(class_text: str, full_text: str, liquidez_days=np.nan) -
     t = norm(full_text)
     combined = expand_fund_compounds(f"{c} {t}")
 
-    # FI-Infra é uma estratégia própria e prevalece sobre FIA/FII e crédito.
-    if any(x in combined for x in [
-        "FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA",
-        "FIC INFR", "FUNDO INCENTIVADO DE INFRA", "DEBENTURES INCENTIVADAS", "DEBENTURES INC"
-    ]):
-        return "RF Brasil", "FiInfra e Cetipados"
+    # Fundos tradicionais de infraestrutura (identificados por CNPJ) não são
+    # confundidos com FI-Infra listados. Sem override operacional, seguem a
+    # liquidez como qualquer outro fundo de renda fixa. Os FI-Infra listados são
+    # classificados por ticker na função classify_position.
 
     # Internacional precisa ser identificado antes de palavras como AÇÕES/FIA.
     if any(x in combined for x in [
@@ -1311,16 +1316,18 @@ def classify_position(row: pd.Series) -> pd.Series:
         b3_classe = optional_text(row.get("b3_classe_operacional", ""))
         b3_bucket = optional_text(row.get("b3_subbucket_operacional", ""))
         b3_tipo = optional_text(row.get("b3_tipo_produto", ""))
+        # Compatibilidade com cadastros preenchidos antes da separação dos dois
+        # indexadores de FI-Infra. O ticker define o bucket correto.
+        if b3_bucket == "FiInfra e Cetipados" and asset_id in FI_INFRA_TICKERS:
+            b3_bucket = "FiInfra Pós" if asset_id in FI_INFRA_POS_TICKERS else "FiInfra Inflação"
         return pd.Series([b3_classe, b3_bucket, b3_bucket, f"Cadastro Mestre B3{(' / ' + b3_tipo) if b3_tipo else ''}"])
 
     # A natureza econômica prevalece inclusive quando a corretora entrega o
     # ativo em uma aba incorreta, como debênture dentro de Renda Variável.
-    early_is_fiinfra = (
-        asset_id in FI_INFRA_TICKERS
-        or any(x in text for x in ["FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA", "FIC INFR"])
-    )
+    early_is_fiinfra = asset_id in FI_INFRA_TICKERS
     if early_is_fiinfra:
-        return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Natureza econômica / FI-Infra"])
+        bucket_infra = "FiInfra Pós" if asset_id in FI_INFRA_POS_TICKERS else "FiInfra Inflação"
+        return pd.Series(["RF Brasil", bucket_infra, bucket_infra, "Natureza econômica / FI-Infra listado"])
 
     early_looks_like_fund = has_any_phrase(text, ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS", "FIF"])
     early_credit_title = bool(re.search(r"\b(DEB|DEBENTURE|DEBENTURES|CRI|CRA|CDCA)\b", text))
@@ -1372,7 +1379,8 @@ def classify_position(row: pd.Series) -> pd.Series:
             if sub_mercado == "FII" or asset_id.endswith("11"):
                 # FiInfra antes de FII comum.
                 if asset_id in FI_INFRA_TICKERS:
-                    return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Estratégia"])
+                    bucket_infra = "FiInfra Pós" if asset_id in FI_INFRA_POS_TICKERS else "FiInfra Inflação"
+                    return pd.Series(["RF Brasil", bucket_infra, bucket_infra, "FI-Infra listado"])
                 return pd.Series(["RV Brasil", "FIIs", "FIIs", "Estratégia"])
             if sub_mercado == "ACAO" or len(asset_id) in [5, 6]:
                 return pd.Series(["RV Brasil", "Ações", "Ações", "Estratégia"])
@@ -1382,12 +1390,10 @@ def classify_position(row: pd.Series) -> pd.Series:
     # Natureza econômica prevalece sobre a aba de origem do relatório.
     # Isso corrige ativos que chegam em abas inadequadas (ex.: debênture em Ações)
     # e fundos de infraestrutura cujo nome também contém FIA/FII/ações.
-    is_fiinfra = (
-        asset_id in FI_INFRA_TICKERS
-        or any(x in text for x in ["FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA", "FIC INFR", "FUNDO INCENTIVADO DE INFRA", "DEBENTURES INCENTIVADAS", "DEBÊNTURES INCENTIVADAS", "DEBENTURES INC"])
-    )
+    is_fiinfra = asset_id in FI_INFRA_TICKERS
     if is_fiinfra:
-        return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Natureza econômica / FI-Infra"])
+        bucket_infra = "FiInfra Pós" if asset_id in FI_INFRA_POS_TICKERS else "FiInfra Inflação"
+        return pd.Series(["RF Brasil", bucket_infra, bucket_infra, "Natureza econômica / FI-Infra listado"])
 
     is_credit_title = bool(re.search(r"\b(DEB|DEBENTURE|DEBENTURES|DEBÊNTURE|DEBÊNTURES|CRI|CRA|CDCA)\b", text))
     looks_like_fund = has_any_phrase(text, ["FIC", "FIM", "FIRF", "FIA", "FIDC", "FUNDO", "FUNDOS", "FIF"])
@@ -1428,8 +1434,9 @@ def classify_position(row: pd.Series) -> pd.Series:
         return pd.Series([info["classe"], info["subbucket"], info["subbucket"], f"ETF B3: {info['estrategia']}"])
 
     # Fi-Infra: antes de FII, porque todos terminam em 11.
-    if asset_id in FI_INFRA_TICKERS or any(x in text for x in ["FI INFRA", "FI-INFRA", "FIINFRA", "FIC FI INFRA", "FIC FI-INFRA", "FIC INFR", "DEB INCENTIVADA"]):
-        return pd.Series(["RF Brasil", "FiInfra e Cetipados", "FiInfra e Cetipados", "Estratégia"])
+    if asset_id in FI_INFRA_TICKERS:
+        bucket_infra = "FiInfra Pós" if asset_id in FI_INFRA_POS_TICKERS else "FiInfra Inflação"
+        return pd.Series(["RF Brasil", bucket_infra, bucket_infra, "FI-Infra listado"])
 
     # Bolsa Brasil
     if asset_tipo in ["FUNDOS IMOBILIARIOS", "FUNDOS IMOBILIÁRIOS"] or has_any_phrase(text, ["FUNDO IMOB", "FII", "FUNDO IMOBILIARIO"]):
@@ -1530,7 +1537,8 @@ def subbucket_targets_from_model(p: dict[str, float], pl: float) -> pd.DataFrame
         ("RF Brasil", "Pós - 31 a 180 dias", peso_get(p, "31 a 180 dias")),
         ("RF Brasil", "Pós - 181 a 360 dias", peso_get(p, "181 a 360 dias")),
         ("RF Brasil", "Pós - 361+ dias", peso_get(p, "361+ dias")),
-        ("RF Brasil", "FiInfra e Cetipados", peso_get(p, "FiInfra e Cetipados") + peso_get(p, "FiInfra e Cetipado")),
+        ("RF Brasil", "FiInfra Pós", peso_get(p, "FiInfra e Cetipados")),
+        ("RF Brasil", "FiInfra Inflação", peso_get(p, "FiInfra e Cetipado")),
         ("RF Brasil", "Pré - Bancário", peso_get(p, "Bancário Pré")),
         ("RF Brasil", "Pré - Tesouro", peso_get(p, "Tesouro Pré")),
         ("RF Brasil", "Inflação - Bancário", peso_get(p, "Bancário")),
@@ -1636,7 +1644,7 @@ def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: f
             diff = alvo_ativo - atual if pd.notna(atual) else np.nan
             rows.append([t, preco, qtd, atual, qtd_ideal, alvo_ativo, diff, qtd_operar, nome])
 
-    held = pos_cliente[pos_cliente["subbucket"].eq("FiInfra e Cetipados") & exchange_position_mask(pos_cliente)].copy()
+    held = pos_cliente[pos_cliente["subbucket"].isin(["FiInfra Pós", "FiInfra Inflação", "FiInfra e Cetipados"]) & exchange_position_mask(pos_cliente)].copy()
     for tk, grp in held.groupby("ticker_norm"):
         if not tk or tk in model_tickers:
             continue
