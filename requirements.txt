@@ -1,4 +1,4 @@
-streamlit>=1.40
+streamlit>=1.60
 pandas>=2.0
 numpy>=1.23
 openpyxl>=3.1.0
@@ -6,3 +6,4 @@ plotly>=5.20.0
 requests>=2.31.0
 reportlab>=4.0.0
 yfinance>=0.2.54
+starlette<1.0
