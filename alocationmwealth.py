@@ -67,7 +67,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.0"
+APP_VERSION = "6.1"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -939,7 +939,7 @@ def load_b3_master_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) 
         "ticker_norm", "b3_nome", "b3_tipo_produto", "b3_classe_operacional",
         "b3_subbucket_operacional", "b3_estrategia", "b3_liquidez_operacional",
         "b3_fonte_preco", "b3_rebalancear", "b3_status_mapeamento",
-        "b3_observacao_operacional",
+        "b3_observacao_operacional", "b3_setor",
     ]
     if not path.exists():
         return pd.DataFrame(columns=cols)
@@ -953,7 +953,7 @@ def load_b3_master_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) 
             "TICKER", "NOME_ATIVO", "TIPO_PRODUTO", "CLASSE_OPERACIONAL",
             "SUBBUCKET_OPERACIONAL", "ESTRATEGIA", "REBALANCEAR",
             "STATUS_MAPEAMENTO", "OBSERVACAO_OPERACIONAL",
-            "LIQUIDEZ_OPERACIONAL", "FONTE_PRECO",
+            "LIQUIDEZ_OPERACIONAL", "FONTE_PRECO", "SETOR",
         ])
         out = pd.DataFrame({
             "ticker_norm": raw.get("TICKER", "").astype(str).apply(ticker_clean),
@@ -967,6 +967,7 @@ def load_b3_master_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) 
             "b3_rebalancear": raw.get("REBALANCEAR", "").astype(str).str.strip(),
             "b3_status_mapeamento": raw.get("STATUS_MAPEAMENTO", "").astype(str).str.strip(),
             "b3_observacao_operacional": raw.get("OBSERVACAO_OPERACIONAL", "").astype(str).str.strip(),
+            "b3_setor": raw.get("SETOR", "").astype(str).str.strip(),
         })
         out = out[out["ticker_norm"].apply(is_valid_b3_ticker)].copy()
         return out.drop_duplicates("ticker_norm", keep="first").reset_index(drop=True)
@@ -2319,6 +2320,179 @@ def applicable_restrictions(restrictions: pd.DataFrame, grupo: str, cliente: str
     return out
 
 
+
+POOL_COLUMNS = [
+    "ID_PRODUTO", "NOME_PRODUTO", "TIPO_IDENTIFICADOR", "IDENTIFICADOR",
+    "CLASSE", "SUBBUCKET", "POOL", "CORRETORA", "PERFIL_MINIMO",
+    "PRIORIDADE_COMPRA", "PESO_NO_POOL", "APORTE_MINIMO",
+    "LIMITE_POR_CLIENTE", "ELEGIVEL_COMPRA", "APENAS_MANUTENCAO",
+    "PRODUTO_FECHADO", "INDEXADOR", "GESTORA_EMISSOR", "SETOR", "OBSERVACAO",
+]
+RESTRICTION_COLUMNS = [
+    "GRUPO_CLIENTE", "NIVEL", "TIPO_REGRA", "IDENTIFICADOR", "ACAO",
+    "LIMITE_PERCENTUAL", "SUBSTITUTO", "ATIVO", "DATA_INICIO", "DATA_FIM",
+    "MOTIVO", "STATUS",
+]
+B3_EDITOR_COLUMNS = [
+    "TICKER", "NOME_ATIVO", "TIPO_PRODUTO", "CLASSE_OPERACIONAL",
+    "SUBBUCKET_OPERACIONAL", "ESTRATEGIA", "REBALANCEAR",
+    "STATUS_MAPEAMENTO", "OBSERVACAO_OPERACIONAL", "LIQUIDEZ_OPERACIONAL",
+    "FONTE_PRECO", "SETOR",
+]
+
+
+def read_master_sheet_for_editor(sheet_name: str, expected: list[str]) -> pd.DataFrame:
+    path = master_products_path()
+    if not path.exists():
+        return pd.DataFrame(columns=expected)
+    try:
+        raw = pd.read_excel(path, sheet_name=sheet_name)
+        raw.columns = [str(c).strip() for c in raw.columns]
+        raw = canonicalize_master_columns(raw, expected)
+        for c in expected:
+            if c not in raw.columns:
+                raw[c] = np.nan if c in {"PRIORIDADE_COMPRA", "PESO_NO_POOL", "APORTE_MINIMO", "LIMITE_POR_CLIENTE", "LIMITE_PERCENTUAL", "LIQUIDEZ_OPERACIONAL"} else ""
+        return raw[expected].copy()
+    except Exception:
+        return pd.DataFrame(columns=expected)
+
+
+def _clean_editor_df(df: pd.DataFrame, required_col: str, columns: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for c in columns:
+        if c not in out.columns:
+            out[c] = ""
+    out = out[columns].copy()
+    out = out[out[required_col].fillna("").astype(str).str.strip().ne("")].copy()
+    return out.reset_index(drop=True)
+
+
+def save_master_sheet_from_app(sheet_name: str, df: pd.DataFrame, columns: list[str], required_col: str) -> tuple[bool, str]:
+    """Salva uma aba operacional preservando o restante do Cadastro Mestre."""
+    path = master_products_path()
+    if not path.exists():
+        return False, f"Cadastro Mestre não encontrado: {path}"
+    try:
+        from openpyxl import load_workbook
+        from copy import copy as _copy
+        clean = _clean_editor_df(df, required_col, columns)
+        wb = load_workbook(path)
+        if sheet_name not in wb.sheetnames:
+            ws = wb.create_sheet(sheet_name)
+        else:
+            ws = wb[sheet_name]
+        # Preserva o estilo da primeira linha e, quando possível, da primeira linha de dados.
+        for j, col in enumerate(columns, start=1):
+            ws.cell(1, j).value = col
+        max_clear_row = max(ws.max_row, len(clean) + 5)
+        max_clear_col = max(ws.max_column, len(columns))
+        for row in ws.iter_rows(min_row=2, max_row=max_clear_row, min_col=1, max_col=max_clear_col):
+            for cell in row:
+                cell.value = None
+        template_row = 2 if ws.max_row >= 2 else None
+        for i, record in enumerate(clean.itertuples(index=False, name=None), start=2):
+            for j, value in enumerate(record, start=1):
+                cell = ws.cell(i, j)
+                if isinstance(value, float) and pd.isna(value):
+                    value = None
+                cell.value = value
+                if template_row and i > 2:
+                    src = ws.cell(template_row, j)
+                    if src.has_style:
+                        cell._style = _copy(src._style)
+                        if src.number_format:
+                            cell.number_format = src.number_format
+        tmp = path.with_name(path.stem + "__tmp_app" + path.suffix)
+        wb.save(tmp)
+        tmp.replace(path)
+        st.cache_data.clear()
+        return True, f"{sheet_name}: {len(clean)} registro(s) salvos no Cadastro Mestre."
+    except PermissionError:
+        return False, "Não foi possível salvar. Feche o Cadastro Mestre no Excel e tente novamente."
+    except Exception as exc:
+        return False, f"Falha ao salvar {sheet_name}: {exc}"
+
+
+def update_fund_override_from_app(sheet_name: str, row_index: int, updates: dict[str, object]) -> tuple[bool, str]:
+    path = master_products_path()
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(path)
+        ws = wb[sheet_name]
+        headers = {norm(ws.cell(1, c).value): c for c in range(1, ws.max_column + 1)}
+        excel_row = int(row_index) + 2
+        for key, value in updates.items():
+            col = headers.get(norm(key))
+            if col is None:
+                col = ws.max_column + 1
+                ws.cell(1, col).value = key
+                headers[norm(key)] = col
+            ws.cell(excel_row, col).value = None if (isinstance(value, float) and pd.isna(value)) else value
+        tmp = path.with_name(path.stem + "__tmp_app" + path.suffix)
+        wb.save(tmp)
+        tmp.replace(path)
+        st.cache_data.clear()
+        return True, "Override salvo no Cadastro Mestre."
+    except PermissionError:
+        return False, "Feche o Cadastro Mestre no Excel antes de salvar pelo app."
+    except Exception as exc:
+        return False, f"Falha ao salvar override: {exc}"
+
+
+def current_value_for_pool_product(pos_cliente: pd.DataFrame, prod: pd.Series) -> float:
+    """Calcula posição atual pela chave correta do produto (Ticker, CNPJ ou Nome)."""
+    if pos_cliente.empty:
+        return 0.0
+    tipo = norm(prod.get("TIPO_IDENTIFICADOR", ""))
+    ident = prod.get("IDENTIFICADOR", "")
+    if tipo == "CNPJ":
+        key = only_digits_str(ident)
+        series = pos_cliente.get("cnpj", pd.Series("", index=pos_cliente.index)).apply(only_digits_str)
+        mask = series.eq(key) if key else pd.Series(False, index=pos_cliente.index)
+    elif tipo == "NOME":
+        key = fund_name_key(str(ident or prod.get("NOME_PRODUTO", "")))
+        names = pos_cliente.get("asset_nome", pd.Series("", index=pos_cliente.index)).astype(str).apply(fund_name_key)
+        mask = names.eq(key) if key else pd.Series(False, index=pos_cliente.index)
+    else:
+        key = ticker_clean(ident)
+        series = pos_cliente.get("ticker_norm", pd.Series("", index=pos_cliente.index)).astype(str)
+        mask = series.eq(key) if key else pd.Series(False, index=pos_cliente.index)
+    return float(pd.to_numeric(pos_cliente.loc[mask, "valor_mercado"], errors="coerce").fillna(0.0).sum()) if mask.any() else 0.0
+
+
+def pool_metadata_for_ticker(ticker: str, pool: pd.DataFrame) -> dict[str, str]:
+    tk = ticker_clean(ticker)
+    if pool is not None and not pool.empty:
+        ids = pool.get("IDENTIFICADOR", pd.Series("", index=pool.index)).astype(str).apply(ticker_clean)
+        hit = pool[ids.eq(tk)]
+        if not hit.empty:
+            r = hit.iloc[0]
+            return {
+                "SETOR": str(r.get("SETOR", "")).strip(),
+                "GESTORA_EMISSOR": str(r.get("GESTORA_EMISSOR", "")).strip(),
+                "CLASSE": str(r.get("CLASSE", "")).strip(),
+                "SUBBUCKET": str(r.get("SUBBUCKET", "")).strip(),
+                "NOME_PRODUTO": str(r.get("NOME_PRODUTO", ticker)).strip(),
+            }
+    # Fallback no Cadastro B3 para permitir restrição por classe/setor mesmo
+    # quando o ativo ainda não faz parte do Pool de Produtos.
+    try:
+        path = master_products_path()
+        b3 = load_b3_master_cached(str(path), *file_cache_signature(path))
+        hit = b3[b3["ticker_norm"].astype(str).eq(tk)]
+        if not hit.empty:
+            r = hit.iloc[0]
+            return {
+                "SETOR": str(r.get("b3_setor", "")).strip(),
+                "GESTORA_EMISSOR": "",
+                "CLASSE": str(r.get("b3_classe_operacional", "")).strip(),
+                "SUBBUCKET": str(r.get("b3_subbucket_operacional", "")).strip(),
+                "NOME_PRODUTO": str(r.get("b3_nome", ticker)).strip(),
+            }
+    except Exception:
+        pass
+    return {}
+
 def restriction_action_for_product(row: pd.Series, restrictions: pd.DataFrame) -> tuple[str, str, float | None]:
     if restrictions.empty:
         return "", "", None
@@ -2329,6 +2503,7 @@ def restriction_action_for_product(row: pd.Series, restrictions: pd.DataFrame) -
         "SETOR": norm(row.get("SETOR", "")),
         "GESTORA": norm(row.get("GESTORA_EMISSOR", "")),
         "SUBBUCKET": norm(row.get("SUBBUCKET", row.get("Grupo", ""))),
+        "CLASSE": norm(row.get("CLASSE", row.get("Classe", ""))),
     }
     for _, rr in restrictions.iterrows():
         tipo = norm(rr.get("TIPO_REGRA", ""))
@@ -2343,22 +2518,72 @@ def restriction_action_for_product(row: pd.Series, restrictions: pd.DataFrame) -
     return "", "", None
 
 
-def apply_restrictions_to_market_orders(df_orders: pd.DataFrame, restrictions: pd.DataFrame) -> pd.DataFrame:
+def apply_restrictions_to_market_orders(
+    df_orders: pd.DataFrame,
+    restrictions: pd.DataFrame,
+    pool: pd.DataFrame | None = None,
+    pl_base: float = 0.0,
+) -> pd.DataFrame:
     if df_orders.empty or restrictions.empty:
         return df_orders
     out = df_orders.copy()
     out["Restrição"] = ""
     out["Motivo da restrição"] = ""
+    out["Substituto"] = ""
     for idx, row in out.iterrows():
-        probe = pd.Series({"IDENTIFICADOR": row.get("Ativo", ""), "NOME_PRODUTO": row.get("Ativo", ""), "SUBBUCKET": row.get("Grupo", "")})
-        action, reason, _ = restriction_action_for_product(probe, restrictions)
+        meta = pool_metadata_for_ticker(str(row.get("Ativo", "")), pool if pool is not None else pd.DataFrame())
+        group = str(row.get("Grupo", ""))
+        classe_inferida = meta.get("CLASSE", "")
+        if not classe_inferida:
+            classe_inferida = "RV Brasil" if norm(group) in {"ACOES", "FIIS", "FORA DO MODELO"} else ("RF Brasil" if "INFRA" in norm(group) else "")
+        probe = pd.Series({
+            "IDENTIFICADOR": row.get("Ativo", ""),
+            "NOME_PRODUTO": meta.get("NOME_PRODUTO", row.get("Ativo", "")),
+            "SUBBUCKET": meta.get("SUBBUCKET", group),
+            "CLASSE": classe_inferida,
+            "SETOR": meta.get("SETOR", ""),
+            "GESTORA_EMISSOR": meta.get("GESTORA_EMISSOR", ""),
+        })
+        action, reason, limit_pct = restriction_action_for_product(probe, restrictions)
         action_n = norm(action)
-        if action_n == "NAO COMPRAR" and pd.to_numeric(row.get("Qtd a operar", 0), errors="coerce") > 0:
+        qtd_op = pd.to_numeric(row.get("Qtd a operar", 0), errors="coerce")
+        qtd_atual = pd.to_numeric(row.get("Qtd Atual", 0), errors="coerce")
+        valor_atual = pd.to_numeric(row.get("Valor Atual", 0), errors="coerce")
+        preco = pd.to_numeric(row.get("Preço referência", np.nan), errors="coerce")
+
+        if action_n == "NAO COMPRAR" and pd.notna(qtd_op) and qtd_op > 0:
             out.at[idx, "Qtd a operar"] = 0
             out.at[idx, "Diferença"] = 0.0
-        elif action_n in {"NAO VENDER", "MANTER POSICAO"} and pd.to_numeric(row.get("Qtd a operar", 0), errors="coerce") < 0:
+        elif action_n == "NAO VENDER" and pd.notna(qtd_op) and qtd_op < 0:
             out.at[idx, "Qtd a operar"] = 0
             out.at[idx, "Diferença"] = 0.0
+        elif action_n == "MANTER POSICAO":
+            out.at[idx, "Qtd a operar"] = 0
+            out.at[idx, "Qtd Ideal"] = qtd_atual if pd.notna(qtd_atual) else out.at[idx, "Qtd Ideal"]
+            out.at[idx, "Valor Ideal"] = valor_atual if pd.notna(valor_atual) else out.at[idx, "Valor Ideal"]
+            out.at[idx, "Diferença"] = 0.0
+        elif action_n == "EXCLUIR DA CARTEIRA":
+            out.at[idx, "Qtd Ideal"] = 0
+            out.at[idx, "Valor Ideal"] = 0.0
+            out.at[idx, "Diferença"] = -float(valor_atual or 0.0)
+            out.at[idx, "Qtd a operar"] = -float(qtd_atual or 0.0) if pd.notna(qtd_atual) else np.nan
+        elif action_n == "LIMITAR PERCENTUAL" and limit_pct is not None and pl_base > 0:
+            limite_valor = pl_base * float(limit_pct)
+            atual = float(valor_atual or 0.0)
+            ideal_original = float(pd.to_numeric(row.get("Valor Ideal", 0), errors="coerce") or 0.0)
+            ideal_novo = min(ideal_original, limite_valor)
+            out.at[idx, "Valor Ideal"] = ideal_novo
+            out.at[idx, "Diferença"] = ideal_novo - atual
+            if pd.notna(preco) and preco > 0:
+                qtd_ideal = round(ideal_novo / float(preco))
+                out.at[idx, "Qtd Ideal"] = qtd_ideal
+                out.at[idx, "Qtd a operar"] = qtd_ideal - float(qtd_atual or 0.0)
+        elif action_n == "SUBSTITUIR POR PRODUTO":
+            out.at[idx, "Qtd a operar"] = 0
+            out.at[idx, "Diferença"] = 0.0
+            matched = restrictions[(restrictions["TIPO_REGRA"].fillna("").astype(str).map(norm).eq("TICKER")) & (restrictions["IDENTIFICADOR"].fillna("").astype(str).map(norm).eq(norm(row.get("Ativo", ""))))]
+            if not matched.empty:
+                out.at[idx, "Substituto"] = str(matched.iloc[0].get("SUBSTITUTO", "")).strip()
         if action:
             out.at[idx, "Restrição"] = action
             out.at[idx, "Motivo da restrição"] = reason
@@ -2376,7 +2601,6 @@ def recommend_exact_products(
     columns = ["Estratégia", "Produto recomendado", "Identificador", "Corretora", "Valor recomendado", "Prioridade", "Peso no pool", "Limite", "Restrição", "Observação"]
     if pool.empty or sub_df.empty or pl_base <= 0:
         return pd.DataFrame(columns=columns)
-    current_by_identifier = pos_cliente.groupby(pos_cliente.get("ticker_norm", pd.Series("", index=pos_cliente.index)), dropna=False)["valor_mercado"].sum().to_dict()
     rows = []
     needs = sub_df[(pd.to_numeric(sub_df["Diferença"], errors="coerce") > 300) & (~sub_df["Classe"].isin(["Caixa", "Fora da Estratégia"]))]
     for _, need in needs.iterrows():
@@ -2420,8 +2644,7 @@ def recommend_exact_products(
             limit_pct = prod.get("_limit_override")
             if limit_pct is None:
                 limit_pct = float(pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", 1), errors="coerce") or 1)
-            identifier = norm(prod.get("IDENTIFICADOR", ""))
-            current = float(current_by_identifier.get(identifier, 0.0))
+            current = current_value_for_pool_product(pos_cliente, prod)
             capacity = max(0.0, pl_base * float(limit_pct) - current)
             amount = min(target, capacity, remaining)
             if amount >= min_aporte and amount > 0:
@@ -2437,7 +2660,9 @@ def recommend_exact_products(
                 limit_pct = prod.get("_limit_override")
                 if limit_pct is None:
                     limit_pct = float(pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", 1), errors="coerce") or 1)
-                capacity = max(0.0, pl_base * float(limit_pct))
+                current = current_value_for_pool_product(pos_cliente, prod)
+                already_allocated = sum(a for i, a in allocations if i == idx)
+                capacity = max(0.0, pl_base * float(limit_pct) - current - already_allocated)
                 amount = min(remaining, capacity)
                 if amount >= min_aporte:
                     allocations.append((idx, amount))
@@ -2453,8 +2678,80 @@ def recommend_exact_products(
     return pd.DataFrame(rows, columns=columns)
 
 
-def load_published_models(base: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+
+@st.cache_data(show_spinner=False)
+def load_models_from_master_sheet(path_str: str, mtime_ns: int = 0, file_size: int = 0) -> dict[str, dict[str, float]]:
+    path = Path(path_str)
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_excel(path, sheet_name="Modelos de Alocação")
+        df.columns = [str(c).strip() for c in df.columns]
+        required = {"MODELO", "VERSAO", "STATUS", "SUBBUCKET", "PESO"}
+        if not required.issubset(set(df.columns)):
+            return {}
+        df = df[df["STATUS"].fillna("").astype(str).map(norm).eq("PUBLICADO")].copy()
+        if df.empty:
+            return {}
+        df["VERSAO"] = pd.to_numeric(df["VERSAO"], errors="coerce").fillna(0).astype(int)
+        df["PESO"] = pd.to_numeric(df["PESO"], errors="coerce").fillna(0.0)
+        result = {}
+        for model, grp in df.groupby("MODELO"):
+            version = int(grp["VERSAO"].max())
+            latest = grp[grp["VERSAO"].eq(version)]
+            result[str(model)] = {str(r["SUBBUCKET"]): float(r["PESO"]) for _, r in latest.iterrows() if str(r["SUBBUCKET"]).strip()}
+        return result
+    except Exception:
+        return {}
+
+
+def sync_published_model_to_master(name: str, weights: dict[str, float], version: int, author: str, reason: str) -> tuple[bool, str]:
+    path = master_products_path()
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(path)
+        sheet = "Modelos de Alocação"
+        if sheet not in wb.sheetnames:
+            ws = wb.create_sheet(sheet)
+            ws.append(["MODELO", "VERSAO", "STATUS", "SUBBUCKET", "PESO", "PUBLICADO_EM", "PUBLICADO_POR", "MOTIVO", "OBSERVACAO"])
+        ws = wb[sheet]
+        headers = {str(ws.cell(1, c).value or "").strip(): c for c in range(1, ws.max_column + 1)}
+        required = ["MODELO", "VERSAO", "STATUS", "SUBBUCKET", "PESO", "PUBLICADO_EM", "PUBLICADO_POR", "MOTIVO", "OBSERVACAO"]
+        for col in required:
+            if col not in headers:
+                c = ws.max_column + 1
+                ws.cell(1, c).value = col
+                headers[col] = c
+        # Arquiva versões anteriormente publicadas deste modelo.
+        for r in range(2, ws.max_row + 1):
+            if norm(ws.cell(r, headers["MODELO"]).value) == norm(name) and norm(ws.cell(r, headers["STATUS"]).value) == "PUBLICADO":
+                ws.cell(r, headers["STATUS"]).value = "Arquivado"
+        published_at = datetime.now().isoformat(timespec="seconds")
+        for component, weight in weights.items():
+            row = ws.max_row + 1
+            values = {
+                "MODELO": name, "VERSAO": version, "STATUS": "Publicado",
+                "SUBBUCKET": component, "PESO": float(weight), "PUBLICADO_EM": published_at,
+                "PUBLICADO_POR": author.strip() or "Não informado", "MOTIVO": reason.strip(),
+                "OBSERVACAO": "Publicado pelo app",
+            }
+            for col, value in values.items():
+                ws.cell(row, headers[col]).value = value
+        tmp = path.with_name(path.stem + "__tmp_model" + path.suffix)
+        wb.save(tmp)
+        tmp.replace(path)
+        return True, "Cadastro Mestre sincronizado."
+    except PermissionError:
+        return False, "Modelo publicado no app, mas o Cadastro Mestre estava aberto no Excel e não pôde ser sincronizado."
+    except Exception as exc:
+        return False, f"Modelo publicado no app, mas falhou a sincronização com o Cadastro Mestre: {exc}"
+
+def load_published_models(base: dict[str, dict[str, float]], master_path: Path | None = None) -> dict[str, dict[str, float]]:
     merged = deepcopy(base)
+    mp = master_path or master_products_path()
+    for name, weights in load_models_from_master_sheet(str(mp), *file_cache_signature(mp)).items():
+        if weights:
+            merged[str(name)] = {str(k): float(v) for k, v in weights.items()}
     if not PUBLISHED_MODELS_PATH.exists():
         return merged
     try:
@@ -2492,7 +2789,8 @@ def publish_model(name: str, weights: dict[str, float], author: str, reason: str
     PUBLISHED_MODELS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     with MODEL_HISTORY_PATH.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"model": name, **record}, ensure_ascii=False) + "\n")
-    return True, f"Modelo publicado na versão {version}."
+    synced, sync_msg = sync_published_model_to_master(name, weights, version, author, reason)
+    return True, f"Modelo publicado na versão {version}. {sync_msg}"
 
 
 def model_history() -> pd.DataFrame:
@@ -2544,7 +2842,7 @@ def theoretical_hierarchy_styler(df: pd.DataFrame):
 # =============================================================================
 pesos_path = find_file("Pesos-alocacao.xlsx")
 pesos_base = load_pesos_xlsx(str(pesos_path), *file_cache_signature(pesos_path))
-pesos = load_published_models(pesos_base)
+pesos = load_published_models(pesos_base, master_products_path())
 df_contas = load_contas_cached()
 
 lp = logo_path()
@@ -2863,8 +3161,12 @@ if page == "Asset Allocation":
         )
     else:
         st.caption("Preços atualizados pelo Yahoo Finance, com cache de 5 minutos. Valor atual = quantidade real × preço de mercado.")
-    rv_df = apply_restrictions_to_market_orders(rv_recommendation(pos_cliente, p, pl_base if "pl_base" in locals() else pl, modelo, price_ref), restricoes_cliente)
-    fi_df = apply_restrictions_to_market_orders(fiinfra_recommendation(pos_cliente, p, pl_base if "pl_base" in locals() else pl, price_ref), restricoes_cliente)
+    rv_df = apply_restrictions_to_market_orders(
+        rv_recommendation(pos_cliente, p, pl, modelo, price_ref), restricoes_cliente, pool_produtos, pl
+    )
+    fi_df = apply_restrictions_to_market_orders(
+        fiinfra_recommendation(pos_cliente, p, pl, price_ref), restricoes_cliente, pool_produtos, pl
+    )
     tab_a, tab_b = st.tabs(["Ações e Fundos Imobiliários / FIAGROs", "Infraestrutura"])
     with tab_a:
         rv_view = rv_df[rv_df["Valor Ideal"].gt(0) | rv_df["Valor Atual"].gt(0)].copy()
@@ -3052,7 +3354,7 @@ if page == "Carteira Teórica":
 # Página 4 - Gestão
 # =============================================================================
 if page == "Gestão":
-    page_intro("Governança", "Gestão de modelos e regras", "Edite pesos em ambiente controlado, publique versões e acompanhe a qualidade do cadastro operacional.", ["Validação de 100%", "Publicação versionada", "Histórico", "Cadastros auxiliares"])
+    page_intro("Governança", "Gestão de modelos e personalizações", "Edite pesos, pools, restrições e exceções operacionais diretamente no app. As alterações são registradas no Cadastro Mestre e passam a valer após o salvamento/publicação.", ["Modelos versionados", "Input direto", "Restrições", "Cadastro Mestre"])
     cadastro_ativo = master_products_path()
     sig = file_cache_signature(cadastro_ativo)
     pool_admin = load_product_pool_cached(str(cadastro_ativo), *sig)
@@ -3062,22 +3364,19 @@ if page == "Gestão":
 
     k1, k2, k3, k4 = st.columns(4)
     with k1: metric_card("Produtos no pool", str(len(pool_admin)))
-    with k2: metric_card("Restrições cadastradas", str(len(restrictions_admin)))
+    with k2: metric_card("Restrições ativas/cadastradas", str(len(restrictions_admin)))
     with k3: metric_card("Ativos B3", str(len(b3_admin)))
     with k4: metric_card("Fundos e previdência", str(len(fundos_admin)))
 
-    tab_modelos, tab_regras, tab_historico = st.tabs(["Modelos de alocação", "Cadastros e regras", "Histórico de publicação"])
+    tab_modelos, tab_personalizacoes, tab_historico = st.tabs(["Modelos de alocação", "Personalizações e regras", "Histórico de publicação"])
     with tab_modelos:
-        section_title("Editar modelo", "As alterações só entram nos balanceamentos depois da publicação.")
+        section_title("Editar e publicar modelo", "A publicação grava a versão no app e também sincroniza a aba Modelos de Alocação do Cadastro Mestre.")
         nomes_modelos = list(pesos.keys())
         modelo_admin = st.selectbox("Modelo", nomes_modelos, key="modelo_admin")
         base_weights = pesos[modelo_admin]
         editable = pd.DataFrame([{"Componente": k, "Peso": float(v)} for k, v in base_weights.items() if norm(k) not in PARENT_WEIGHT_KEYS])
         edited = st.data_editor(
-            editable,
-            use_container_width=True,
-            hide_index=True,
-            disabled=["Componente"],
+            editable, use_container_width=True, hide_index=True, disabled=["Componente"],
             column_config={"Peso": st.column_config.NumberColumn("Peso", min_value=0.0, max_value=1.0, step=0.005, format="%.4f")},
             key=f"editor_{modelo_admin}",
         )
@@ -3086,48 +3385,119 @@ if page == "Gestão":
         with c1: metric_card("Soma do modelo", fmt_pct(total))
         with c2: metric_card("Status", "Válido" if abs(total - 1) <= .0005 else "Revisar")
         with c3:
-            if abs(total - 1) > .0005:
-                st.warning("A soma precisa ser exatamente 100% para publicar.")
-            else:
-                st.success("Modelo validado e pronto para publicação.")
+            if abs(total - 1) > .0005: st.warning("A soma precisa ser exatamente 100% para publicar.")
+            else: st.success("Modelo validado e pronto para publicação.")
         author = st.text_input("Responsável pela publicação")
-        reason = st.text_area("Motivo da alteração", placeholder="Ex.: atualização do comitê de alocação de julho/2026")
+        reason = st.text_area("Motivo da alteração", placeholder="Ex.: atualização do comitê de alocação de agosto/2026")
         if st.button("Publicar nova versão", type="primary", use_container_width=True, disabled=abs(total - 1) > .0005):
             new_weights = {str(r["Componente"]): float(r["Peso"]) for _, r in edited.iterrows()}
             ok, message = publish_model(modelo_admin, new_weights, author, reason)
             if ok:
-                st.success(message + " Recarregue a página para aplicar a nova versão em todas as abas.")
+                st.success(message + " A nova versão já será usada após a recarga.")
                 st.cache_data.clear()
-            else:
-                st.error(message)
+            else: st.error(message)
 
-    with tab_regras:
-        section_title("Resumo das regras operacionais", f"Arquivo ativo: {cadastro_ativo.name}")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Pool de Produtos**")
-            if pool_admin.empty:
-                st.info("A aba Pool de Produtos está vazia ou ausente.")
+    with tab_personalizacoes:
+        st.info("As edições abaixo alteram o Cadastro Mestre. Para evitar conflito de arquivo, mantenha a planilha fechada no Excel enquanto salvar pelo app.")
+        p_pool, p_restr, p_b3, p_fundos = st.tabs(["Pool de Produtos", "Restrições por Cliente", "Ativos B3", "Overrides de Fundos/Prev"])
+
+        with p_pool:
+            section_title("Pool de produtos", "Defina exatamente quais produtos podem receber cada necessidade de alocação.")
+            pool_raw = read_master_sheet_for_editor("Pool de Produtos", POOL_COLUMNS)
+            pool_edit = st.data_editor(
+                pool_raw, num_rows="dynamic", use_container_width=True, hide_index=True,
+                column_config={
+                    "PESO_NO_POOL": st.column_config.NumberColumn("PESO_NO_POOL", min_value=0.0, max_value=1.0, step=0.05, format="%.2f"),
+                    "LIMITE_POR_CLIENTE": st.column_config.NumberColumn("LIMITE_POR_CLIENTE", min_value=0.0, max_value=1.0, step=0.01, format="%.2f"),
+                    "APORTE_MINIMO": st.column_config.NumberColumn("APORTE_MINIMO", min_value=0.0, step=100.0),
+                    "PRIORIDADE_COMPRA": st.column_config.NumberColumn("PRIORIDADE_COMPRA", min_value=1, step=1),
+                }, key="pool_editor_direct",
+            )
+            if st.button("Salvar Pool de Produtos", type="primary", use_container_width=True):
+                ok, msg = save_master_sheet_from_app("Pool de Produtos", pool_edit, POOL_COLUMNS, "NOME_PRODUTO")
+                (st.success if ok else st.error)(msg)
+
+        with p_restr:
+            section_title("Restrições por cliente", "Cadastre regras por grupo, cliente ou conta. Classe, subbucket, setor, gestora, ticker, CNPJ e produto são suportados.")
+            restr_raw = read_master_sheet_for_editor("Restrições por Cliente", RESTRICTION_COLUMNS)
+            restr_edit = st.data_editor(
+                restr_raw, num_rows="dynamic", use_container_width=True, hide_index=True,
+                column_config={
+                    "NIVEL": st.column_config.SelectboxColumn("NIVEL", options=["Grupo", "Cliente", "Conta"]),
+                    "TIPO_REGRA": st.column_config.SelectboxColumn("TIPO_REGRA", options=["Ticker", "CNPJ", "Produto", "Setor", "Gestora", "Subbucket", "Classe"]),
+                    "ACAO": st.column_config.SelectboxColumn("ACAO", options=["Não comprar", "Não vender", "Manter posição", "Excluir da carteira", "Limitar percentual", "Substituir por produto"]),
+                    "LIMITE_PERCENTUAL": st.column_config.NumberColumn("LIMITE_PERCENTUAL", min_value=0.0, max_value=1.0, step=0.01, format="%.2f"),
+                    "STATUS": st.column_config.SelectboxColumn("STATUS", options=["Ativa", "Inativa"]),
+                }, key="restriction_editor_direct",
+            )
+            if st.button("Salvar Restrições", type="primary", use_container_width=True):
+                ok, msg = save_master_sheet_from_app("Restrições por Cliente", restr_edit, RESTRICTION_COLUMNS, "GRUPO_CLIENTE")
+                (st.success if ok else st.error)(msg)
+
+        with p_b3:
+            section_title("Ativos B3", "Use para exceções explícitas de ticker, fonte de preço, liquidez e classificação.")
+            b3_raw = read_master_sheet_for_editor("Ativos B3", B3_EDITOR_COLUMNS)
+            b3_edit = st.data_editor(
+                b3_raw, num_rows="dynamic", use_container_width=True, hide_index=True,
+                column_config={
+                    "REBALANCEAR": st.column_config.SelectboxColumn("REBALANCEAR", options=["Sim", "Não"]),
+                    "FONTE_PRECO": st.column_config.SelectboxColumn("FONTE_PRECO", options=["Yahoo Finance", "Valor da posição", "Não precificar"]),
+                    "LIQUIDEZ_OPERACIONAL": st.column_config.NumberColumn("LIQUIDEZ_OPERACIONAL", min_value=0.0, step=1.0),
+                }, key="b3_editor_direct",
+            )
+            if st.button("Salvar Ativos B3", type="primary", use_container_width=True):
+                ok, msg = save_master_sheet_from_app("Ativos B3", b3_edit, B3_EDITOR_COLUMNS, "TICKER")
+                (st.success if ok else st.error)(msg)
+
+        with p_fundos:
+            section_title("Override operacional de fundos e previdência", "Selecione um cadastro e altere apenas os campos operacionais. Os dados originais de classificação e liquidez continuam preservados.")
+            origem_override = st.radio("Base", ["Fundos de Investimentos", "Previdência"], horizontal=True)
+            if origem_override == "Fundos de Investimentos":
+                raw_override = pd.read_excel(cadastro_ativo, sheet_name=origem_override)
+                name_col = "NOME_FUNDO"
             else:
-                cols = [c for c in ["NOME_PRODUTO", "IDENTIFICADOR", "SUBBUCKET", "CORRETORA", "PRIORIDADE_COMPRA", "PESO_NO_POOL", "ELEGIVEL_COMPRA", "PRODUTO_FECHADO"] if c in pool_admin.columns]
-                st.dataframe(prepare_display(pool_admin[cols], pct_cols=["PESO_NO_POOL"], max_rows=300), use_container_width=True, hide_index=True)
-        with c2:
-            st.markdown("**Restrições por Cliente**")
-            if restrictions_admin.empty:
-                st.info("A aba Restrições por Cliente está vazia ou ausente.")
+                raw_override = pd.read_excel(cadastro_ativo, sheet_name=origem_override)
+                name_col = "Nome do Fundo Investido pelos planos"
+            raw_override.columns = [str(c).strip() for c in raw_override.columns]
+            if name_col in raw_override.columns and not raw_override.empty:
+                search = st.text_input("Buscar fundo", key="search_override").strip()
+                candidates = raw_override.copy()
+                if search:
+                    candidates = candidates[candidates[name_col].fillna("").astype(str).str.contains(search, case=False, na=False)]
+                labels = [f"{idx} • {str(r[name_col])}" for idx, r in candidates.head(200).iterrows()]
+                if labels:
+                    selected = st.selectbox("Fundo", labels)
+                    source_idx = int(selected.split(" • ", 1)[0])
+                    row = raw_override.loc[source_idx]
+                    c1, c2, c3 = st.columns(3)
+                    classe_op = c1.text_input("CLASSE_OPERACIONAL", value=optional_text(row.get("CLASSE_OPERACIONAL", "")), key=f"ov_classe_{source_idx}_{origem_override}")
+                    subbucket_op = c2.text_input("SUBBUCKET_OPERACIONAL", value=optional_text(row.get("SUBBUCKET_OPERACIONAL", "")), key=f"ov_sub_{source_idx}_{origem_override}")
+                    liq_default = pd.to_numeric(row.get("LIQUIDEZ_OPERACIONAL", np.nan), errors="coerce")
+                    liquidez_op = c3.number_input("LIQUIDEZ_OPERACIONAL", min_value=0.0, value=float(liq_default) if pd.notna(liq_default) else 0.0, step=1.0, key=f"ov_liq_{source_idx}_{origem_override}")
+                    c4, c5 = st.columns(2)
+                    rebalancear_op = c4.selectbox("REBALANCEAR", ["", "Sim", "Não"], index=0, key=f"ov_reb_{source_idx}_{origem_override}")
+                    obs_op = c5.text_input("OBSERVACAO_OPERACIONAL", value=optional_text(row.get("OBSERVACAO_OPERACIONAL", "")), key=f"ov_obs_{source_idx}_{origem_override}")
+                    if st.button("Salvar override do fundo", type="primary", use_container_width=True):
+                        updates = {
+                            "CLASSE_OPERACIONAL": classe_op,
+                            "SUBBUCKET_OPERACIONAL": subbucket_op,
+                            "LIQUIDEZ_OPERACIONAL": liquidez_op if liquidez_op > 0 else None,
+                            "REBALANCEAR": rebalancear_op,
+                            "STATUS_MAPEAMENTO": "Validado",
+                            "OBSERVACAO_OPERACIONAL": obs_op,
+                        }
+                        ok, msg = update_fund_override_from_app(origem_override, source_idx, updates)
+                        (st.success if ok else st.error)(msg)
+                else:
+                    st.info("Nenhum fundo encontrado para a busca.")
             else:
-                cols = [c for c in ["GRUPO_CLIENTE", "NIVEL", "TIPO_REGRA", "IDENTIFICADOR", "ACAO", "LIMITE_PERCENTUAL", "MOTIVO", "STATUS"] if c in restrictions_admin.columns]
-                st.dataframe(prepare_display(restrictions_admin[cols], pct_cols=["LIMITE_PERCENTUAL"], max_rows=300), use_container_width=True, hide_index=True)
-        st.caption("A edição detalhada continua no Cadastro Mestre. Esta tela serve para validação operacional e conferência antes do uso.")
+                st.warning("A aba selecionada não pôde ser lida.")
 
     with tab_historico:
         section_title("Histórico de versões publicadas")
         hist = model_history()
-        if hist.empty:
-            st.info("Nenhuma versão foi publicada pelo app até o momento.")
-        else:
-            st.dataframe(hist.sort_values("published_at", ascending=False), use_container_width=True, hide_index=True)
-
+        if hist.empty: st.info("Nenhuma versão foi publicada pelo app até o momento.")
+        else: st.dataframe(hist.sort_values("published_at", ascending=False), use_container_width=True, hide_index=True)
 
 
 st.caption("M Wealth Asset Allocation")
