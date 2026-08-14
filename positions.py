@@ -175,7 +175,7 @@ def load_control_accounts(src: str | Path | None = None) -> pd.DataFrame:
             df = df.rename(columns={c: "Perfil Carteira"})
 
     keep = [
-        "GRUPO GERAL", "corretora", "conta", "CLIENTE", "TIPO DE MARCAÇÃO ",
+        "GRUPO GERAL", "corretora", "conta", "CLIENTE", "TIPO DE MARCAÇÃO",
         "CLIENTE - CORRETORA", "Perfil Carteira"
     ]
     keep = [c for c in keep if c in df.columns]

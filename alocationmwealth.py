@@ -67,7 +67,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.1"
+APP_VERSION = "6.2"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -2598,11 +2598,29 @@ def recommend_exact_products(
     pl_base: float,
     corretoras_cliente: set[str],
 ) -> pd.DataFrame:
-    columns = ["Estratégia", "Produto recomendado", "Identificador", "Corretora", "Valor recomendado", "Prioridade", "Peso no pool", "Limite", "Restrição", "Observação"]
+    """Recomenda no máximo um produto do pool por classe/subbucket que precisa de ajuste.
+
+    Lógica em cascata por prioridade (não mais rateio proporcional do valor todo
+    entre todos os produtos elegíveis de uma vez):
+
+    - Compra: percorre as prioridades em ordem crescente (1, 2, 3...). O valor
+      ideal de cada prioridade é o peso dela (PESO_NO_POOL) aplicado sobre o
+      Valor Ideal da classe inteira. Assim que encontra a primeira prioridade
+      cujo valor já aplicado está abaixo do ideal dela, recomenda comprar só
+      essa - as prioridades seguintes só aparecem quando essa estiver completa.
+    - Venda: percorre as prioridades em ordem decrescente (a mais baixa
+      primeiro). Assim que encontra a primeira prioridade com valor aplicado
+      acima do ideal dela, recomenda vender o excesso só dessa.
+
+    Resultado: uma linha por classe que precisa de ajuste, e não uma lista
+    fragmentada em N produtos. PERFIL_MINIMO e APORTE_MINIMO não participam
+    da decisão: as restrições de perfil já são definidas pelas carteiras.
+    """
+    columns = ["Estratégia", "Ação", "Produto recomendado", "Identificador", "Corretora", "Valor recomendado", "Prioridade", "Peso no pool", "Limite", "Restrição", "Observação"]
     if pool.empty or sub_df.empty or pl_base <= 0:
         return pd.DataFrame(columns=columns)
     rows = []
-    needs = sub_df[(pd.to_numeric(sub_df["Diferença"], errors="coerce") > 300) & (~sub_df["Classe"].isin(["Caixa", "Fora da Estratégia"]))]
+    needs = sub_df[(pd.to_numeric(sub_df["Diferença"], errors="coerce").abs() > 300) & (~sub_df["Classe"].isin(["Caixa", "Fora da Estratégia"]))]
     for _, need in needs.iterrows():
         candidates = pool[
             pool["CLASSE"].fillna("").astype(str).map(norm).eq(norm(need["Classe"])) &
@@ -2610,19 +2628,15 @@ def recommend_exact_products(
         ].copy()
         if candidates.empty:
             continue
-        candidates = candidates[
-            candidates["ELEGIVEL_COMPRA"].map(lambda x: parse_yes_no(x, False)) &
-            ~candidates["APENAS_MANUTENCAO"].map(lambda x: parse_yes_no(x, False)) &
-            ~candidates["PRODUTO_FECHADO"].map(lambda x: parse_yes_no(x, False))
-        ].copy()
         if corretoras_cliente:
             candidates = candidates[candidates["CORRETORA"].fillna("Todas").astype(str).map(norm).isin({"TODAS", "", *{norm(x) for x in corretoras_cliente}})]
         if candidates.empty:
             continue
+
         allowed = []
-        for idx, prod in candidates.iterrows():
+        for _, prod in candidates.iterrows():
             action, reason, limit_override = restriction_action_for_product(prod, restrictions)
-            if norm(action) in {"NAO COMPRAR", "EXCLUIR DA CARTEIRA"}:
+            if norm(action) == "EXCLUIR DA CARTEIRA":
                 continue
             prod = prod.copy()
             prod["_restriction"] = action
@@ -2631,50 +2645,68 @@ def recommend_exact_products(
             allowed.append(prod)
         if not allowed:
             continue
-        candidates = pd.DataFrame(allowed).sort_values(["PRIORIDADE_COMPRA", "PESO_NO_POOL"], ascending=[True, False])
+        candidates = pd.DataFrame(allowed)
+
         weights = pd.to_numeric(candidates["PESO_NO_POOL"], errors="coerce").clip(lower=0)
+        weights = weights.fillna(0)
         if weights.sum() <= 0:
             weights = pd.Series(1.0, index=candidates.index)
         weights = weights / weights.sum()
-        remaining = float(need["Diferença"])
-        allocations = []
-        for idx, prod in candidates.iterrows():
-            target = float(need["Diferença"]) * float(weights.loc[idx])
-            min_aporte = float(pd.to_numeric(prod.get("APORTE_MINIMO", 0), errors="coerce") or 0)
-            limit_pct = prod.get("_limit_override")
-            if limit_pct is None:
-                limit_pct = float(pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", 1), errors="coerce") or 1)
-            current = current_value_for_pool_product(pos_cliente, prod)
-            capacity = max(0.0, pl_base * float(limit_pct) - current)
-            amount = min(target, capacity, remaining)
-            if amount >= min_aporte and amount > 0:
-                allocations.append((idx, amount))
-                remaining -= amount
-        if remaining > 300:
-            for idx, prod in candidates.iterrows():
-                if remaining <= 300:
-                    break
-                if any(i == idx for i, _ in allocations):
-                    continue
-                min_aporte = float(pd.to_numeric(prod.get("APORTE_MINIMO", 0), errors="coerce") or 0)
+        candidates = candidates.assign(_peso=weights)
+
+        valor_ideal_classe = float(pd.to_numeric(need.get("Valor Ideal", 0), errors="coerce") or 0.0)
+        diff = float(need["Diferença"])
+
+        if diff > 300:
+            # Compra: sobe da prioridade 1 em diante.
+            compraveis = candidates[
+                candidates["ELEGIVEL_COMPRA"].map(lambda x: parse_yes_no(x, False)) &
+                ~candidates["APENAS_MANUTENCAO"].map(lambda x: parse_yes_no(x, False)) &
+                ~candidates["PRODUTO_FECHADO"].map(lambda x: parse_yes_no(x, False)) &
+                ~candidates["_restriction"].map(lambda a: norm(a) == "NAO COMPRAR")
+            ].sort_values("PRIORIDADE_COMPRA", ascending=True)
+            for _, prod in compraveis.iterrows():
+                ideal_tier = valor_ideal_classe * float(prod["_peso"])
+                current = current_value_for_pool_product(pos_cliente, prod)
+                gap = ideal_tier - current
+                if gap <= 50:
+                    continue  # esta prioridade já está completa, olha a próxima
                 limit_pct = prod.get("_limit_override")
                 if limit_pct is None:
                     limit_pct = float(pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", 1), errors="coerce") or 1)
+                capacity = max(0.0, pl_base * float(limit_pct) - current)
+                amount = min(gap, diff, capacity)
+                if amount <= 0:
+                    continue
+                rows.append([
+                    friendly_strategy_name(str(need["Subbucket"])), "Comprar", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]),
+                    str(prod["CORRETORA"]), float(amount), int(prod["PRIORIDADE_COMPRA"]), float(prod["_peso"]),
+                    float(limit_pct), str(prod.get("_restriction", "")), str(prod.get("OBSERVACAO", "")),
+                ])
+                break  # só uma linha por classe
+
+        elif diff < -300:
+            # Venda: desce da prioridade mais baixa (número maior) em diante.
+            vendiveis = candidates[
+                ~candidates["_restriction"].map(lambda a: norm(a) in {"NAO VENDER", "MANTER POSICAO"})
+            ].sort_values("PRIORIDADE_COMPRA", ascending=False)
+            excesso_total = abs(diff)
+            for _, prod in vendiveis.iterrows():
+                ideal_tier = valor_ideal_classe * float(prod["_peso"])
                 current = current_value_for_pool_product(pos_cliente, prod)
-                already_allocated = sum(a for i, a in allocations if i == idx)
-                capacity = max(0.0, pl_base * float(limit_pct) - current - already_allocated)
-                amount = min(remaining, capacity)
-                if amount >= min_aporte:
-                    allocations.append((idx, amount))
-                    remaining -= amount
-        for idx, amount in allocations:
-            prod = candidates.loc[idx]
-            rows.append([
-                friendly_strategy_name(str(need["Subbucket"])), str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]),
-                str(prod["CORRETORA"]), float(amount), int(prod["PRIORIDADE_COMPRA"]), float(weights.loc[idx]),
-                float(prod.get("_limit_override") if prod.get("_limit_override") is not None else prod["LIMITE_POR_CLIENTE"]),
-                str(prod.get("_restriction", "")), str(prod.get("OBSERVACAO", "")),
-            ])
+                excesso = current - ideal_tier
+                if excesso <= 50:
+                    continue  # esta prioridade já está dentro do ideal, olha a próxima
+                amount = min(excesso, excesso_total)
+                if amount <= 0:
+                    continue
+                rows.append([
+                    friendly_strategy_name(str(need["Subbucket"])), "Vender", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]),
+                    str(prod["CORRETORA"]), -float(amount), int(prod["PRIORIDADE_COMPRA"]), float(prod["_peso"]),
+                    np.nan, str(prod.get("_restriction", "")), str(prod.get("OBSERVACAO", "")),
+                ])
+                break  # só uma linha por classe
+
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -3367,6 +3399,7 @@ if page == "Gestão":
     with k2: metric_card("Restrições ativas/cadastradas", str(len(restrictions_admin)))
     with k3: metric_card("Ativos B3", str(len(b3_admin)))
     with k4: metric_card("Fundos e previdência", str(len(fundos_admin)))
+
 
     tab_modelos, tab_personalizacoes, tab_historico = st.tabs(["Modelos de alocação", "Personalizações e regras", "Histórico de publicação"])
     with tab_modelos:
