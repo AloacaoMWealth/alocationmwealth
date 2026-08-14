@@ -865,7 +865,7 @@ def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
         bases.append(bm)
     manual = pd.concat(bases, ignore_index=True, sort=False) if bases else pd.DataFrame()
 
-    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo", "manual_fonte", "manual_score", "manual_metodo", "manual_classe_operacional", "manual_subbucket_operacional", "manual_rebalancear", "manual_status_mapeamento", "manual_observacao_operacional"]:
+    for col in ["manual_match", "manual_classe", "manual_liquidez", "manual_previdencia", "manual_fundo", "manual_cnpj", "manual_fonte", "manual_score", "manual_metodo", "manual_classe_operacional", "manual_subbucket_operacional", "manual_rebalancear", "manual_status_mapeamento", "manual_observacao_operacional"]:
         if col not in out.columns:
             out[col] = False if col == "manual_match" else (np.nan if col in ["manual_liquidez", "manual_score"] else "")
     if manual.empty:
@@ -920,6 +920,7 @@ def apply_manual_fund_mapping(df: pd.DataFrame) -> pd.DataFrame:
     out.loc[mask, "manual_liquidez"] = recs[mask].apply(lambda r: pd.to_numeric(r.get("Liquidez (D+)", np.nan), errors="coerce"))
     out.loc[mask, "manual_previdencia"] = recs[mask].apply(lambda r: str(r.get("Previdência", "")).strip())
     out.loc[mask, "manual_fundo"] = recs[mask].apply(lambda r: str(r.get("Fundo", "")).strip())
+    out.loc[mask, "manual_cnpj"] = recs[mask].apply(lambda r: only_digits_str(r.get("CNPJ", r.get("cnpj_norm", ""))))
     out.loc[mask, "manual_fonte"] = recs[mask].apply(lambda r: str(r.get("Fonte", "")).strip())
     out.loc[mask, "manual_classe_operacional"] = recs[mask].apply(lambda r: str(r.get("Classe Operacional", "")).strip())
     out.loc[mask, "manual_subbucket_operacional"] = recs[mask].apply(lambda r: str(r.get("Subbucket Operacional", "")).strip())
@@ -2440,24 +2441,53 @@ def update_fund_override_from_app(sheet_name: str, row_index: int, updates: dict
 
 
 def current_value_for_pool_product(pos_cliente: pd.DataFrame, prod: pd.Series) -> float:
-    """Calcula posição atual pela chave correta do produto (Ticker, CNPJ ou Nome)."""
+    """Calcula a posição atual do produto do pool usando a melhor chave disponível.
+
+    Para fundos por CNPJ, primeiro usa o CNPJ bruto da corretora; se ele não
+    existir, usa o CNPJ do casamento com o Cadastro Mestre e, por último, o nome
+    normalizado já reconciliado. Isso evita recomendar o alvo cheio para um fundo
+    que o cliente já possui, mas cujo relatório veio sem CNPJ.
+    """
     if pos_cliente.empty:
         return 0.0
+
     tipo = norm(prod.get("TIPO_IDENTIFICADOR", ""))
     ident = prod.get("IDENTIFICADOR", "")
+    nome_produto = str(prod.get("NOME_PRODUTO", "") or "").strip()
+    idx = pos_cliente.index
+    mask = pd.Series(False, index=idx)
+
     if tipo == "CNPJ":
         key = only_digits_str(ident)
-        series = pos_cliente.get("cnpj", pd.Series("", index=pos_cliente.index)).apply(only_digits_str)
-        mask = series.eq(key) if key else pd.Series(False, index=pos_cliente.index)
+        if key:
+            raw_cnpj = pos_cliente.get("cnpj", pd.Series("", index=idx)).apply(only_digits_str)
+            mapped_cnpj = pos_cliente.get("manual_cnpj", pd.Series("", index=idx)).apply(only_digits_str)
+            mask = raw_cnpj.eq(key) | mapped_cnpj.eq(key)
+
+        if not mask.any() and nome_produto:
+            key_name = fund_name_key(nome_produto)
+            if key_name:
+                manual_names = pos_cliente.get("manual_fundo", pd.Series("", index=idx)).astype(str).apply(fund_name_key)
+                asset_names = pos_cliente.get("asset_nome", pd.Series("", index=idx)).astype(str).apply(fund_name_key)
+                asset_ids = pos_cliente.get("asset_id", pd.Series("", index=idx)).astype(str).apply(fund_name_key)
+                mask = manual_names.eq(key_name) | asset_names.eq(key_name) | asset_ids.eq(key_name)
+
     elif tipo == "NOME":
-        key = fund_name_key(str(ident or prod.get("NOME_PRODUTO", "")))
-        names = pos_cliente.get("asset_nome", pd.Series("", index=pos_cliente.index)).astype(str).apply(fund_name_key)
-        mask = names.eq(key) if key else pd.Series(False, index=pos_cliente.index)
+        key = fund_name_key(str(ident or nome_produto))
+        if key:
+            manual_names = pos_cliente.get("manual_fundo", pd.Series("", index=idx)).astype(str).apply(fund_name_key)
+            asset_names = pos_cliente.get("asset_nome", pd.Series("", index=idx)).astype(str).apply(fund_name_key)
+            asset_ids = pos_cliente.get("asset_id", pd.Series("", index=idx)).astype(str).apply(fund_name_key)
+            mask = manual_names.eq(key) | asset_names.eq(key) | asset_ids.eq(key)
+
     else:
         key = ticker_clean(ident)
-        series = pos_cliente.get("ticker_norm", pd.Series("", index=pos_cliente.index)).astype(str)
-        mask = series.eq(key) if key else pd.Series(False, index=pos_cliente.index)
-    return float(pd.to_numeric(pos_cliente.loc[mask, "valor_mercado"], errors="coerce").fillna(0.0).sum()) if mask.any() else 0.0
+        series = pos_cliente.get("ticker_norm", pd.Series("", index=idx)).astype(str)
+        mask = series.eq(key) if key else pd.Series(False, index=idx)
+
+    if not mask.any():
+        return 0.0
+    return float(pd.to_numeric(pos_cliente.loc[mask, "valor_mercado"], errors="coerce").fillna(0.0).sum())
 
 
 def pool_metadata_for_ticker(ticker: str, pool: pd.DataFrame) -> dict[str, str]:
@@ -2616,7 +2646,7 @@ def recommend_exact_products(
     fragmentada em N produtos. PERFIL_MINIMO e APORTE_MINIMO não participam
     da decisão: as restrições de perfil já são definidas pelas carteiras.
     """
-    columns = ["Estratégia", "Ação", "Produto recomendado", "Identificador", "Corretora", "Valor recomendado", "Prioridade", "Peso no pool", "Limite", "Restrição", "Observação"]
+    columns = ["Estratégia", "Ação", "Produto recomendado", "Identificador", "Corretora", "Valor atual no produto", "Alvo do produto", "Valor recomendado", "Prioridade", "Peso no pool", "Limite", "Restrição", "Observação"]
     if pool.empty or sub_df.empty or pl_base <= 0:
         return pd.DataFrame(columns=columns)
     rows = []
@@ -2680,7 +2710,7 @@ def recommend_exact_products(
                     continue
                 rows.append([
                     friendly_strategy_name(str(need["Subbucket"])), "Comprar", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]),
-                    str(prod["CORRETORA"]), float(amount), int(prod["PRIORIDADE_COMPRA"]), float(prod["_peso"]),
+                    str(prod["CORRETORA"]), float(current), float(ideal_tier), float(amount), int(prod["PRIORIDADE_COMPRA"]), float(prod["_peso"]),
                     float(limit_pct), str(prod.get("_restriction", "")), str(prod.get("OBSERVACAO", "")),
                 ])
                 break  # só uma linha por classe
@@ -2702,7 +2732,7 @@ def recommend_exact_products(
                     continue
                 rows.append([
                     friendly_strategy_name(str(need["Subbucket"])), "Vender", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]),
-                    str(prod["CORRETORA"]), -float(amount), int(prod["PRIORIDADE_COMPRA"]), float(prod["_peso"]),
+                    str(prod["CORRETORA"]), float(current), float(ideal_tier), -float(amount), int(prod["PRIORIDADE_COMPRA"]), float(prod["_peso"]),
                     np.nan, str(prod.get("_restriction", "")), str(prod.get("OBSERVACAO", "")),
                 ])
                 break  # só uma linha por classe
@@ -3167,7 +3197,7 @@ if page == "Asset Allocation":
         st.dataframe(
             money_color_styler(
                 recomendacoes_produtos,
-                money_cols=["Valor recomendado"],
+                money_cols=["Valor atual no produto", "Alvo do produto", "Valor recomendado"],
                 pct_cols=["Peso no pool", "Limite"],
                 diff_cols=["Valor recomendado"],
             ),
