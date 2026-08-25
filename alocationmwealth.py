@@ -67,7 +67,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.3"
+APP_VERSION = "6.4"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -110,29 +110,39 @@ SUBBUCKET_ORDER = [
 st.markdown(
     """
     <style>
+    :root {
+      --mw-bg: #131925;
+      --mw-text: #FFFFFF;
+      --mw-beige: #DCC9B1;
+      --mw-blue: #5D73AF;
+    }
     [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
-    .block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; max-width: 1680px; }
+    .stApp { background: var(--mw-bg); color: var(--mw-text); }
+    .block-container { padding-top: .9rem; padding-bottom: 2.0rem; max-width: 1720px; }
     div[data-testid="stMetricValue"] { font-size: 1.2rem; }
-    .mw-header { display: flex; align-items: center; gap: 1.2rem; margin-bottom: .35rem; }
-    .mw-title { font-size: 2.2rem; line-height: 1.1; font-weight: 800; margin: 0; }
-    .mw-version { color: rgba(250,250,250,.45); font-size: .78rem; margin-top: .25rem; }
-    .mw-card { border: 1px solid rgba(255,255,255,.10); border-radius: 16px; padding: 16px 18px; background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.022)); box-shadow: 0 10px 24px rgba(0,0,0,.12); }
-    .mw-card-label { color: rgba(250,250,250,.68); font-size: .82rem; font-weight: 650; margin-bottom: .35rem; }
-    .mw-card-value { color: #fff; font-size: 1.38rem; font-weight: 800; letter-spacing: -.02em; }
-    .mw-muted { color: rgba(250,250,250,.65); font-size: .86rem; }
-    .mw-ok { color: #77dd77; font-weight: 700; }
-    .mw-warn { color: #ffd166; font-weight: 700; }
-    .mw-bad { color: #ff6b6b; font-weight: 700; }
-    .mw-line { border-top: 1px solid rgba(255,255,255,.10); margin: .9rem 0 1.1rem 0; }
-    .mw-page-intro { border: 1px solid rgba(255,255,255,.10); border-radius: 18px; padding: 20px 22px; margin: 0 0 1rem 0; background: radial-gradient(circle at 85% 15%, rgba(70,104,180,.20), transparent 34%), linear-gradient(135deg, rgba(33,50,84,.75), rgba(14,18,27,.82)); }
-    .mw-eyebrow { color: #9fb5e5; font-size: .75rem; font-weight: 800; letter-spacing: .10em; text-transform: uppercase; }
-    .mw-page-title { color: #fff; font-size: 1.65rem; font-weight: 850; margin: .20rem 0 .25rem 0; }
-    .mw-page-text { color: rgba(250,250,250,.67); max-width: 980px; font-size: .91rem; }
-    .mw-section-title { font-size: 1.13rem; font-weight: 800; margin: 1.15rem 0 .20rem 0; }
-    .mw-pill { display:inline-block; border:1px solid rgba(255,255,255,.14); border-radius:999px; padding:.25rem .55rem; margin-right:.25rem; color:rgba(255,255,255,.75); font-size:.74rem; }
+    .mw-title { font-size: 2.2rem; line-height: 1.1; font-weight: 800; margin: 0; color: var(--mw-text); }
+    .mw-version { color: rgba(255,255,255,.62); font-size: .82rem; margin-top: .35rem; }
+    .mw-card { border: 1px solid rgba(220,201,177,.20); border-radius: 16px; padding: 14px 16px; background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015)); box-shadow: 0 10px 24px rgba(0,0,0,.10); min-height: 96px; }
+    .mw-card-label { color: rgba(255,255,255,.68); font-size: .80rem; font-weight: 650; margin-bottom: .30rem; }
+    .mw-card-value { color: var(--mw-text); font-size: 1.30rem; font-weight: 800; letter-spacing: -.02em; }
+    .mw-muted { color: rgba(255,255,255,.68); font-size: .86rem; }
+    .mw-ok { color: #8be28b; font-weight: 700; }
+    .mw-warn { color: #f1d27a; font-weight: 700; }
+    .mw-bad { color: #ff8d8d; font-weight: 700; }
+    .mw-line { border-top: 1px solid rgba(220,201,177,.16); margin: .8rem 0 1rem 0; }
+    .mw-page-intro { display:none; }
+    .mw-eyebrow, .mw-page-title, .mw-page-text, .mw-pill { display:none; }
+    .mw-section-title { font-size: 1.10rem; font-weight: 800; margin: 1.0rem 0 .20rem 0; color: var(--mw-text); }
     div[data-testid="stTabs"] button { font-weight: 750; }
     div[data-testid="stDataFrame"] { border: 1px solid rgba(255,255,255,.08); border-radius: 12px; overflow: hidden; }
     div[data-testid="stExpander"] { border-radius: 12px; }
+    button[kind="primary"] { background-color: var(--mw-blue) !important; border-color: var(--mw-blue) !important; }
+    div[data-baseweb="input"] > div { background-color: rgba(255,255,255,.03); }
+    div[data-baseweb="select"] > div { background-color: rgba(255,255,255,.03); }
+    div[data-testid="stSegmentedControl"] [role="radiogroup"] { gap: .4rem; }
+    div[data-testid="stSegmentedControl"] label { border: 1px solid rgba(220,201,177,.20) !important; border-radius: 12px !important; padding: .12rem .35rem !important; background: rgba(255,255,255,.02) !important; }
+    div[data-testid="stSegmentedControl"] label[data-selected="true"] { background: rgba(93,115,175,.22) !important; border-color: rgba(93,115,175,.60) !important; }
+    div[data-testid="stSegmentedControl"] p { font-weight: 700 !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -348,22 +358,11 @@ def metric_card(label: str, value: str) -> None:
 
 
 def page_intro(eyebrow: str, title: str, text: str, pills: list[str] | None = None) -> None:
-    pill_html = "".join(f'<span class="mw-pill">{escape(str(p))}</span>' for p in (pills or []))
-    st.markdown(
-        '<div class="mw-page-intro">'
-        f'<div class="mw-eyebrow">{escape(eyebrow)}</div>'
-        f'<div class="mw-page-title">{escape(title)}</div>'
-        f'<div class="mw-page-text">{escape(text)}</div>'
-        + (f'<div style="margin-top:.65rem">{pill_html}</div>' if pill_html else '')
-        + '</div>',
-        unsafe_allow_html=True,
-    )
+    return None
 
 
 def section_title(title: str, subtitle: str = "") -> None:
     st.markdown(f'<div class="mw-section-title">{escape(title)}</div>', unsafe_allow_html=True)
-    if subtitle:
-        st.markdown(f'<div class="mw-muted">{escape(subtitle)}</div>', unsafe_allow_html=True)
 
 
 def ensure_saldo_operacional(df: pd.DataFrame) -> pd.DataFrame:
@@ -3130,22 +3129,19 @@ pesos = load_published_models(pesos_base, master_products_path())
 df_contas = load_contas_cached()
 
 lp = logo_path()
-if lp:
-    h_logo, h_title = st.columns([1.15, 5.85], vertical_alignment="center")
-    with h_logo:
-        st.image(str(lp), width=250)
-    with h_title:
-        st.markdown('<h1 class="mw-title">Balanceamento de Carteiras</h1>', unsafe_allow_html=True)
-        st.markdown(f'<div class="mw-version">M Wealth • Versão {APP_VERSION}</div>', unsafe_allow_html=True)
-else:
-    st.markdown('<h1 class="mw-title">M Wealth - Balanceamento de Carteiras</h1>', unsafe_allow_html=True)
+h_left, h_right = st.columns([1.45, 4.55], vertical_alignment="center")
+with h_left:
+    if lp:
+        st.image(str(lp), use_container_width=True)
+    else:
+        st.markdown('<h1 class="mw-title">M Wealth</h1>', unsafe_allow_html=True)
     st.markdown(f'<div class="mw-version">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
-
-page = st.segmented_control(
-    "",
-    ["Controle de Saldo", "Asset Allocation", "Carteira Teórica", "Gestão"],
-    default="Controle de Saldo",
-)
+with h_right:
+    page = st.segmented_control(
+        "",
+        ["Controle de Saldo", "Asset Allocation", "Carteira Teórica", "Gestão"],
+        default="Controle de Saldo",
+    )
 if page is None:
     page = "Controle de Saldo"
 
@@ -3155,14 +3151,9 @@ st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
 # Página 1 - Controle de saldo
 # =============================================================================
 if page == "Controle de Saldo":
-    page_intro("Rotina operacional", "Controle de saldo", "Identifique rapidamente contas com caixa disponível, saldos negativos e prioridades de aplicação.", ["Atualização controlada", "Filtro por saldo", "Visão por conta"])
 
-    c0, c1, c2 = st.columns([1.0, 1.35, 4.2], vertical_alignment="bottom")
-    force = c0.button("Atualizar base", type="primary", use_container_width=True)
-    if force:
-        st.cache_data.clear()
-    min_saldo_txt = c1.text_input("Saldo mínimo", value=format_brl(10000.0), help="Digite no formato financeiro. Ex.: R$ 10.000,00")
-    min_saldo = parse_brl_input(min_saldo_txt, 10000.0)
+    force = False
+    min_saldo = 10000.0
 
     try:
         df_latest, meta, mode = load_positions_cached(force_rebuild=force)
@@ -3187,56 +3178,37 @@ if page == "Controle de Saldo":
     )
     painel = pl_conta.merge(saldo_conta, how="left", on=["GRUPO GERAL", "CLIENTE", "corretora", "conta"]).fillna({"Saldo": 0.0})
 
-    operaveis = painel[(painel["Saldo"] >= min_saldo) | (painel["Saldo"] < 0)].sort_values("Saldo", ascending=False)
-
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        metric_card("Contas com saldo acima do mínimo", f"{int((painel['Saldo'] >= min_saldo).sum())}")
-    with k2:
+    s1, s2, s3, s4, s5 = st.columns([1.0, 1.15, 1.2, 1.3, 1.15], vertical_alignment="bottom")
+    with s1:
+        force = st.button("Atualizar base", type="primary", use_container_width=True)
+        if force:
+            st.cache_data.clear()
+            st.rerun()
+    with s2:
+        min_saldo_txt = st.text_input("Saldo mínimo", value=format_brl(10000.0), help="Digite no formato financeiro. Ex.: R$ 10.000,00")
+        min_saldo = parse_brl_input(min_saldo_txt, 10000.0)
+    with s3:
+        metric_card("Contas acima do mínimo", f"{int((painel['Saldo'] >= min_saldo).sum())}")
+    with s4:
         metric_card("Saldo total disponível", format_brl(painel.loc[painel["Saldo"] > 0, "Saldo"].sum()))
-    with k3:
+    with s5:
         metric_card("Caixa negativo", format_brl(painel.loc[painel["Saldo"] < 0, "Saldo"].sum()))
+
+    operaveis = painel[(painel["Saldo"] >= min_saldo) | (painel["Saldo"] < 0)].sort_values("Saldo", ascending=False)
 
     st.subheader("Contas com saldo para operação")
     cols = ["GRUPO GERAL", "CLIENTE", "corretora", "conta", "PL", "Saldo"]
     st.dataframe(prepare_display(operaveis[cols], money_cols=["PL", "Saldo"], max_rows=700), use_container_width=True, hide_index=True)
-
-    with st.expander("Ver todas as contas, inclusive sem saldo operacional", expanded=False):
-        st.dataframe(prepare_display(painel[cols].sort_values("Saldo", ascending=False), money_cols=["PL", "Saldo"], max_rows=1200), use_container_width=True, hide_index=True)
 
 
 # =============================================================================
 # Página 2 - Asset Allocation
 # =============================================================================
 if page == "Asset Allocation":
-    page_intro("Diagnóstico e execução", "Asset Allocation", "Compare a carteira atual com o modelo, entenda os desvios e transforme necessidades por estratégia em recomendações executáveis.", ["Atual x ideal", "Produtos exatos", "Restrições", "Qualidade da base"])
     cadastro_ativo = master_products_path()
-    st.caption(f"Cadastro mestre carregado: **{cadastro_ativo.name}**")
     cadastro_sig = file_cache_signature(cadastro_ativo)
     pool_produtos = load_product_pool_cached(str(cadastro_ativo), *cadastro_sig)
     restricoes_base = load_client_restrictions_cached(str(cadastro_ativo), *cadastro_sig)
-    try:
-        _b3_health = load_b3_master_cached(str(cadastro_ativo), *file_cache_signature(cadastro_ativo))
-        _fund_health = load_fundos_prev_cached(str(cadastro_ativo), *file_cache_signature(cadastro_ativo))
-        with st.expander("Saúde das bases e cadastros", expanded=False):
-            h1, h2, h3, h4 = st.columns(4)
-            h1.metric("Ativos B3 cadastrados", len(_b3_health))
-            h2.metric("Fundos/Previdência", len(_fund_health))
-            h3.metric("Arquivo mestre", cadastro_ativo.name)
-            h4.metric("Pesos carregados", len(pesos))
-            invalid_models = []
-            for _model_name, _model_weights in pesos.items():
-                _total_children = sum(float(v or 0) for k, v in _model_weights.items() if norm(k) not in PARENT_WEIGHT_KEYS)
-                if abs(_total_children - 1.0) > 0.015:
-                    invalid_models.append(f"{_model_name}: {_total_children:.2%}")
-            if invalid_models:
-                st.warning("Modelos cuja soma dos componentes difere de 100%: " + ", ".join(invalid_models))
-            if _b3_health.empty:
-                st.error("A aba Ativos B3 não foi carregada ou não possui registros válidos.")
-            if _fund_health.empty:
-                st.warning("As abas de Fundos/Previdência estão vazias ou não puderam ser lidas.")
-    except Exception as _health_error:
-        st.error(f"Falha ao validar o cadastro mestre: {_health_error}")
     try:
         df_latest, meta, mode = load_positions_cached(force_rebuild=False)
         df_latest = enrich_positions_cached(df_latest, mapping_files_signature())
@@ -3363,7 +3335,6 @@ if page == "Asset Allocation":
         )
 
     st.subheader("Abertura por estratégia")
-    st.markdown('<div class="mw-muted">Abertura objetiva por classe. A diferença positiva indica valor a alocar; diferença negativa indica excesso.</div>', unsafe_allow_html=True)
     class_order = ["RF Brasil", "Alternativos"]
     for classe in class_order:
         class_df = sub_df[sub_df["Classe"].eq(classe)].copy()
@@ -3542,26 +3513,11 @@ if page == "Asset Allocation":
     else:
         st.info("Nenhuma estratégia encontrada para detalhamento.")
 
-    with st.expander("Revisões e exceções", expanded=False):
-        universo = set(ACOES_SEM_RENDA + ACOES_COM_RENDA + FIIS_RECOMENDADOS + FI_INFRA_TICKERS + list(ATIVOS_ESTRATEGICOS_B3.keys()))
-        fora_df = pos_cliente[
-            pos_cliente["classe_macro"].eq("Fora da Estratégia") |
-            ((pos_cliente["classe_macro"].eq("RV Brasil")) & (~pos_cliente["ticker_norm"].isin({ticker_clean(x) for x in universo}))) |
-            (pos_cliente["subbucket"].str.contains("Sem Liquidez|Não Classificado|COE|Previdência", case=False, na=False))
-        ].sort_values("valor_mercado", ascending=False)
-        cols = ["corretora", "conta", "CLIENTE", "asset_id", "asset_nome", "classe_macro", "subbucket", "tratamento", "manual_fundo", "manual_classe", "manual_liquidez", "manual_metodo", "manual_score", "b3_match", "b3_tipo_produto", "b3_estrategia", "b3_liquidez_operacional", "b3_fonte_preco", "fonte_preco", "liquidez_operacional_aplicada", "b3_status_mapeamento", "rebalancear", "valor_mercado", "quantidade", "indexador", "liquidez", "vencimento"]
-        view = fora_df[[c for c in cols if c in fora_df.columns]].copy()
-        for c in ["classe_macro", "subbucket"]:
-            if c in view.columns:
-                view[c] = view[c].apply(friendly_class_name if c == "classe_macro" else friendly_strategy_name)
-        st.dataframe(prepare_display(view, money_cols=["valor_mercado"], qty_cols=["quantidade"], max_rows=500), use_container_width=True, hide_index=True)
-
 
 # =============================================================================
 # Página 3 - Carteira Teórica
 # =============================================================================
 if page == "Carteira Teórica":
-    page_intro("Simulação para cliente", "Carteira teórica", "Visualize a carteira modelo com a mesma lógica do Asset Allocation e gere um material institucional pronto para apresentação.", ["Tabela hierárquica", "Produtos da estratégia", "PDF institucional"])
     modelos = list(pesos.keys())
     if not modelos:
         st.error("Pesos-alocacao.xlsx não foi encontrado ou não pôde ser lido.")
@@ -3676,7 +3632,6 @@ if page == "Carteira Teórica":
 # Página 4 - Gestão
 # =============================================================================
 if page == "Gestão":
-    page_intro("Governança", "Gestão de modelos e personalizações", "Edite pesos, pools, restrições e exceções operacionais diretamente no app. As alterações são registradas no Cadastro Mestre e passam a valer após o salvamento/publicação.", ["Modelos versionados", "Input direto", "Restrições", "Cadastro Mestre"])
     cadastro_ativo = master_products_path()
     sig = file_cache_signature(cadastro_ativo)
     pool_admin = load_product_pool_cached(str(cadastro_ativo), *sig)
@@ -3774,7 +3729,6 @@ if page == "Gestão":
             else: st.error(message)
 
     with tab_personalizacoes:
-        st.info("As edições abaixo alteram o Cadastro Mestre. Para evitar conflito de arquivo, mantenha a planilha fechada no Excel enquanto salvar pelo app.")
         p_pool, p_restr, p_b3, p_fundos = st.tabs(["Pool de Produtos", "Restrições por Cliente", "Ativos B3", "Overrides de Fundos/Prev"])
 
         with p_pool:
@@ -3876,4 +3830,3 @@ if page == "Gestão":
         else: st.dataframe(hist.sort_values("published_at", ascending=False), use_container_width=True, hide_index=True)
 
 
-st.caption("M Wealth Asset Allocation")
