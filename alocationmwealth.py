@@ -124,7 +124,7 @@ st.markdown(
     }
     [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
     .stApp { background: linear-gradient(180deg, #131925 0%, #111824 100%); color: var(--mw-text); }
-    .block-container { padding-top: 2.45rem; padding-bottom: 1.8rem; max-width: 1580px; }
+    .block-container { padding-top: 4rem; padding-bottom: 1.8rem; max-width: 1580px; }
     div[data-testid="stMetricValue"] { font-size: 1.06rem; }
     .mw-title { font-size: 1.9rem; line-height: 1.05; font-weight: 800; margin: 0; color: var(--mw-text); }
     .mw-version { color: rgba(255,255,255,.48); font-size: .76rem; margin-top: .18rem; }
