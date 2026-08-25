@@ -68,7 +68,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.8.3"
+APP_VERSION = "6.8.4"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -123,7 +123,7 @@ st.markdown(
     }
     [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
     .stApp { background: linear-gradient(180deg, #131925 0%, #111824 100%); color: var(--mw-text); }
-    .block-container { padding-top: 1.75rem; padding-bottom: 1.8rem; max-width: 1580px; }
+    .block-container { padding-top: 2.45rem; padding-bottom: 1.8rem; max-width: 1580px; }
     div[data-testid="stMetricValue"] { font-size: 1.06rem; }
     .mw-title { font-size: 1.9rem; line-height: 1.05; font-weight: 800; margin: 0; color: var(--mw-text); }
     .mw-version { color: rgba(255,255,255,.48); font-size: .76rem; margin-top: .18rem; }
@@ -133,22 +133,65 @@ st.markdown(
     .mw-section-title:before { content:""; position:absolute; left:0; top:.18rem; bottom:.12rem; width:3px; border-radius:3px; background:linear-gradient(180deg,var(--mw-blue),var(--mw-beige)); }
 
     /* Header institucional construído em CSS: não depende de crop da imagem. */
-    .mw-brand-lockup { display:flex; align-items:center; gap:.58rem; height:54px; white-space:nowrap; }
-    .mw-brand-mark { width:48px; height:48px; border:3px solid var(--mw-blue); display:flex; align-items:center; justify-content:center; color:#FFFFFF; font-size:29px; font-weight:500; line-height:1; box-sizing:border-box; }
-    .mw-brand-word { color:#FFFFFF; font-size:2.05rem; font-weight:400; letter-spacing:-.035em; line-height:1; }
+    .mw-brand-lockup { display:flex; align-items:center; gap:.58rem; min-height:58px; padding:.15rem 0; white-space:nowrap; overflow:visible; }
+    .mw-brand-mark { width:44px; height:44px; border:3px solid var(--mw-blue); display:flex; align-items:center; justify-content:center; color:#FFFFFF; font-size:27px; font-weight:500; line-height:1; box-sizing:border-box; flex:0 0 auto; }
+    .mw-brand-word { color:#FFFFFF; font-size:1.92rem; font-weight:400; letter-spacing:-.035em; line-height:1; }
     .mw-version-row { margin-top:.18rem; margin-bottom:.08rem; color:rgba(255,255,255,.42); font-size:.72rem; }
 
-    /* Navegação clean: componente nativo, sem rádio, sem card. */
-    .st-key-mw_navigation div[data-testid="stSegmentedControl"] { width:auto !important; }
-    .st-key-mw_navigation div[data-testid="stSegmentedControl"] [role="group"],
-    .st-key-mw_navigation div[data-testid="stSegmentedControl"] [role="radiogroup"] { display:flex !important; gap:1.45rem !important; align-items:center !important; background:transparent !important; border:0 !important; box-shadow:none !important; }
-    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button { position:relative !important; min-height:40px !important; padding:.55rem .02rem .48rem .02rem !important; margin:0 !important; border:0 !important; border-radius:0 !important; background:transparent !important; box-shadow:none !important; color:rgba(255,255,255,.60) !important; font-weight:720 !important; transition:color .15s ease !important; }
-    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button:hover { color:var(--mw-beige) !important; background:transparent !important; }
-    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button[aria-pressed="true"],
-    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button[data-selected="true"] { color:#FFFFFF !important; background:transparent !important; }
-    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button[aria-pressed="true"]::after,
-    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button[data-selected="true"]::after { content:""; position:absolute; left:0; right:0; bottom:0; height:2px; border-radius:2px; background:linear-gradient(90deg,var(--mw-blue) 0%,var(--mw-blue) 72%,var(--mw-beige) 100%); }
-    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button svg { display:none !important; }
+    /* Navegação horizontal: mesma interação instantânea, sem a bolinha do radio. */
+    .st-key-mw_navigation div[role="radiogroup"] {
+      display:flex !important;
+      flex-direction:row !important;
+      gap:1.45rem !important;
+      align-items:center !important;
+      background:transparent !important;
+      border:0 !important;
+      padding:0 !important;
+    }
+    .st-key-mw_navigation div[role="radiogroup"] > label {
+      position:relative !important;
+      display:flex !important;
+      align-items:center !important;
+      min-height:40px !important;
+      padding:.48rem .02rem .52rem .02rem !important;
+      margin:0 !important;
+      border:0 !important;
+      background:transparent !important;
+      cursor:pointer !important;
+      color:rgba(255,255,255,.62) !important;
+    }
+    /* Esconde exclusivamente o indicador circular; preserva o texto. */
+    .st-key-mw_navigation div[role="radiogroup"] > label > div:first-child {
+      display:none !important;
+      width:0 !important;
+      height:0 !important;
+      margin:0 !important;
+      padding:0 !important;
+    }
+    .st-key-mw_navigation div[role="radiogroup"] > label p {
+      margin:0 !important;
+      color:rgba(255,255,255,.62) !important;
+      font-weight:720 !important;
+      line-height:1.2 !important;
+      white-space:nowrap !important;
+    }
+    .st-key-mw_navigation div[role="radiogroup"] > label:hover p {
+      color:var(--mw-beige) !important;
+    }
+    .st-key-mw_navigation div[role="radiogroup"] > label:has(input:checked) p {
+      color:#FFFFFF !important;
+    }
+    .st-key-mw_navigation div[role="radiogroup"] > label:has(input:checked)::after {
+      content:"";
+      position:absolute;
+      left:0;
+      right:0;
+      bottom:0;
+      height:2px;
+      border-radius:2px;
+      background:linear-gradient(90deg,var(--mw-blue) 0%,var(--mw-blue) 72%,var(--mw-beige) 100%);
+    }
+
 
     .mw-card { border: 1px solid rgba(93,115,175,.20); border-radius: 13px; padding: 10px 12px; background:linear-gradient(150deg,rgba(93,115,175,.055),rgba(19,25,37,.18)); min-height:82px; display:flex; flex-direction:column; justify-content:center; box-shadow:none; }
     .mw-card:hover { border-color:rgba(93,115,175,.34); }
@@ -3260,15 +3303,16 @@ with h_left:
     )
 with h_right:
     with st.container(key="mw_navigation"):
-        page = st.segmented_control(
+        _current_page = st.session_state.get("main_navigation", "Controle de Saldo")
+        _nav_index = _nav_items.index(_current_page) if _current_page in _nav_items else 0
+        page = st.radio(
             "Navegação",
             _nav_items,
-            default=st.session_state.get("main_navigation", "Controle de Saldo"),
+            index=_nav_index,
+            horizontal=True,
             label_visibility="collapsed",
-            key="main_navigation_segment",
+            key="main_navigation_radio",
         )
-        if page is None:
-            page = st.session_state.get("main_navigation", "Controle de Saldo")
         st.session_state["main_navigation"] = page
 
 st.markdown(f'<div class="mw-version-row">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
