@@ -68,7 +68,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.8.1"
+APP_VERSION = "6.8.2"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -123,7 +123,7 @@ st.markdown(
     }
     [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
     .stApp { background: linear-gradient(180deg, #131925 0%, #111824 100%); color: var(--mw-text); }
-    .block-container { padding-top: 1.45rem; padding-bottom: 1.8rem; max-width: 1580px; }
+    .block-container { padding-top: 1.75rem; padding-bottom: 1.8rem; max-width: 1580px; }
     div[data-testid="stMetricValue"] { font-size: 1.06rem; }
     .mw-title { font-size: 1.9rem; line-height: 1.05; font-weight: 800; margin: 0; color: var(--mw-text); }
     .mw-version { color: rgba(255,255,255,.48); font-size: .76rem; margin-top: .18rem; }
@@ -134,13 +134,19 @@ st.markdown(
 
     /* Navegação institucional: texto transparente + linha inferior no item ativo. */
     /* Navegação institucional: controle nativo do Streamlit sem reload completo. */
-    .st-key-mw_navigation div[data-testid="stRadio"] > div[role="radiogroup"] { display:flex !important; flex-direction:row !important; gap:1.45rem !important; align-items:center !important; }
-    .st-key-mw_navigation div[data-testid="stRadio"] label { position:relative !important; margin:0 !important; padding:.72rem .02rem .62rem .02rem !important; background:transparent !important; border:0 !important; border-radius:0 !important; color:rgba(255,255,255,.60) !important; transition:color .15s ease !important; }
-    /* remove completamente o círculo/indicador visual do radio sem perder o estado */
-    .st-key-mw_navigation label[data-baseweb="radio"] > div > div:first-child { display:none !important; width:0 !important; min-width:0 !important; margin:0 !important; padding:0 !important; }
-    .st-key-mw_navigation label[data-baseweb="radio"] > div { gap:0 !important; }
-    .st-key-mw_navigation div[data-testid="stRadio"] input[type="radio"] { position:absolute !important; opacity:0 !important; pointer-events:none !important; width:1px !important; height:1px !important; }
-    .st-key-mw_navigation div[data-testid="stRadio"] label p { font-size:.88rem !important; font-weight:720 !important; color:inherit !important; white-space:nowrap !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] > div[role="radiogroup"] { display:flex !important; flex-direction:row !important; gap:1.55rem !important; align-items:center !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] label { position:relative !important; margin:0 !important; padding:.62rem .04rem .52rem .04rem !important; background:transparent !important; border:0 !important; border-radius:0 !important; color:rgba(255,255,255,.58) !important; transition:color .15s ease !important; cursor:pointer !important; }
+    /* O radio é usado apenas como estado. Qualquer indicador visual nativo é ocultado. */
+    .st-key-mw_navigation div[role="radiogroup"] label > div:first-child,
+    .st-key-mw_navigation div[role="radiogroup"] label > div > div:first-child,
+    .st-key-mw_navigation div[role="radiogroup"] [role="radio"] > div:first-child,
+    .st-key-mw_navigation label[data-baseweb="radio"] > div > div:first-child,
+    .st-key-mw_navigation label[data-baseweb="radio"] svg,
+    .st-key-mw_navigation div[data-testid="stRadio"] input[type="radio"] + div { display:none !important; width:0 !important; min-width:0 !important; height:0 !important; margin:0 !important; padding:0 !important; border:0 !important; }
+    .st-key-mw_navigation label[data-baseweb="radio"] > div,
+    .st-key-mw_navigation div[role="radiogroup"] label > div { gap:0 !important; margin:0 !important; padding:0 !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] input[type="radio"] { position:absolute !important; opacity:0 !important; pointer-events:none !important; width:0 !important; height:0 !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] label p { font-size:.88rem !important; font-weight:720 !important; color:inherit !important; white-space:nowrap !important; margin:0 !important; }
     .st-key-mw_navigation div[data-testid="stRadio"] label:hover { color:var(--mw-beige) !important; }
     .st-key-mw_navigation div[data-testid="stRadio"] label:has(input:checked) { color:#FFFFFF !important; }
     .st-key-mw_navigation div[data-testid="stRadio"] label:has(input:checked)::after { content:""; position:absolute; left:0; right:0; bottom:0; height:2px; border-radius:2px; background:linear-gradient(90deg,var(--mw-blue) 0%,var(--mw-blue) 72%,var(--mw-beige) 100%); }
@@ -151,8 +157,11 @@ st.markdown(
     .mw-card-label { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:650; line-height:1; }
     .mw-card-value { color:#FFFFFF; font-size:1.04rem; font-weight:800; letter-spacing:-.01em; line-height:1.12; }
     .mw-card-icon { height:18px; max-width:48px; width:auto; object-fit:contain; display:block; }
-    .mw-brand-wrap { display:flex; flex-direction:column; justify-content:center; min-height:76px; overflow:visible; padding-top:.15rem; }
-    .mw-brand-logo { display:block; width:auto; height:auto; max-width:225px; max-height:62px; object-fit:contain; object-position:left center; overflow:visible; }
+    .mw-brand-wrap { display:flex; align-items:center; justify-content:flex-start; height:58px; overflow:visible; margin:0; padding:0; }
+    .mw-brand-logo { display:block; width:auto; height:52px; max-width:220px; object-fit:contain; object-position:left center; overflow:visible; }
+    .mw-version-row { margin-top:.12rem; margin-bottom:.12rem; color:rgba(255,255,255,.44); font-size:.74rem; }
+    .mw-base-box { display:flex; flex-direction:column; justify-content:flex-end; min-height:70px; padding-right:.20rem; }
+    .mw-base-label { color:rgba(255,255,255,.58); font-size:.69rem; font-weight:700; margin-bottom:.20rem; line-height:1; }
 
     button[kind="primary"] { background-color:var(--mw-blue) !important; border-color:var(--mw-blue) !important; }
     div[data-baseweb="input"] > div, div[data-baseweb="select"] > div { background-color:rgba(255,255,255,.035); border-color:rgba(220,201,177,.12); }
@@ -3248,7 +3257,7 @@ _nav_items = ["Controle de Saldo", "Asset Allocation", "Carteira Teórica", "Ges
 if "main_navigation" not in st.session_state:
     st.session_state["main_navigation"] = "Controle de Saldo"
 
-h_left, h_right = st.columns([1.25, 4.75], vertical_alignment="center")
+h_left, h_right = st.columns([1.18, 4.82], vertical_alignment="center")
 with h_left:
     if lp:
         _logo_uri = file_to_data_uri(str(lp))
@@ -3261,7 +3270,6 @@ with h_left:
             st.markdown('<h1 class="mw-title">M Wealth</h1>', unsafe_allow_html=True)
     else:
         st.markdown('<h1 class="mw-title">M Wealth</h1>', unsafe_allow_html=True)
-    st.markdown(f'<div class="mw-version">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
 with h_right:
     with st.container(key="mw_navigation"):
         page = st.radio(
@@ -3272,6 +3280,7 @@ with h_right:
             key="main_navigation",
         )
 
+st.markdown(f'<div class="mw-version-row">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
 st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
 
 # =============================================================================
@@ -3405,9 +3414,9 @@ if page == "Asset Allocation":
     manual_matches = int(pos_cliente.get("manual_match", pd.Series([False] * len(pos_cliente), index=pos_cliente.index)).fillna(False).astype(bool).sum())
     nao_class = float(pos_cliente.loc[pos_cliente["subbucket"].eq("Outros / Não Classificado"), "valor_mercado"].sum())
 
-    k0, k1, k2, k3, k4, k5, k6 = st.columns([1.55, .95, .95, .88, .88, .88, .95], vertical_alignment="bottom", gap="small")
+    k0, k1, k2, k3, k4, k5, k6 = st.columns([.78, 1.0, 1.0, .92, .92, .92, .98], vertical_alignment="bottom", gap="small")
     with k0:
-        st.markdown('<div class="mw-muted" style="margin-bottom:.35rem; font-weight:700;">Base usada no balanceamento</div>', unsafe_allow_html=True)
+        st.markdown('<div class="mw-base-label">Base de cálculo</div>', unsafe_allow_html=True)
         _base_opts = ["PL total", "PL investível"]
         _base_default = st.session_state.get("asset_base_mode_inline", "PL total")
         _base_idx = _base_opts.index(_base_default) if _base_default in _base_opts else 0
@@ -3436,7 +3445,8 @@ if page == "Asset Allocation":
     with k6:
         metric_card("Saldo", format_brl(saldo))
 
-    st.caption(f"Perfil: **{perfil_cliente}** • Modelo aplicado: **{modelo}** • Fundos reconhecidos pelo manual: **{manual_matches}** • Não classificado: **{format_brl(nao_class)}**")
+    if nao_class > 0.01:
+        st.caption(f"Não classificado: **{format_brl(nao_class)}**")
 
     st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
 
@@ -3494,32 +3504,6 @@ if page == "Asset Allocation":
                 hide_index=True,
             )
 
-            ativos_cls = pos_cliente[pos_cliente["classe_macro"].eq(classe)].copy()
-            if not ativos_cls.empty:
-                cols_pos = ["subbucket", "asset_id", "asset_nome", "corretora", "valor_mercado", "quantidade", "manual_fundo", "manual_liquidez", "b3_estrategia", "b3_liquidez_operacional", "fonte_preco", "rebalancear", "tratamento"]
-                ativos_cls = ativos_cls[[c for c in cols_pos if c in ativos_cls.columns]].sort_values("valor_mercado", ascending=False).head(80)
-                ativos_cls["subbucket"] = ativos_cls["subbucket"].apply(friendly_strategy_name)
-                ativos_cls = ativos_cls.rename(columns={
-                    "subbucket": "Estratégia",
-                    "asset_id": "Ativo",
-                    "asset_nome": "Nome",
-                    "corretora": "Corretora",
-                    "valor_mercado": "Valor",
-                    "quantidade": "Quantidade",
-                    "manual_fundo": "Fundo no manual",
-                    "manual_liquidez": "Liquidez D+",
-                    "b3_estrategia": "Estratégia cadastrada",
-                    "b3_liquidez_operacional": "Liquidez operacional B3",
-                    "fonte_preco": "Fonte de preço",
-                    "rebalancear": "Rebalancear",
-                    "tratamento": "Origem do match",
-                })
-                with st.expander("Ver ativos classificados nessa classe", expanded=False):
-                    st.dataframe(
-                        prepare_display(ativos_cls, money_cols=["Valor"], qty_cols=["Quantidade"], max_rows=80),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
 
     section_title("Execução por estratégia", "Escolha o desvio que deseja tratar. O diagnóstico continua mostrando a necessidade total; a execução considera saldo e operações simuladas.")
     sim_key = f"exec_round::{grupo_sel}::{conta_real or 'TODAS'}::{modelo}::{base_mode}"
