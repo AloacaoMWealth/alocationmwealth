@@ -63,14 +63,12 @@ def register_pdf_fonts() -> tuple[str, str]:
                 pass
     return PDF_FONT_REGULAR, PDF_FONT_BOLD
 
-BASE_DIR = Path(__file__).resolve().parent
-favicon_path = BASE_DIR / "favicon_m.png"
 
-st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_icon=str(favicon_path))
+st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_icon="📊")
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.8"
+APP_VERSION = "6.8.1"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -138,8 +136,10 @@ st.markdown(
     /* Navegação institucional: controle nativo do Streamlit sem reload completo. */
     .st-key-mw_navigation div[data-testid="stRadio"] > div[role="radiogroup"] { display:flex !important; flex-direction:row !important; gap:1.45rem !important; align-items:center !important; }
     .st-key-mw_navigation div[data-testid="stRadio"] label { position:relative !important; margin:0 !important; padding:.72rem .02rem .62rem .02rem !important; background:transparent !important; border:0 !important; border-radius:0 !important; color:rgba(255,255,255,.60) !important; transition:color .15s ease !important; }
-    .st-key-mw_navigation div[data-testid="stRadio"] label > div:first-child,
-    .st-key-mw_navigation div[data-testid="stRadio"] input[type="radio"] { display:none !important; }
+    /* remove completamente o círculo/indicador visual do radio sem perder o estado */
+    .st-key-mw_navigation label[data-baseweb="radio"] > div > div:first-child { display:none !important; width:0 !important; min-width:0 !important; margin:0 !important; padding:0 !important; }
+    .st-key-mw_navigation label[data-baseweb="radio"] > div { gap:0 !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] input[type="radio"] { position:absolute !important; opacity:0 !important; pointer-events:none !important; width:1px !important; height:1px !important; }
     .st-key-mw_navigation div[data-testid="stRadio"] label p { font-size:.88rem !important; font-weight:720 !important; color:inherit !important; white-space:nowrap !important; }
     .st-key-mw_navigation div[data-testid="stRadio"] label:hover { color:var(--mw-beige) !important; }
     .st-key-mw_navigation div[data-testid="stRadio"] label:has(input:checked) { color:#FFFFFF !important; }
@@ -151,6 +151,8 @@ st.markdown(
     .mw-card-label { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:650; line-height:1; }
     .mw-card-value { color:#FFFFFF; font-size:1.04rem; font-weight:800; letter-spacing:-.01em; line-height:1.12; }
     .mw-card-icon { height:18px; max-width:48px; width:auto; object-fit:contain; display:block; }
+    .mw-brand-wrap { display:flex; flex-direction:column; justify-content:center; min-height:76px; overflow:visible; padding-top:.15rem; }
+    .mw-brand-logo { display:block; width:auto; height:auto; max-width:225px; max-height:62px; object-fit:contain; object-position:left center; overflow:visible; }
 
     button[kind="primary"] { background-color:var(--mw-blue) !important; border-color:var(--mw-blue) !important; }
     div[data-baseweb="input"] > div, div[data-baseweb="select"] > div { background-color:rgba(255,255,255,.035); border-color:rgba(220,201,177,.12); }
@@ -3249,7 +3251,14 @@ if "main_navigation" not in st.session_state:
 h_left, h_right = st.columns([1.25, 4.75], vertical_alignment="center")
 with h_left:
     if lp:
-        st.image(str(lp), width=205)
+        _logo_uri = file_to_data_uri(str(lp))
+        if _logo_uri:
+            st.markdown(
+                f'<div class="mw-brand-wrap"><img class="mw-brand-logo" src="{_logo_uri}" alt="M Wealth"></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown('<h1 class="mw-title">M Wealth</h1>', unsafe_allow_html=True)
     else:
         st.markdown('<h1 class="mw-title">M Wealth</h1>', unsafe_allow_html=True)
     st.markdown(f'<div class="mw-version">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
