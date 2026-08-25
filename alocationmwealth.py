@@ -68,7 +68,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.8.2"
+APP_VERSION = "6.8.3"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -132,24 +132,23 @@ st.markdown(
     .mw-section-title { position:relative; font-size: 1.04rem; font-weight: 800; margin: .9rem 0 .12rem 0; color: var(--mw-text); padding-left:.62rem; }
     .mw-section-title:before { content:""; position:absolute; left:0; top:.18rem; bottom:.12rem; width:3px; border-radius:3px; background:linear-gradient(180deg,var(--mw-blue),var(--mw-beige)); }
 
-    /* Navegação institucional: texto transparente + linha inferior no item ativo. */
-    /* Navegação institucional: controle nativo do Streamlit sem reload completo. */
-    .st-key-mw_navigation div[data-testid="stRadio"] > div[role="radiogroup"] { display:flex !important; flex-direction:row !important; gap:1.55rem !important; align-items:center !important; }
-    .st-key-mw_navigation div[data-testid="stRadio"] label { position:relative !important; margin:0 !important; padding:.62rem .04rem .52rem .04rem !important; background:transparent !important; border:0 !important; border-radius:0 !important; color:rgba(255,255,255,.58) !important; transition:color .15s ease !important; cursor:pointer !important; }
-    /* O radio é usado apenas como estado. Qualquer indicador visual nativo é ocultado. */
-    .st-key-mw_navigation div[role="radiogroup"] label > div:first-child,
-    .st-key-mw_navigation div[role="radiogroup"] label > div > div:first-child,
-    .st-key-mw_navigation div[role="radiogroup"] [role="radio"] > div:first-child,
-    .st-key-mw_navigation label[data-baseweb="radio"] > div > div:first-child,
-    .st-key-mw_navigation label[data-baseweb="radio"] svg,
-    .st-key-mw_navigation div[data-testid="stRadio"] input[type="radio"] + div { display:none !important; width:0 !important; min-width:0 !important; height:0 !important; margin:0 !important; padding:0 !important; border:0 !important; }
-    .st-key-mw_navigation label[data-baseweb="radio"] > div,
-    .st-key-mw_navigation div[role="radiogroup"] label > div { gap:0 !important; margin:0 !important; padding:0 !important; }
-    .st-key-mw_navigation div[data-testid="stRadio"] input[type="radio"] { position:absolute !important; opacity:0 !important; pointer-events:none !important; width:0 !important; height:0 !important; }
-    .st-key-mw_navigation div[data-testid="stRadio"] label p { font-size:.88rem !important; font-weight:720 !important; color:inherit !important; white-space:nowrap !important; margin:0 !important; }
-    .st-key-mw_navigation div[data-testid="stRadio"] label:hover { color:var(--mw-beige) !important; }
-    .st-key-mw_navigation div[data-testid="stRadio"] label:has(input:checked) { color:#FFFFFF !important; }
-    .st-key-mw_navigation div[data-testid="stRadio"] label:has(input:checked)::after { content:""; position:absolute; left:0; right:0; bottom:0; height:2px; border-radius:2px; background:linear-gradient(90deg,var(--mw-blue) 0%,var(--mw-blue) 72%,var(--mw-beige) 100%); }
+    /* Header institucional construído em CSS: não depende de crop da imagem. */
+    .mw-brand-lockup { display:flex; align-items:center; gap:.58rem; height:54px; white-space:nowrap; }
+    .mw-brand-mark { width:48px; height:48px; border:3px solid var(--mw-blue); display:flex; align-items:center; justify-content:center; color:#FFFFFF; font-size:29px; font-weight:500; line-height:1; box-sizing:border-box; }
+    .mw-brand-word { color:#FFFFFF; font-size:2.05rem; font-weight:400; letter-spacing:-.035em; line-height:1; }
+    .mw-version-row { margin-top:.18rem; margin-bottom:.08rem; color:rgba(255,255,255,.42); font-size:.72rem; }
+
+    /* Navegação clean: componente nativo, sem rádio, sem card. */
+    .st-key-mw_navigation div[data-testid="stSegmentedControl"] { width:auto !important; }
+    .st-key-mw_navigation div[data-testid="stSegmentedControl"] [role="group"],
+    .st-key-mw_navigation div[data-testid="stSegmentedControl"] [role="radiogroup"] { display:flex !important; gap:1.45rem !important; align-items:center !important; background:transparent !important; border:0 !important; box-shadow:none !important; }
+    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button { position:relative !important; min-height:40px !important; padding:.55rem .02rem .48rem .02rem !important; margin:0 !important; border:0 !important; border-radius:0 !important; background:transparent !important; box-shadow:none !important; color:rgba(255,255,255,.60) !important; font-weight:720 !important; transition:color .15s ease !important; }
+    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button:hover { color:var(--mw-beige) !important; background:transparent !important; }
+    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button[data-selected="true"] { color:#FFFFFF !important; background:transparent !important; }
+    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button[aria-pressed="true"]::after,
+    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button[data-selected="true"]::after { content:""; position:absolute; left:0; right:0; bottom:0; height:2px; border-radius:2px; background:linear-gradient(90deg,var(--mw-blue) 0%,var(--mw-blue) 72%,var(--mw-beige) 100%); }
+    .st-key-mw_navigation div[data-testid="stSegmentedControl"] button svg { display:none !important; }
 
     .mw-card { border: 1px solid rgba(93,115,175,.20); border-radius: 13px; padding: 10px 12px; background:linear-gradient(150deg,rgba(93,115,175,.055),rgba(19,25,37,.18)); min-height:82px; display:flex; flex-direction:column; justify-content:center; box-shadow:none; }
     .mw-card:hover { border-color:rgba(93,115,175,.34); }
@@ -157,8 +156,6 @@ st.markdown(
     .mw-card-label { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:650; line-height:1; }
     .mw-card-value { color:#FFFFFF; font-size:1.04rem; font-weight:800; letter-spacing:-.01em; line-height:1.12; }
     .mw-card-icon { height:18px; max-width:48px; width:auto; object-fit:contain; display:block; }
-    .mw-brand-wrap { display:flex; align-items:center; justify-content:flex-start; height:58px; overflow:visible; margin:0; padding:0; }
-    .mw-brand-logo { display:block; width:auto; height:52px; max-width:220px; object-fit:contain; object-position:left center; overflow:visible; }
     .mw-version-row { margin-top:.12rem; margin-bottom:.12rem; color:rgba(255,255,255,.44); font-size:.74rem; }
     .mw-base-box { display:flex; flex-direction:column; justify-content:flex-end; min-height:70px; padding-right:.20rem; }
     .mw-base-label { color:rgba(255,255,255,.58); font-size:.69rem; font-weight:700; margin-bottom:.20rem; line-height:1; }
@@ -3251,34 +3248,28 @@ pesos_base = load_pesos_xlsx(str(pesos_path), *file_cache_signature(pesos_path))
 pesos = load_published_models(pesos_base, master_products_path())
 df_contas = load_contas_cached()
 
-lp = logo_path()
-
 _nav_items = ["Controle de Saldo", "Asset Allocation", "Carteira Teórica", "Gestão"]
 if "main_navigation" not in st.session_state:
     st.session_state["main_navigation"] = "Controle de Saldo"
 
 h_left, h_right = st.columns([1.18, 4.82], vertical_alignment="center")
 with h_left:
-    if lp:
-        _logo_uri = file_to_data_uri(str(lp))
-        if _logo_uri:
-            st.markdown(
-                f'<div class="mw-brand-wrap"><img class="mw-brand-logo" src="{_logo_uri}" alt="M Wealth"></div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown('<h1 class="mw-title">M Wealth</h1>', unsafe_allow_html=True)
-    else:
-        st.markdown('<h1 class="mw-title">M Wealth</h1>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="mw-brand-lockup"><div class="mw-brand-mark">M</div><div class="mw-brand-word">Wealth</div></div>',
+        unsafe_allow_html=True,
+    )
 with h_right:
     with st.container(key="mw_navigation"):
-        page = st.radio(
+        page = st.segmented_control(
             "Navegação",
             _nav_items,
-            horizontal=True,
+            default=st.session_state.get("main_navigation", "Controle de Saldo"),
             label_visibility="collapsed",
-            key="main_navigation",
+            key="main_navigation_segment",
         )
+        if page is None:
+            page = st.session_state.get("main_navigation", "Controle de Saldo")
+        st.session_state["main_navigation"] = page
 
 st.markdown(f'<div class="mw-version-row">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
 st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
