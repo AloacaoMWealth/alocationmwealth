@@ -3305,7 +3305,7 @@ h_logo, h_nav, h_version = st.columns(
 
 with h_logo:
     if lp:
-        st.image(str(lp), width=230)
+        st.image(str(lp), width=200)
 
 with h_nav:
     with st.container(key="mw_navigation"):
