@@ -2906,8 +2906,11 @@ def recommend_exact_products(
 
         if diff > 300:
             # Compra: sobe da prioridade 1 em diante.
+            # Campos operacionais vazios seguem o comportamento padrão:
+            # elegível para compra = Sim; apenas manutenção = Não; produto fechado = Não.
+            # Assim o usuário só precisa preencher essas colunas quando quiser criar uma exceção.
             compraveis = candidates[
-                candidates["ELEGIVEL_COMPRA"].map(lambda x: parse_yes_no(x, False)) &
+                candidates["ELEGIVEL_COMPRA"].map(lambda x: parse_yes_no(x, True)) &
                 ~candidates["APENAS_MANUTENCAO"].map(lambda x: parse_yes_no(x, False)) &
                 ~candidates["PRODUTO_FECHADO"].map(lambda x: parse_yes_no(x, False)) &
                 ~candidates["_restriction"].map(lambda a: norm(a) == "NAO COMPRAR")
