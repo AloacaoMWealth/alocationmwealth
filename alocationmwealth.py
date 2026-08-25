@@ -63,8 +63,10 @@ def register_pdf_fonts() -> tuple[str, str]:
                 pass
     return PDF_FONT_REGULAR, PDF_FONT_BOLD
 
+BASE_DIR = Path(__file__).resolve().parent
+favicon_path = BASE_DIR / "favicon_m.png"
 
-st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_icon="📊")
+st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_icon=str(favicon_path))
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
