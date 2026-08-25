@@ -68,7 +68,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.5"
+APP_VERSION = "6.6"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -173,7 +173,33 @@ st.markdown(
     div[data-baseweb="select"] > div:focus-within, div[data-baseweb="input"] > div:focus-within {
       border-color:rgba(93,115,175,.65) !important; box-shadow:0 0 0 1px rgba(93,115,175,.25) !important;
     }
-    </style>
+    /* Navegação institucional: transparente, sem bolinha e com linha inferior */
+    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) > div[role="radiogroup"] {
+        gap: 1.35rem !important; align-items: center !important;
+    }
+    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) label {
+        background: transparent !important; border: 0 !important; border-radius: 0 !important;
+        padding: .50rem .10rem .42rem .10rem !important; margin: 0 !important;
+        box-shadow: none !important; position: relative !important; opacity: .72;
+    }
+    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) label:has(input:checked) { opacity: 1; }
+    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) label:has(input:checked)::after {
+        content: ""; position: absolute; left: 0; right: 0; bottom: -2px; height: 2px;
+        border-radius: 2px; background: linear-gradient(90deg, #5D73AF 0%, #DCC9B1 100%);
+    }
+    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) input[type="radio"] { display:none !important; }
+    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) label > div:first-child { display:none !important; }
+    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) p {
+        font-size: .83rem !important; font-weight: 700 !important; color: #FFFFFF !important; white-space: nowrap;
+    }
+    /* Identidade visual mais viva, sem virar carnaval */
+    h2, h3 { letter-spacing: -.015em; }
+    h2::after { content:""; display:block; width:34px; height:2px; margin-top:.32rem; border-radius:2px; background:#5D73AF; }
+    .mw-card { border-color: rgba(93,115,175,.24) !important; }
+    .mw-card:hover { border-color: rgba(220,201,177,.34) !important; }
+    div[data-testid="stDataFrame"] { background:#131925 !important; border-color:rgba(93,115,175,.18) !important; }
+    div[data-testid="stDataFrame"] > div { background:#131925 !important; }
+        </style>
     """,
     unsafe_allow_html=True,
 )
@@ -2158,7 +2184,7 @@ def friendly_group_for_weight(key: str) -> tuple[str | None, str | None]:
         return "Investimentos internacionais", "Renda fixa internacional"
     if k == "RENDA VARIAVEL" or k == "RENDA VARIÁVEL":
         return "Investimentos internacionais", "Renda variável internacional"
-    return "Outros instrumentos", str(key).strip()
+    return None, None
 
 
 def component_explanation(group: str, component: str) -> str:
@@ -2187,7 +2213,7 @@ def display_order_group(group: str) -> int:
     order = [
         "Renda fixa pós-fixada", "Renda fixa prefixada", "Renda fixa indexada à inflação",
         "Fundos de infraestrutura e crédito incentivado", "Crédito privado", "Ações brasileiras",
-        "Fundos Imobiliários / FIAGROs", "Investimentos internacionais", "Outros instrumentos"
+        "Fundos Imobiliários / FIAGROs", "Investimentos internacionais"
     ]
     return order.index(group) if group in order else 999
 
@@ -2202,37 +2228,57 @@ def fiinfra_tickers_for_component(component: str) -> list[str]:
 
 
 def theoretical_portfolio(p: dict[str, float], valor: float, modelo: str) -> pd.DataFrame:
+    """Carteira teórica construída a partir do MESMO motor de targets do Asset Allocation.
+
+    Evita divergência entre as telas e impede que chaves de modelo válidas sejam
+    agrupadas artificialmente como "Outros instrumentos".
+    """
     rows = []
-    for key, weight in p.items():
-        w = float(weight or 0)
-        if w <= 0:
+    targets = subbucket_targets_from_model(p, valor)
+    group_map = {
+        "Pós - Imediato": ("Renda fixa pós-fixada", "Liquidez imediata"),
+        "Pós - 1 a 30 dias": ("Renda fixa pós-fixada", "Resgate entre 1 e 30 dias"),
+        "Pós - 31 a 180 dias": ("Renda fixa pós-fixada", "Resgate entre 31 e 180 dias"),
+        "Pós - 181 a 360 dias": ("Renda fixa pós-fixada", "Resgate entre 181 e 360 dias"),
+        "Pós - 361+ dias": ("Renda fixa pós-fixada", "Resgate acima de 361 dias"),
+        "Pré - Bancário": ("Renda fixa prefixada", "Títulos bancários prefixados"),
+        "Pré - Tesouro": ("Renda fixa prefixada", "Tesouro prefixado"),
+        "Inflação - Bancário": ("Renda fixa indexada à inflação", "Títulos bancários indexados à inflação"),
+        "Inflação - Tesouro": ("Renda fixa indexada à inflação", "Tesouro indexado à inflação"),
+        "FiInfra Pós": ("Fundos de infraestrutura e crédito incentivado", "Infraestrutura pós-fixada"),
+        "FiInfra Inflação": ("Fundos de infraestrutura e crédito incentivado", "Infraestrutura indexada à inflação"),
+        "Crédito Privado": ("Crédito privado", "Crédito privado"),
+        "Ações": ("Ações brasileiras", "Carteira de ações brasileiras"),
+        "FIIs": ("Fundos Imobiliários / FIAGROs", "Fundos Imobiliários / FIAGROs"),
+        "Renda Fixa Internacional": ("Investimentos internacionais", "Renda fixa internacional"),
+        "Renda Variável Internacional": ("Investimentos internacionais", "Renda variável internacional"),
+    }
+    for _, tr in targets.iterrows():
+        subbucket = str(tr["Subbucket"])
+        weight = float(tr["Peso Ideal"])
+        if weight <= 0 or subbucket not in group_map:
             continue
-        group, component = friendly_group_for_weight(key)
-        if not group or not component:
-            continue
+        group, component = group_map[subbucket]
         rows.append({
-            "Grupo": group,
-            "Composição": component,
-            "Nível": "Composição",
-            "Ativo": "",
-            "Peso": w,
-            "Valor": valor * w,
+            "Grupo": group, "Composição": component, "Nível": "Composição", "Ativo": "",
+            "Peso": weight, "Valor": valor * weight,
             "Explicação": component_explanation(group, component),
         })
-
-        if group == "Ações brasileiras":
+        if subbucket == "Ações":
             tickers = rv_universe(modelo).get("Ações", [])
-            for t in tickers:
-                rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(tickers) if tickers else 0, "Valor": valor * w / len(tickers) if tickers else 0, "Explicação": "Empresa brasileira da carteira estratégica."})
-        elif group == "Fundos Imobiliários / FIAGROs":
+        elif subbucket == "FIIs":
             tickers = rv_universe(modelo).get("FIIs", [])
-            for t in tickers:
-                rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(tickers) if tickers else 0, "Valor": valor * w / len(tickers) if tickers else 0, "Explicação": "Fundo imobiliário da carteira estratégica."})
-        elif group == "Fundos de infraestrutura e crédito incentivado":
+        elif subbucket in {"FiInfra Pós", "FiInfra Inflação"}:
             tickers = fiinfra_tickers_for_component(component)
-            for t in tickers:
-                rows.append({"Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": t, "Peso": w / len(tickers) if tickers else 0, "Valor": valor * w / len(tickers) if tickers else 0, "Explicação": "Instrumento selecionado pela estratégia de infraestrutura e crédito incentivado."})
-
+        else:
+            tickers = []
+        for ticker in tickers:
+            unit_w = weight / len(tickers) if tickers else 0.0
+            rows.append({
+                "Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": ticker,
+                "Peso": unit_w, "Valor": valor * unit_w,
+                "Explicação": "Ativo selecionado pela estratégia.",
+            })
     df = pd.DataFrame(rows, columns=["Grupo", "Composição", "Nível", "Ativo", "Peso", "Valor", "Explicação"])
     if df.empty:
         return df
@@ -3052,7 +3098,18 @@ def load_models_from_master_sheet(path_str: str, mtime_ns: int = 0, file_size: i
         for model, grp in df.groupby("MODELO"):
             version = int(grp["VERSAO"].max())
             latest = grp[grp["VERSAO"].eq(version)]
-            result[str(model)] = {str(r["SUBBUCKET"]): float(r["PESO"]) for _, r in latest.iterrows() if str(r["SUBBUCKET"]).strip()}
+            model_weights: dict[str, float] = {}
+            for _, r in latest.iterrows():
+                raw_key = str(r["SUBBUCKET"]).strip()
+                if not raw_key:
+                    continue
+                # A aba Modelos de Alocação usa os nomes operacionais dos subbuckets
+                # (ex.: "Pós - Imediato"), enquanto o arquivo legado de pesos usa
+                # "Imediato". Canonicalizamos aqui para que todas as telas usem o
+                # mesmo motor e nenhuma parcela caia em "Outros instrumentos".
+                canonical_key = MODEL_KEY_BY_SUBBUCKET.get(raw_key, raw_key)
+                model_weights[canonical_key] = model_weights.get(canonical_key, 0.0) + float(r["PESO"])
+            result[str(model)] = model_weights
         return result
     except Exception:
         return {}
@@ -3628,6 +3685,9 @@ if page == "Carteira Teórica":
                 st.info("Nenhuma personalização estratégica ativa foi encontrada para este grupo/modelo.")
 
     df_teor = theoretical_portfolio(p_teor, valor, modelo)
+    _recognized_weight = float(df_teor.loc[df_teor["Nível"].eq("Composição"), "Peso"].sum()) if not df_teor.empty else 0.0
+    if abs(_recognized_weight - 1.0) > 0.005:
+        st.warning(f"O modelo possui {fmt_pct(_recognized_weight)} em componentes reconhecidos. Revise a versão publicada do modelo antes de usar o PDF.")
     if df_teor.empty:
         st.warning("Não encontrei componentes válidos para essa carteira. Verifique a planilha de pesos.")
         st.stop()
@@ -3637,11 +3697,12 @@ if page == "Carteira Teórica":
     renda_variavel = macro[macro["Classe de investimento"].str.contains("Ações|Fundos Imobiliários|FIAGROs", case=False, na=False)]["Valor sugerido"].sum()
     internacional = macro[macro["Classe de investimento"].str.contains("internacionais", case=False, na=False)]["Valor sugerido"].sum()
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Valor simulado", format_brl(valor))
-    k2.metric("Renda fixa no Brasil", format_brl(renda_fixa))
-    k3.metric("Renda variável no Brasil", format_brl(renda_variavel))
-    k4.metric("Investimentos internacionais", format_brl(internacional))
+    st.markdown(
+        f'<div class="mw-muted" style="margin:.10rem 0 .60rem 0;">'
+        f'<b>{escape(str(modelo))}</b> &nbsp;•&nbsp; {escape(format_brl(valor))}'
+        + (f' &nbsp;•&nbsp; Cliente: {escape(cliente)}' if cliente.strip() else '')
+        + '</div>', unsafe_allow_html=True,
+    )
 
     col_a, col_b = st.columns([0.82, 1.48], vertical_alignment="center", gap="medium")
     with col_a:
@@ -3650,7 +3711,7 @@ if page == "Carteira Teórica":
         st.plotly_chart(fig, use_container_width=True)
     with col_b:
         section_title("Resumo da alocação", "Mesma hierarquia utilizada no Asset Allocation.")
-        teor_hier = theoretical_hierarchy_table(pesos[modelo], valor)
+        teor_hier = theoretical_hierarchy_table(p_teor, valor)
         st.dataframe(
             theoretical_hierarchy_styler(teor_hier),
             use_container_width=True,
@@ -3659,15 +3720,14 @@ if page == "Carteira Teórica":
         )
 
     st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
-    st.subheader("Composição por classe de investimento")
+    st.subheader("Detalhamento da estratégia")
 
     for group in macro["Classe de investimento"].tolist():
         comp = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Composição"))].copy()
         ativos = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Ativo"))].copy()
         total_group = float(comp["Valor"].sum())
         peso_group = float(comp["Peso"].sum())
-        with st.expander(f"{group} — {fmt_pct(peso_group)} | {format_brl(total_group)}", expanded=True):
-            st.markdown(f'<div class="mw-muted">{GROUP_DESCRIPTIONS.get(group, "Componente da estratégia de alocação.")}</div>', unsafe_allow_html=True)
+        with st.expander(f"{group} — {fmt_pct(peso_group)} | {format_brl(total_group)}", expanded=False):
             tabela_comp = comp.rename(columns={"Peso": "Peso sugerido", "Valor": "Valor sugerido"})[["Composição", "Peso sugerido", "Valor sugerido", "Explicação"]]
             st.dataframe(
                 prepare_display(tabela_comp, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
