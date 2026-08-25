@@ -3295,16 +3295,31 @@ _nav_items = ["Controle de Saldo", "Asset Allocation", "Carteira Teórica", "Ges
 if "main_navigation" not in st.session_state:
     st.session_state["main_navigation"] = "Controle de Saldo"
 
-h_left, h_right = st.columns([1.18, 4.82], vertical_alignment="center")
-with h_left:
-    st.markdown(
-        '<div class="mw-brand-lockup"><div class="mw-brand-mark">M</div><div class="mw-brand-word">Wealth</div></div>',
-        unsafe_allow_html=True,
-    )
-with h_right:
+lp = logo_path()
+
+h_logo, h_nav, h_version = st.columns(
+    [1.45, 4.15, 0.65],
+    vertical_alignment="center",
+    gap="small",
+)
+
+with h_logo:
+    if lp:
+        st.image(str(lp), width=230)
+
+with h_nav:
     with st.container(key="mw_navigation"):
-        _current_page = st.session_state.get("main_navigation", "Controle de Saldo")
-        _nav_index = _nav_items.index(_current_page) if _current_page in _nav_items else 0
+        _current_page = st.session_state.get(
+            "main_navigation",
+            "Controle de Saldo"
+        )
+
+        _nav_index = (
+            _nav_items.index(_current_page)
+            if _current_page in _nav_items
+            else 0
+        )
+
         page = st.radio(
             "Navegação",
             _nav_items,
@@ -3313,10 +3328,28 @@ with h_right:
             label_visibility="collapsed",
             key="main_navigation_radio",
         )
+
         st.session_state["main_navigation"] = page
 
-st.markdown(f'<div class="mw-version-row">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
-st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
+with h_version:
+    st.markdown(
+        f"""
+        <div style="
+            text-align: right;
+            color: rgba(255,255,255,.48);
+            font-size: .74rem;
+            white-space: nowrap;
+        ">
+            Versão {APP_VERSION}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+st.markdown(
+    '<div class="mw-line"></div>',
+    unsafe_allow_html=True
+)
 
 # =============================================================================
 # Página 1 - Controle de saldo
