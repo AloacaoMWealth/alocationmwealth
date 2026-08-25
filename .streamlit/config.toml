@@ -1,4 +1,7 @@
-backgroundColor = #131925
-secondaryBackgroundColor = #182033
-primaryColor = #5D73AF
-textColor = #FFFFFF
+[theme]
+base = "dark"
+primaryColor = "#5D73AF"
+backgroundColor = "#131925"
+secondaryBackgroundColor = "#131925"
+textColor = "#FFFFFF"
+font = "sans serif"
