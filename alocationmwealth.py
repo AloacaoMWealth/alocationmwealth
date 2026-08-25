@@ -68,7 +68,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.7"
+APP_VERSION = "6.8"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -102,7 +102,7 @@ ATIVOS_ESTRATEGICOS_B3 = {
 
 # Mantém ordem operacional das tabelas.
 SUBBUCKET_ORDER = [
-    "Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias",
+    "Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 90 dias", "Pós - 91 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias",
     "FiInfra Pós", "FiInfra Inflação", "Pré - Bancário", "Pré - Tesouro", "Inflação - Bancário", "Inflação - Tesouro", "Crédito Privado",
     "Ações", "FIIs", "Bitcoin", "Ouro", "Renda Fixa Internacional", "Renda Variável Internacional", "Caixa Internacional",
     "Saldo em Conta", "Proventos a Receber", "Direitos de Subscrição", "Fundos de Investimento / Sem Liquidez Mapeada", "Previdência", "COE / Estruturados", "Outros / Não Classificado",
@@ -123,7 +123,7 @@ st.markdown(
     }
     [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
     .stApp { background: linear-gradient(180deg, #131925 0%, #111824 100%); color: var(--mw-text); }
-    .block-container { padding-top: 1.05rem; padding-bottom: 1.8rem; max-width: 1580px; }
+    .block-container { padding-top: 1.45rem; padding-bottom: 1.8rem; max-width: 1580px; }
     div[data-testid="stMetricValue"] { font-size: 1.06rem; }
     .mw-title { font-size: 1.9rem; line-height: 1.05; font-weight: 800; margin: 0; color: var(--mw-text); }
     .mw-version { color: rgba(255,255,255,.48); font-size: .76rem; margin-top: .18rem; }
@@ -133,11 +133,15 @@ st.markdown(
     .mw-section-title:before { content:""; position:absolute; left:0; top:.18rem; bottom:.12rem; width:3px; border-radius:3px; background:linear-gradient(180deg,var(--mw-blue),var(--mw-beige)); }
 
     /* Navegação institucional: texto transparente + linha inferior no item ativo. */
-    .mw-nav { display:flex; align-items:center; gap:1.55rem; min-height:54px; padding-top:.25rem; }
-    .mw-nav a { position:relative; display:inline-block; color:rgba(255,255,255,.62); text-decoration:none !important; font-size:.88rem; font-weight:720; padding:.65rem .05rem .62rem .05rem; transition:all .16s ease; }
-    .mw-nav a:hover { color:var(--mw-beige); }
-    .mw-nav a.active { color:#FFFFFF; }
-    .mw-nav a.active:after { content:""; position:absolute; height:2px; left:0; right:0; bottom:0; border-radius:2px; background:linear-gradient(90deg,var(--mw-blue) 0%,var(--mw-blue) 72%,var(--mw-beige) 100%); box-shadow:0 0 10px rgba(93,115,175,.26); }
+    /* Navegação institucional: controle nativo do Streamlit sem reload completo. */
+    .st-key-mw_navigation div[data-testid="stRadio"] > div[role="radiogroup"] { display:flex !important; flex-direction:row !important; gap:1.45rem !important; align-items:center !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] label { position:relative !important; margin:0 !important; padding:.72rem .02rem .62rem .02rem !important; background:transparent !important; border:0 !important; border-radius:0 !important; color:rgba(255,255,255,.60) !important; transition:color .15s ease !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] label > div:first-child,
+    .st-key-mw_navigation div[data-testid="stRadio"] input[type="radio"] { display:none !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] label p { font-size:.88rem !important; font-weight:720 !important; color:inherit !important; white-space:nowrap !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] label:hover { color:var(--mw-beige) !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] label:has(input:checked) { color:#FFFFFF !important; }
+    .st-key-mw_navigation div[data-testid="stRadio"] label:has(input:checked)::after { content:""; position:absolute; left:0; right:0; bottom:0; height:2px; border-radius:2px; background:linear-gradient(90deg,var(--mw-blue) 0%,var(--mw-blue) 72%,var(--mw-beige) 100%); }
 
     .mw-card { border: 1px solid rgba(93,115,175,.20); border-radius: 13px; padding: 10px 12px; background:linear-gradient(150deg,rgba(93,115,175,.055),rgba(19,25,37,.18)); min-height:82px; display:flex; flex-direction:column; justify-content:center; box-shadow:none; }
     .mw-card:hover { border-color:rgba(93,115,175,.34); }
@@ -451,6 +455,8 @@ def friendly_strategy_name(x: str) -> str:
     mapa = {
         "Pós - Imediato": "Pós-fixado — liquidez imediata",
         "Pós - 1 a 30 dias": "Pós-fixado — resgate entre 1 e 30 dias",
+        "Pós - 31 a 90 dias": "Pós-fixado — resgate entre 31 e 90 dias",
+        "Pós - 91 a 180 dias": "Pós-fixado — resgate entre 91 e 180 dias",
         "Pós - 31 a 180 dias": "Pós-fixado — resgate entre 31 e 180 dias",
         "Pós - 181 a 360 dias": "Pós-fixado — resgate entre 181 e 360 dias",
         "Pós - 361+ dias": "Pós-fixado — resgate acima de 361 dias",
@@ -550,7 +556,7 @@ def macro_hierarchy_table(sub_df: pd.DataFrame, pl: float) -> pd.DataFrame:
 
     groups = [
         ("RENDA FIXA NO BRASIL", None, ["RF Brasil"], True),
-        ("  Pós-fixado", ["Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias"], None, False),
+        ("  Pós-fixado", ["Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 90 dias", "Pós - 91 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias"], None, False),
         ("  Prefixado", ["Pré - Bancário", "Pré - Tesouro"], None, False),
         ("  Inflação", ["Inflação - Bancário", "Inflação - Tesouro"], None, False),
         ("  FI-Infra pós-fixado", ["FiInfra Pós"], None, False),
@@ -648,8 +654,10 @@ def bucket_from_liquidity_days(days) -> str:
         return "Pós - Imediato"
     if d <= 30:
         return "Pós - 1 a 30 dias"
+    if d <= 90:
+        return "Pós - 31 a 90 dias"
     if d <= 180:
-        return "Pós - 31 a 180 dias"
+        return "Pós - 91 a 180 dias"
     if d <= 360:
         return "Pós - 181 a 360 dias"
     return "Pós - 361+ dias"
@@ -1790,7 +1798,9 @@ STRATEGY_PERSONALIZATION_COLUMNS = [
 MODEL_KEY_BY_SUBBUCKET = {
     "Pós - Imediato": "Imediato",
     "Pós - 1 a 30 dias": "1 a 30 dias",
-    "Pós - 31 a 180 dias": "31 a 180 dias",
+    "Pós - 31 a 90 dias": "31 a 90 dias",
+    "Pós - 91 a 180 dias": "91 a 180 dias",
+    "Pós - 31 a 180 dias": "31 a 180 dias",  # compatibilidade com cadastros antigos
     "Pós - 181 a 360 dias": "181 a 360 dias",
     "Pós - 361+ dias": "361+ dias",
     "FiInfra Pós": "FiInfra e Cetipados",
@@ -1925,10 +1935,16 @@ def model_for_profile(perfil: str, modelos: list[str]) -> str:
 
 
 def subbucket_targets_from_model(p: dict[str, float], pl: float) -> pd.DataFrame:
+    # Estrutura oficial atual do pós-fixado: 31-90 e 91-180 dias.
+    # Mantemos compatibilidade com modelos antigos que ainda possuam apenas 31-180.
+    old_31_180 = peso_get(p, "31 a 180 dias")
+    has_new_split = (peso_get(p, "31 a 90 dias") + peso_get(p, "91 a 180 dias")) > 0
+    legacy_31_90 = 0.0 if has_new_split else old_31_180
     rows = [
         ("RF Brasil", "Pós - Imediato", peso_get(p, "Imediato")),
         ("RF Brasil", "Pós - 1 a 30 dias", peso_get(p, "1 a 30 dias")),
-        ("RF Brasil", "Pós - 31 a 180 dias", peso_get(p, "31 a 180 dias")),
+        ("RF Brasil", "Pós - 31 a 90 dias", peso_get(p, "31 a 90 dias") + legacy_31_90),
+        ("RF Brasil", "Pós - 91 a 180 dias", peso_get(p, "91 a 180 dias")),
         ("RF Brasil", "Pós - 181 a 360 dias", peso_get(p, "181 a 360 dias")),
         ("RF Brasil", "Pós - 361+ dias", peso_get(p, "361+ dias")),
         ("RF Brasil", "FiInfra Pós", peso_get(p, "FiInfra e Cetipados")),
@@ -2192,7 +2208,8 @@ def theoretical_portfolio(p: dict[str, float], valor: float, modelo: str) -> pd.
     group_map = {
         "Pós - Imediato": ("Renda fixa pós-fixada", "Liquidez imediata"),
         "Pós - 1 a 30 dias": ("Renda fixa pós-fixada", "Resgate entre 1 e 30 dias"),
-        "Pós - 31 a 180 dias": ("Renda fixa pós-fixada", "Resgate entre 31 e 180 dias"),
+        "Pós - 31 a 90 dias": ("Renda fixa pós-fixada", "Resgate entre 31 e 90 dias"),
+        "Pós - 91 a 180 dias": ("Renda fixa pós-fixada", "Resgate entre 91 e 180 dias"),
         "Pós - 181 a 360 dias": ("Renda fixa pós-fixada", "Resgate entre 181 e 360 dias"),
         "Pós - 361+ dias": ("Renda fixa pós-fixada", "Resgate acima de 361 dias"),
         "Pré - Bancário": ("Renda fixa prefixada", "Títulos bancários prefixados"),
@@ -3222,23 +3239,10 @@ pesos = load_published_models(pesos_base, master_products_path())
 df_contas = load_contas_cached()
 
 lp = logo_path()
-try:
-    _page_slug = st.query_params.get("page", "saldo")
-except Exception:
-    _qp = st.experimental_get_query_params()
-    _page_slug = (_qp.get("page") or ["saldo"])[0]
-if isinstance(_page_slug, list):
-    _page_slug = _page_slug[0] if _page_slug else "saldo"
-_page_slug = str(_page_slug or "saldo").lower()
-_page_map = {
-    "saldo": "Controle de Saldo",
-    "asset": "Asset Allocation",
-    "teorica": "Carteira Teórica",
-    "gestao": "Gestão",
-}
-if _page_slug not in _page_map:
-    _page_slug = "saldo"
-page = _page_map[_page_slug]
+
+_nav_items = ["Controle de Saldo", "Asset Allocation", "Carteira Teórica", "Gestão"]
+if "main_navigation" not in st.session_state:
+    st.session_state["main_navigation"] = "Controle de Saldo"
 
 h_left, h_right = st.columns([1.25, 4.75], vertical_alignment="center")
 with h_left:
@@ -3248,12 +3252,14 @@ with h_left:
         st.markdown('<h1 class="mw-title">M Wealth</h1>', unsafe_allow_html=True)
     st.markdown(f'<div class="mw-version">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
 with h_right:
-    _nav_items = [("saldo","Controle de Saldo"),("asset","Asset Allocation"),("teorica","Carteira Teórica"),("gestao","Gestão")]
-    _nav_html = '<nav class="mw-nav">' + ''.join(
-        f'<a href="?page={slug}" target="_self" class="{"active" if slug == _page_slug else ""}">{label}</a>'
-        for slug, label in _nav_items
-    ) + '</nav>'
-    st.markdown(_nav_html, unsafe_allow_html=True)
+    with st.container(key="mw_navigation"):
+        page = st.radio(
+            "Navegação",
+            _nav_items,
+            horizontal=True,
+            label_visibility="collapsed",
+            key="main_navigation",
+        )
 
 st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
 
