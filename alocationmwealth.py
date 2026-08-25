@@ -62,9 +62,10 @@ def register_pdf_fonts() -> tuple[str, str]:
             except Exception:
                 pass
     return PDF_FONT_REGULAR, PDF_FONT_BOLD
-
-
-st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_icon="📊")
+    
+BASE_DIR = Path(__file__).resolve().parent
+favicon_path = BASE_DIR / "favicon_m.png"
+st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_icon=str(favicon_path))
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
@@ -3305,7 +3306,7 @@ h_logo, h_nav, h_version = st.columns(
 
 with h_logo:
     if lp:
-        st.image(str(lp), width=200)
+        st.image(str(lp), width=150)
 
 with h_nav:
     with st.container(key="mw_navigation"):
