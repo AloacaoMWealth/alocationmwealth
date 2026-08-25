@@ -68,7 +68,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.6"
+APP_VERSION = "6.7"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -113,93 +113,47 @@ st.markdown(
     <style>
     :root {
       --mw-bg: #131925;
-      --mw-bg-2: #182033;
+      --mw-surface: #151d2b;
+      --mw-surface-2: #182235;
       --mw-text: #FFFFFF;
       --mw-beige: #DCC9B1;
       --mw-blue: #5D73AF;
-      --mw-border: rgba(220,201,177,.18);
+      --mw-blue-soft: rgba(93,115,175,.16);
+      --mw-border: rgba(220,201,177,.14);
     }
     [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
-    .stApp { background: linear-gradient(180deg, #131925 0%, #101623 100%); color: var(--mw-text); }
-    .block-container { padding-top: 3.35rem; padding-bottom: 1.8rem; max-width: 1580px; }
-    div[data-testid="stMetricValue"] { font-size: 1.08rem; }
-    .mw-title { font-size: 1.95rem; line-height: 1.05; font-weight: 800; margin: 0; color: var(--mw-text); }
-    .mw-version { color: rgba(255,255,255,.55); font-size: .78rem; margin-top: .18rem; }
-    .mw-card { border: 1px solid var(--mw-border); border-radius: 14px; padding: 9px 12px; background: linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.012)); box-shadow: 0 8px 18px rgba(0,0,0,.10); min-height: 76px; display:flex; flex-direction:column; justify-content:center; }
-    .mw-card-head { display:flex; align-items:center; gap:.45rem; min-height: 20px; margin-bottom: .28rem; }
-    .mw-card-label { color: rgba(255,255,255,.68); font-size: .74rem; font-weight: 650; line-height:1; }
-    .mw-card-value { color: var(--mw-text); font-size: 1.00rem; font-weight: 800; letter-spacing: -.01em; line-height:1.12; }
-    .mw-card-icon { height: 18px; width: auto; object-fit: contain; display:block; }
-    .mw-muted { color: rgba(255,255,255,.66); font-size: .84rem; }
-    .mw-ok { color: #8be28b; font-weight: 700; }
-    .mw-warn { color: #f1d27a; font-weight: 700; }
-    .mw-bad { color: #ff8d8d; font-weight: 700; }
-    .mw-line { border-top: 1px solid rgba(220,201,177,.12); margin: .6rem 0 .8rem 0; }
-    .mw-page-intro, .mw-eyebrow, .mw-page-title, .mw-page-text, .mw-pill { display:none; }
-    .mw-section-title { font-size: 1.00rem; font-weight: 800; margin: .85rem 0 .10rem 0; color: var(--mw-text); }
-    div[data-testid="stDataFrame"] { border: 1px solid rgba(255,255,255,.08); border-radius: 12px; overflow: hidden; }
-    div[data-testid="stExpander"] { border-radius: 12px; }
-    div[data-testid="stTabs"] button { font-weight: 750; }
-    div[data-testid="stSegmentedControl"] [role="radiogroup"] { gap: .35rem; justify-content: flex-start; }
-    div[data-testid="stSegmentedControl"] label { border: 1px solid rgba(255,255,255,.10) !important; border-radius: 12px !important; padding: .12rem .34rem !important; background: rgba(255,255,255,.015) !important; }
-    div[data-testid="stSegmentedControl"] label[data-selected="true"] { background: rgba(93,115,175,.22) !important; border-color: rgba(93,115,175,.70) !important; box-shadow:none !important; }
-    div[data-testid="stSegmentedControl"] label p { color: rgba(255,255,255,.82) !important; font-weight: 700 !important; }
-    div[data-testid="stSegmentedControl"] label[data-selected="true"] p { color: #FFFFFF !important; }
-    button[kind="primary"] { background-color: var(--mw-blue) !important; border-color: var(--mw-blue) !important; }
-    div[data-baseweb="input"] > div, div[data-baseweb="select"] > div { background-color: rgba(255,255,255,.03); }
-    .mw-top-gap { margin-top: .1rem; }
-    /* Navegação institucional: radio horizontal com aparência de menu */
-    div[data-testid="stRadio"] > div[role="radiogroup"] {
-      display:flex !important; flex-direction:row !important; gap:.35rem !important; justify-content:flex-end !important; align-items:center !important;
-    }
-    div[data-testid="stRadio"] > div[role="radiogroup"] > label {
-      border:1px solid rgba(220,201,177,.18) !important; border-radius:9px !important;
-      padding:.42rem .78rem !important; background:transparent !important; min-height:34px !important;
-      transition:all .15s ease;
-    }
-    div[data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
-      background:rgba(220,201,177,.06) !important; border-color:rgba(220,201,177,.34) !important;
-    }
-    div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
-      background:rgba(93,115,175,.22) !important; border-color:rgba(93,115,175,.70) !important;
-    }
-    div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) p { color:#FFFFFF !important; }
-    div[data-testid="stRadio"] > div[role="radiogroup"] input { display:none !important; }
-    div[data-testid="stRadio"] > div[role="radiogroup"] p { margin:0 !important; color:rgba(255,255,255,.80) !important; font-weight:700 !important; font-size:.82rem !important; }
-    /* Filtros com caixa mais limpa */
-    div[data-baseweb="select"] > div, div[data-baseweb="input"] > div {
-      border-color:rgba(220,201,177,.12) !important; border-radius:10px !important; min-height:40px !important;
-    }
-    div[data-baseweb="select"] > div:focus-within, div[data-baseweb="input"] > div:focus-within {
-      border-color:rgba(93,115,175,.65) !important; box-shadow:0 0 0 1px rgba(93,115,175,.25) !important;
-    }
-    /* Navegação institucional: transparente, sem bolinha e com linha inferior */
-    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) > div[role="radiogroup"] {
-        gap: 1.35rem !important; align-items: center !important;
-    }
-    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) label {
-        background: transparent !important; border: 0 !important; border-radius: 0 !important;
-        padding: .50rem .10rem .42rem .10rem !important; margin: 0 !important;
-        box-shadow: none !important; position: relative !important; opacity: .72;
-    }
-    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) label:has(input:checked) { opacity: 1; }
-    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) label:has(input:checked)::after {
-        content: ""; position: absolute; left: 0; right: 0; bottom: -2px; height: 2px;
-        border-radius: 2px; background: linear-gradient(90deg, #5D73AF 0%, #DCC9B1 100%);
-    }
-    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) input[type="radio"] { display:none !important; }
-    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) label > div:first-child { display:none !important; }
-    div[data-testid="stRadio"]:has(input[value="Controle de Saldo"]) p {
-        font-size: .83rem !important; font-weight: 700 !important; color: #FFFFFF !important; white-space: nowrap;
-    }
-    /* Identidade visual mais viva, sem virar carnaval */
-    h2, h3 { letter-spacing: -.015em; }
-    h2::after { content:""; display:block; width:34px; height:2px; margin-top:.32rem; border-radius:2px; background:#5D73AF; }
-    .mw-card { border-color: rgba(93,115,175,.24) !important; }
-    .mw-card:hover { border-color: rgba(220,201,177,.34) !important; }
-    div[data-testid="stDataFrame"] { background:#131925 !important; border-color:rgba(93,115,175,.18) !important; }
+    .stApp { background: linear-gradient(180deg, #131925 0%, #111824 100%); color: var(--mw-text); }
+    .block-container { padding-top: 1.05rem; padding-bottom: 1.8rem; max-width: 1580px; }
+    div[data-testid="stMetricValue"] { font-size: 1.06rem; }
+    .mw-title { font-size: 1.9rem; line-height: 1.05; font-weight: 800; margin: 0; color: var(--mw-text); }
+    .mw-version { color: rgba(255,255,255,.48); font-size: .76rem; margin-top: .18rem; }
+    .mw-line { border-top: 1px solid rgba(220,201,177,.11); margin: .55rem 0 .75rem 0; }
+    .mw-muted { color: rgba(255,255,255,.64); font-size: .82rem; }
+    .mw-section-title { position:relative; font-size: 1.04rem; font-weight: 800; margin: .9rem 0 .12rem 0; color: var(--mw-text); padding-left:.62rem; }
+    .mw-section-title:before { content:""; position:absolute; left:0; top:.18rem; bottom:.12rem; width:3px; border-radius:3px; background:linear-gradient(180deg,var(--mw-blue),var(--mw-beige)); }
+
+    /* Navegação institucional: texto transparente + linha inferior no item ativo. */
+    .mw-nav { display:flex; align-items:center; gap:1.55rem; min-height:54px; padding-top:.25rem; }
+    .mw-nav a { position:relative; display:inline-block; color:rgba(255,255,255,.62); text-decoration:none !important; font-size:.88rem; font-weight:720; padding:.65rem .05rem .62rem .05rem; transition:all .16s ease; }
+    .mw-nav a:hover { color:var(--mw-beige); }
+    .mw-nav a.active { color:#FFFFFF; }
+    .mw-nav a.active:after { content:""; position:absolute; height:2px; left:0; right:0; bottom:0; border-radius:2px; background:linear-gradient(90deg,var(--mw-blue) 0%,var(--mw-blue) 72%,var(--mw-beige) 100%); box-shadow:0 0 10px rgba(93,115,175,.26); }
+
+    .mw-card { border: 1px solid rgba(93,115,175,.20); border-radius: 13px; padding: 10px 12px; background:linear-gradient(150deg,rgba(93,115,175,.055),rgba(19,25,37,.18)); min-height:82px; display:flex; flex-direction:column; justify-content:center; box-shadow:none; }
+    .mw-card:hover { border-color:rgba(93,115,175,.34); }
+    .mw-card-head { display:flex; align-items:center; gap:.45rem; min-height:18px; margin-bottom:.26rem; }
+    .mw-card-label { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:650; line-height:1; }
+    .mw-card-value { color:#FFFFFF; font-size:1.04rem; font-weight:800; letter-spacing:-.01em; line-height:1.12; }
+    .mw-card-icon { height:18px; max-width:48px; width:auto; object-fit:contain; display:block; }
+
+    button[kind="primary"] { background-color:var(--mw-blue) !important; border-color:var(--mw-blue) !important; }
+    div[data-baseweb="input"] > div, div[data-baseweb="select"] > div { background-color:rgba(255,255,255,.035); border-color:rgba(220,201,177,.12); }
+    div[data-testid="stDataFrame"] { border:1px solid rgba(220,201,177,.10); border-radius:11px; overflow:hidden; background:#131925 !important; }
     div[data-testid="stDataFrame"] > div { background:#131925 !important; }
-        </style>
+    div[data-testid="stExpander"] { border-radius:11px; border-color:rgba(220,201,177,.10) !important; background:rgba(19,25,37,.35); }
+    div[data-testid="stTabs"] button { font-weight:720; }
+    hr { border-color:rgba(220,201,177,.10) !important; }
+    </style>
     """,
     unsafe_allow_html=True,
 )
@@ -552,7 +506,7 @@ def money_color_styler(df: pd.DataFrame, money_cols=None, pct_cols=None, qty_col
             return "color: #ff6b6b; font-weight: 800;"
         return "color: rgba(250,250,250,.72);"
 
-    styler = df.style.format(fmt)
+    styler = df.style.format(fmt).set_properties(**{"background-color": "#131925", "color": "#FFFFFF", "border-color": "rgba(220,201,177,.08)"})
     if diff_cols:
         styler = styler.map(color_diff, subset=diff_cols)
     return styler
@@ -680,7 +634,7 @@ def macro_hierarchy_styler(df: pd.DataFrame):
             ]
         return ["" for _ in row]
 
-    styler = view.style.format(fmt).apply(row_style, axis=1)
+    styler = view.style.format(fmt).set_properties(**{"background-color": "#131925", "color": "#FFFFFF", "border-color": "rgba(220,201,177,.08)"}).apply(row_style, axis=1)
     styler = styler.map(color_adjust, subset=["Ajuste necessário"])
     return styler
 
@@ -3109,7 +3063,11 @@ def load_models_from_master_sheet(path_str: str, mtime_ns: int = 0, file_size: i
                 # mesmo motor e nenhuma parcela caia em "Outros instrumentos".
                 canonical_key = MODEL_KEY_BY_SUBBUCKET.get(raw_key, raw_key)
                 model_weights[canonical_key] = model_weights.get(canonical_key, 0.0) + float(r["PESO"])
-            result[str(model)] = model_weights
+            # Uma versão publicada é um override do Pesos-alocacao.xlsx e só pode
+            # assumir o lugar do modelo oficial quando fechar 100% nos componentes.
+            total_children = sum(float(v or 0.0) for k, v in model_weights.items() if norm(k) not in PARENT_WEIGHT_KEYS)
+            if abs(total_children - 1.0) <= 0.0005:
+                result[str(model)] = model_weights
         return result
     except Exception:
         return {}
@@ -3168,8 +3126,16 @@ def load_published_models(base: dict[str, dict[str, float]], master_path: Path |
         payload = json.loads(PUBLISHED_MODELS_PATH.read_text(encoding="utf-8"))
         for name, info in payload.get("models", {}).items():
             weights = info.get("weights", {}) if isinstance(info, dict) else {}
-            if weights:
-                merged[str(name)] = {str(k): float(v) for k, v in weights.items()}
+            if not weights:
+                continue
+            canonical = {}
+            for k, v in weights.items():
+                raw_key = str(k).strip()
+                key = MODEL_KEY_BY_SUBBUCKET.get(raw_key, raw_key)
+                canonical[key] = canonical.get(key, 0.0) + float(v or 0.0)
+            total_children = sum(float(v or 0.0) for k, v in canonical.items() if norm(k) not in PARENT_WEIGHT_KEYS)
+            if abs(total_children - 1.0) <= 0.0005:
+                merged[str(name)] = canonical
     except Exception:
         pass
     return merged
@@ -3244,7 +3210,7 @@ def theoretical_hierarchy_styler(df: pd.DataFrame):
         if header_mask[row.name]:
             return ["background-color: rgba(93,115,170,.34); font-weight:900; border-top:1px solid rgba(255,255,255,.22);" for _ in row]
         return ["" for _ in row]
-    return view.style.format({"Peso sugerido": fmt_pct, "Valor sugerido": format_brl}).apply(row_style, axis=1)
+    return view.style.format({"Peso sugerido": fmt_pct, "Valor sugerido": format_brl}).set_properties(**{"background-color": "#131925", "color": "#FFFFFF", "border-color": "rgba(220,201,177,.08)"}).apply(row_style, axis=1)
 
 
 # =============================================================================
@@ -3256,24 +3222,38 @@ pesos = load_published_models(pesos_base, master_products_path())
 df_contas = load_contas_cached()
 
 lp = logo_path()
+try:
+    _page_slug = st.query_params.get("page", "saldo")
+except Exception:
+    _qp = st.experimental_get_query_params()
+    _page_slug = (_qp.get("page") or ["saldo"])[0]
+if isinstance(_page_slug, list):
+    _page_slug = _page_slug[0] if _page_slug else "saldo"
+_page_slug = str(_page_slug or "saldo").lower()
+_page_map = {
+    "saldo": "Controle de Saldo",
+    "asset": "Asset Allocation",
+    "teorica": "Carteira Teórica",
+    "gestao": "Gestão",
+}
+if _page_slug not in _page_map:
+    _page_slug = "saldo"
+page = _page_map[_page_slug]
+
 h_left, h_right = st.columns([1.25, 4.75], vertical_alignment="center")
 with h_left:
     if lp:
-        st.image(str(lp), width=220)
+        st.image(str(lp), width=205)
     else:
         st.markdown('<h1 class="mw-title">M Wealth</h1>', unsafe_allow_html=True)
     st.markdown(f'<div class="mw-version">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
 with h_right:
-    page = st.radio(
-        "Navegação",
-        ["Controle de Saldo", "Asset Allocation", "Carteira Teórica", "Gestão"],
-        horizontal=True,
-        index=0,
-        label_visibility="collapsed",
-        key="mw_navigation",
-    )
-if page is None:
-    page = "Controle de Saldo"
+    _nav_items = [("saldo","Controle de Saldo"),("asset","Asset Allocation"),("teorica","Carteira Teórica"),("gestao","Gestão")]
+    _nav_html = '<nav class="mw-nav">' + ''.join(
+        f'<a href="?page={slug}" target="_self" class="{"active" if slug == _page_slug else ""}">{label}</a>'
+        for slug, label in _nav_items
+    ) + '</nav>'
+    st.markdown(_nav_html, unsafe_allow_html=True)
 
 st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
 
@@ -3414,9 +3394,9 @@ if page == "Asset Allocation":
         _base_opts = ["PL total", "PL investível"]
         _base_default = st.session_state.get("asset_base_mode_inline", "PL total")
         _base_idx = _base_opts.index(_base_default) if _base_default in _base_opts else 0
-        base_choice = st.radio(
-            "Base", _base_opts, horizontal=True, index=_base_idx,
-            label_visibility="collapsed", key="asset_base_mode_radio",
+        base_choice = st.selectbox(
+            "Base", _base_opts, index=_base_idx,
+            label_visibility="collapsed", key="asset_base_mode_select",
             help="PL investível exclui caixa, proventos e ativos fora da estratégia do denominador dos alvos.",
         )
         st.session_state["asset_base_mode_inline"] = base_choice
@@ -3460,8 +3440,8 @@ if page == "Asset Allocation":
             plot = macro_df[macro_df["Valor Atual"] > 0].copy()
             plot["Estratégia"] = plot["Classe"].apply(friendly_class_name)
             plot = plot.rename(columns={"Valor Atual": "Quanto tem"})
-        fig = px.pie(plot, names="Estratégia", values="Quanto tem", title="Distribuição atual por estratégia", hole=.56)
-        fig.update_layout(height=285, margin=dict(l=0, r=0, t=38, b=0), showlegend=True, legend_title_text="", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF", size=11), legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10), orientation="v", x=1.01, y=.5, yanchor="middle"))
+        fig = px.pie(plot, names="Estratégia", values="Quanto tem", title="Distribuição atual por estratégia", hole=.58, color_discrete_sequence=["#5D73AF", "#DCC9B1", "#7F91C2", "#B4A189", "#9AA8CE", "#E8DED1", "#3F558E", "#C6B49D"])
+        fig.update_layout(height=265, margin=dict(l=0, r=0, t=38, b=0), showlegend=True, legend_title_text="", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF", size=11), legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10), orientation="v", x=1.01, y=.5, yanchor="middle"))
         st.plotly_chart(fig, use_container_width=True)
     with col2:
         st.dataframe(
@@ -3687,7 +3667,7 @@ if page == "Carteira Teórica":
     df_teor = theoretical_portfolio(p_teor, valor, modelo)
     _recognized_weight = float(df_teor.loc[df_teor["Nível"].eq("Composição"), "Peso"].sum()) if not df_teor.empty else 0.0
     if abs(_recognized_weight - 1.0) > 0.005:
-        st.warning(f"O modelo possui {fmt_pct(_recognized_weight)} em componentes reconhecidos. Revise a versão publicada do modelo antes de usar o PDF.")
+        st.warning(f"O modelo oficial possui {fmt_pct(_recognized_weight)} em componentes reconhecidos. Verifique o Pesos-alocacao.xlsx antes de usar o PDF.")
     if df_teor.empty:
         st.warning("Não encontrei componentes válidos para essa carteira. Verifique a planilha de pesos.")
         st.stop()
@@ -3706,7 +3686,7 @@ if page == "Carteira Teórica":
 
     col_a, col_b = st.columns([0.82, 1.48], vertical_alignment="center", gap="medium")
     with col_a:
-        fig = px.pie(macro, names="Classe de investimento", values="Valor sugerido", title="Distribuição sugerida", hole=.56)
+        fig = px.pie(macro, names="Classe de investimento", values="Valor sugerido", title="Distribuição sugerida", hole=.58, color_discrete_sequence=["#5D73AF", "#DCC9B1", "#7F91C2", "#B4A189", "#9AA8CE", "#E8DED1", "#3F558E", "#C6B49D"])
         fig.update_layout(height=280, margin=dict(l=0, r=0, t=38, b=0), legend_title_text="", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF", size=11), legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)))
         st.plotly_chart(fig, use_container_width=True)
     with col_b:
