@@ -69,7 +69,7 @@ st.set_page_config(page_title="M Wealth | Balanceamento", layout="wide", page_ic
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.8.4"
+APP_VERSION = "6.8.5"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -133,65 +133,91 @@ st.markdown(
     .mw-section-title { position:relative; font-size: 1.04rem; font-weight: 800; margin: .9rem 0 .12rem 0; color: var(--mw-text); padding-left:.62rem; }
     .mw-section-title:before { content:""; position:absolute; left:0; top:.18rem; bottom:.12rem; width:3px; border-radius:3px; background:linear-gradient(180deg,var(--mw-blue),var(--mw-beige)); }
 
-    /* Header institucional construído em CSS: não depende de crop da imagem. */
-    .mw-brand-lockup { display:flex; align-items:center; gap:.58rem; min-height:58px; padding:.15rem 0; white-space:nowrap; overflow:visible; }
-    .mw-brand-mark { width:44px; height:44px; border:3px solid var(--mw-blue); display:flex; align-items:center; justify-content:center; color:#FFFFFF; font-size:27px; font-weight:500; line-height:1; box-sizing:border-box; flex:0 0 auto; }
-    .mw-brand-word { color:#FFFFFF; font-size:1.92rem; font-weight:400; letter-spacing:-.035em; line-height:1; }
-    .mw-version-row { margin-top:.18rem; margin-bottom:.08rem; color:rgba(255,255,255,.42); font-size:.72rem; }
+    /* Header: usa a arte ORIGINAL Logo-M-Wealth.png, sem reconstruir a marca. */
+    .mw-brand-wrap {
+      display:flex;
+      align-items:center;
+      justify-content:flex-start;
+      min-height:64px;
+      overflow:visible;
+      padding:.20rem 0;
+    }
+    .mw-brand-logo {
+      display:block;
+      width:auto;
+      height:auto;
+      max-width:245px;
+      max-height:62px;
+      object-fit:contain;
+      object-position:left center;
+    }
+    .mw-version-right {
+      height:64px;
+      display:flex;
+      align-items:center;
+      justify-content:flex-end;
+      color:rgba(255,255,255,.42);
+      font-size:.72rem;
+      white-space:nowrap;
+    }
 
-    /* Navegação horizontal: mesma interação instantânea, sem a bolinha do radio. */
-    .st-key-mw_navigation div[role="radiogroup"] {
+    /* Navegação horizontal: preserva st.radio e sua interação instantânea.
+       Só removemos o indicador visual circular. */
+    .st-key-mw_navigation [data-testid="stRadio"] > div[role="radiogroup"] {
       display:flex !important;
       flex-direction:row !important;
-      gap:1.45rem !important;
+      gap:1.55rem !important;
       align-items:center !important;
+      justify-content:flex-start !important;
       background:transparent !important;
       border:0 !important;
       padding:0 !important;
     }
-    .st-key-mw_navigation div[role="radiogroup"] > label {
+    .st-key-mw_navigation label[data-baseweb="radio"] {
       position:relative !important;
       display:flex !important;
       align-items:center !important;
-      min-height:40px !important;
-      padding:.48rem .02rem .52rem .02rem !important;
+      min-height:42px !important;
+      padding:.52rem 0 .58rem 0 !important;
       margin:0 !important;
       border:0 !important;
       background:transparent !important;
       cursor:pointer !important;
-      color:rgba(255,255,255,.62) !important;
     }
-    /* Esconde exclusivamente o indicador circular; preserva o texto. */
-    .st-key-mw_navigation div[role="radiogroup"] > label > div:first-child {
-      display:none !important;
-      width:0 !important;
-      height:0 !important;
+    .st-key-mw_navigation label[data-baseweb="radio"] > div:first-child {
+      position:absolute !important;
+      opacity:0 !important;
+      width:1px !important;
+      height:1px !important;
+      overflow:hidden !important;
+      pointer-events:none !important;
       margin:0 !important;
       padding:0 !important;
     }
-    .st-key-mw_navigation div[role="radiogroup"] > label p {
+    .st-key-mw_navigation label[data-baseweb="radio"] p {
       margin:0 !important;
-      color:rgba(255,255,255,.62) !important;
+      color:rgba(255,255,255,.67) !important;
       font-weight:720 !important;
       line-height:1.2 !important;
       white-space:nowrap !important;
     }
-    .st-key-mw_navigation div[role="radiogroup"] > label:hover p {
+    .st-key-mw_navigation label[data-baseweb="radio"]:hover p {
       color:var(--mw-beige) !important;
     }
-    .st-key-mw_navigation div[role="radiogroup"] > label:has(input:checked) p {
+    .st-key-mw_navigation label[data-baseweb="radio"]:has(input:checked) p {
       color:#FFFFFF !important;
     }
-    .st-key-mw_navigation div[role="radiogroup"] > label:has(input:checked)::after {
+    .st-key-mw_navigation label[data-baseweb="radio"]:has(input:checked)::after {
       content:"";
       position:absolute;
       left:0;
       right:0;
-      bottom:0;
+      bottom:1px;
       height:2px;
       border-radius:2px;
       background:linear-gradient(90deg,var(--mw-blue) 0%,var(--mw-blue) 72%,var(--mw-beige) 100%);
     }
+
 
 
     .mw-card { border: 1px solid rgba(93,115,175,.20); border-radius: 13px; padding: 10px 12px; background:linear-gradient(150deg,rgba(93,115,175,.055),rgba(19,25,37,.18)); min-height:82px; display:flex; flex-direction:column; justify-content:center; box-shadow:none; }
@@ -1968,6 +1994,15 @@ def peso_get(p: dict[str, float], key: str) -> float:
     return 0.0
 
 
+def peso_get_any(p: dict[str, float], *keys: str) -> float:
+    """Retorna o primeiro peso encontrado entre aliases equivalentes."""
+    for key in keys:
+        value = peso_get(p, key)
+        if abs(value) > 1e-12:
+            return value
+    return 0.0
+
+
 def model_for_profile(perfil: str, modelos: list[str]) -> str:
     pn = norm(perfil)
     candidates = []
@@ -2007,11 +2042,24 @@ def subbucket_targets_from_model(p: dict[str, float], pl: float) -> pd.DataFrame
         ("RF Brasil", "Pré - Tesouro", peso_get(p, "Tesouro Pré")),
         ("RF Brasil", "Inflação - Bancário", peso_get(p, "Bancário")),
         ("RF Brasil", "Inflação - Tesouro", peso_get(p, "Tesouro")),
-        ("RF Brasil", "Crédito Privado", peso_get(p, "Crédito Privado")),
-        ("RV Brasil", "Ações", peso_get(p, "Ações")),
-        ("RV Brasil", "FIIs", peso_get(p, "FIIs")),
-        ("Internacional", "Renda Fixa Internacional", peso_get(p, "Renda Fixa")),
-        ("Internacional", "Renda Variável Internacional", peso_get(p, "Renda Variável")),
+        ("RF Brasil", "Crédito Privado", peso_get_any(p, "Crédito Privado", "Credito Privado")),
+        ("RV Brasil", "Ações", peso_get_any(
+            p, "Ações", "Acoes", "Ações Brasil", "Acoes Brasil",
+            "Ações brasileiras", "Acoes brasileiras",
+            "RV Brasil - Ações", "RV Brasil - Acoes"
+        )),
+        ("RV Brasil", "FIIs", peso_get_any(
+            p, "FIIs", "FII", "Fundos Imobiliários", "Fundos Imobiliarios",
+            "Fundos Imobiliários / FIAGROs", "Fundos Imobiliarios / FIAGROs",
+            "FII / FIAGRO", "FIIs / FIAGROs", "RV Brasil - FIIs"
+        )),
+        ("Internacional", "Renda Fixa Internacional", peso_get_any(
+            p, "Renda Fixa", "Renda Fixa Internacional", "RF Internacional"
+        )),
+        ("Internacional", "Renda Variável Internacional", peso_get_any(
+            p, "Renda Variável", "Renda Variavel", "Renda Variável Internacional",
+            "Renda Variavel Internacional", "RV Internacional"
+        )),
     ]
     df = pd.DataFrame(rows, columns=["Classe", "Subbucket", "Peso Ideal"])
     df = df[df["Peso Ideal"] > 0].copy()
@@ -2067,7 +2115,19 @@ def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float,
     universe_by_bucket = rv_universe(modelo)
     model_tickers = {ticker_clean(t) for xs in universe_by_bucket.values() for t in xs}
     for bucket, tickers in universe_by_bucket.items():
-        alvo_total = pl * peso_get(p, bucket)
+        alvo_total = pl * (
+            peso_get_any(
+                p, "Ações", "Acoes", "Ações Brasil", "Acoes Brasil",
+                "Ações brasileiras", "Acoes brasileiras",
+                "RV Brasil - Ações", "RV Brasil - Acoes"
+            )
+            if bucket == "Ações"
+            else peso_get_any(
+                p, "FIIs", "FII", "Fundos Imobiliários", "Fundos Imobiliarios",
+                "Fundos Imobiliários / FIAGROs", "Fundos Imobiliarios / FIAGROs",
+                "FII / FIAGRO", "FIIs / FIAGROs", "RV Brasil - FIIs"
+            )
+        )
         alvo_ativo = alvo_total / len(tickers) if tickers else 0
         for t in tickers:
             preco, qtd, atual = current_exchange_position(pos_cliente, t, price_ref)
@@ -3296,13 +3356,22 @@ _nav_items = ["Controle de Saldo", "Asset Allocation", "Carteira Teórica", "Ges
 if "main_navigation" not in st.session_state:
     st.session_state["main_navigation"] = "Controle de Saldo"
 
-h_left, h_right = st.columns([1.18, 4.82], vertical_alignment="center")
-with h_left:
-    st.markdown(
-        '<div class="mw-brand-lockup"><div class="mw-brand-mark">M</div><div class="mw-brand-word">Wealth</div></div>',
-        unsafe_allow_html=True,
-    )
-with h_right:
+lp = logo_path()
+
+h_logo, h_nav, h_version = st.columns([1.45, 4.15, .70], vertical_alignment="center", gap="small")
+
+with h_logo:
+    if lp:
+        _logo_uri = file_to_data_uri(str(lp))
+        if _logo_uri:
+            st.markdown(
+                f'<div class="mw-brand-wrap"><img class="mw-brand-logo" src="{_logo_uri}" alt="M Wealth"></div>',
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown('<div class="mw-title">M Wealth</div>', unsafe_allow_html=True)
+
+with h_nav:
     with st.container(key="mw_navigation"):
         _current_page = st.session_state.get("main_navigation", "Controle de Saldo")
         _nav_index = _nav_items.index(_current_page) if _current_page in _nav_items else 0
@@ -3316,7 +3385,12 @@ with h_right:
         )
         st.session_state["main_navigation"] = page
 
-st.markdown(f'<div class="mw-version-row">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
+with h_version:
+    st.markdown(
+        f'<div class="mw-version-right">Versão {APP_VERSION}</div>',
+        unsafe_allow_html=True,
+    )
+
 st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
 
 # =============================================================================
@@ -3704,7 +3778,29 @@ if page == "Carteira Teórica":
     df_teor = theoretical_portfolio(p_teor, valor, modelo)
     _recognized_weight = float(df_teor.loc[df_teor["Nível"].eq("Composição"), "Peso"].sum()) if not df_teor.empty else 0.0
     if abs(_recognized_weight - 1.0) > 0.005:
-        st.warning(f"O modelo oficial possui {fmt_pct(_recognized_weight)} em componentes reconhecidos. Verifique o Pesos-alocacao.xlsx antes de usar o PDF.")
+        _known_norms = {
+            norm("Imediato"), norm("1 a 30 dias"), norm("31 a 90 dias"), norm("91 a 180 dias"),
+            norm("31 a 180 dias"), norm("181 a 360 dias"), norm("361+ dias"),
+            norm("FiInfra e Cetipados"), norm("FiInfra e Cetipado"),
+            norm("Bancário Pré"), norm("Tesouro Pré"), norm("Bancário"), norm("Tesouro"),
+            norm("Crédito Privado"), norm("Credito Privado"),
+            norm("Ações"), norm("Acoes"), norm("Ações Brasil"), norm("Acoes Brasil"),
+            norm("Ações brasileiras"), norm("Acoes brasileiras"),
+            norm("FIIs"), norm("FII"), norm("Fundos Imobiliários"), norm("Fundos Imobiliarios"),
+            norm("Fundos Imobiliários / FIAGROs"), norm("Fundos Imobiliarios / FIAGROs"),
+            norm("Renda Fixa"), norm("Renda Fixa Internacional"), norm("RF Internacional"),
+            norm("Renda Variável"), norm("Renda Variavel"), norm("Renda Variável Internacional"),
+            norm("Renda Variavel Internacional"), norm("RV Internacional"),
+        }
+        _unmapped = [
+            k for k, v in p_teor.items()
+            if float(v or 0) > 0 and norm(k) not in PARENT_WEIGHT_KEYS and norm(k) not in _known_norms
+        ]
+        _extra = f" Componentes sem casamento: {', '.join(map(str, _unmapped))}." if _unmapped else ""
+        st.warning(
+            f"O modelo possui {fmt_pct(_recognized_weight)} em componentes reconhecidos.{_extra} "
+            "A carteira teórica não redistribui automaticamente pesos desconhecidos."
+        )
     if df_teor.empty:
         st.warning("Não encontrei componentes válidos para essa carteira. Verifique a planilha de pesos.")
         st.stop()
