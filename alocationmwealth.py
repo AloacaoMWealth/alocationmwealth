@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import math
 import re
@@ -112,41 +113,46 @@ st.markdown(
     <style>
     :root {
       --mw-bg: #131925;
+      --mw-bg-2: #182033;
       --mw-text: #FFFFFF;
       --mw-beige: #DCC9B1;
       --mw-blue: #5D73AF;
+      --mw-border: rgba(220,201,177,.18);
     }
     [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
-    .stApp { background: var(--mw-bg); color: var(--mw-text); }
-    .block-container { padding-top: .9rem; padding-bottom: 2.0rem; max-width: 1720px; }
-    div[data-testid="stMetricValue"] { font-size: 1.2rem; }
-    .mw-title { font-size: 2.2rem; line-height: 1.1; font-weight: 800; margin: 0; color: var(--mw-text); }
-    .mw-version { color: rgba(255,255,255,.62); font-size: .82rem; margin-top: .35rem; }
-    .mw-card { border: 1px solid rgba(220,201,177,.20); border-radius: 16px; padding: 14px 16px; background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.015)); box-shadow: 0 10px 24px rgba(0,0,0,.10); min-height: 96px; }
-    .mw-card-label { color: rgba(255,255,255,.68); font-size: .80rem; font-weight: 650; margin-bottom: .30rem; }
-    .mw-card-value { color: var(--mw-text); font-size: 1.30rem; font-weight: 800; letter-spacing: -.02em; }
-    .mw-muted { color: rgba(255,255,255,.68); font-size: .86rem; }
+    .stApp { background: linear-gradient(180deg, #131925 0%, #101623 100%); color: var(--mw-text); }
+    .block-container { padding-top: .55rem; padding-bottom: 1.8rem; max-width: 1600px; }
+    div[data-testid="stMetricValue"] { font-size: 1.08rem; }
+    .mw-title { font-size: 1.95rem; line-height: 1.05; font-weight: 800; margin: 0; color: var(--mw-text); }
+    .mw-version { color: rgba(255,255,255,.55); font-size: .78rem; margin-top: .18rem; }
+    .mw-card { border: 1px solid var(--mw-border); border-radius: 14px; padding: 10px 12px; background: linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.012)); box-shadow: 0 8px 18px rgba(0,0,0,.10); min-height: 84px; display:flex; flex-direction:column; justify-content:center; }
+    .mw-card-head { display:flex; align-items:center; gap:.45rem; min-height: 20px; margin-bottom: .28rem; }
+    .mw-card-label { color: rgba(255,255,255,.68); font-size: .74rem; font-weight: 650; line-height:1; }
+    .mw-card-value { color: var(--mw-text); font-size: 1.06rem; font-weight: 800; letter-spacing: -.01em; line-height:1.12; }
+    .mw-card-icon { height: 18px; width: auto; object-fit: contain; display:block; }
+    .mw-muted { color: rgba(255,255,255,.66); font-size: .84rem; }
     .mw-ok { color: #8be28b; font-weight: 700; }
     .mw-warn { color: #f1d27a; font-weight: 700; }
     .mw-bad { color: #ff8d8d; font-weight: 700; }
-    .mw-line { border-top: 1px solid rgba(220,201,177,.16); margin: .8rem 0 1rem 0; }
-    .mw-page-intro { display:none; }
-    .mw-eyebrow, .mw-page-title, .mw-page-text, .mw-pill { display:none; }
-    .mw-section-title { font-size: 1.10rem; font-weight: 800; margin: 1.0rem 0 .20rem 0; color: var(--mw-text); }
-    div[data-testid="stTabs"] button { font-weight: 750; }
+    .mw-line { border-top: 1px solid rgba(220,201,177,.12); margin: .6rem 0 .8rem 0; }
+    .mw-page-intro, .mw-eyebrow, .mw-page-title, .mw-page-text, .mw-pill { display:none; }
+    .mw-section-title { font-size: 1.06rem; font-weight: 800; margin: .85rem 0 .10rem 0; color: var(--mw-text); }
     div[data-testid="stDataFrame"] { border: 1px solid rgba(255,255,255,.08); border-radius: 12px; overflow: hidden; }
     div[data-testid="stExpander"] { border-radius: 12px; }
+    div[data-testid="stTabs"] button { font-weight: 750; }
+    div[data-testid="stSegmentedControl"] [role="radiogroup"] { gap: .35rem; justify-content: flex-start; }
+    div[data-testid="stSegmentedControl"] label { border: 1px solid rgba(255,255,255,.10) !important; border-radius: 12px !important; padding: .12rem .34rem !important; background: rgba(255,255,255,.015) !important; }
+    div[data-testid="stSegmentedControl"] label[data-selected="true"] { background: rgba(93,115,175,.22) !important; border-color: rgba(93,115,175,.70) !important; box-shadow:none !important; }
+    div[data-testid="stSegmentedControl"] label p { color: rgba(255,255,255,.82) !important; font-weight: 700 !important; }
+    div[data-testid="stSegmentedControl"] label[data-selected="true"] p { color: #FFFFFF !important; }
     button[kind="primary"] { background-color: var(--mw-blue) !important; border-color: var(--mw-blue) !important; }
-    div[data-baseweb="input"] > div { background-color: rgba(255,255,255,.03); }
-    div[data-baseweb="select"] > div { background-color: rgba(255,255,255,.03); }
-    div[data-testid="stSegmentedControl"] [role="radiogroup"] { gap: .4rem; }
-    div[data-testid="stSegmentedControl"] label { border: 1px solid rgba(220,201,177,.20) !important; border-radius: 12px !important; padding: .12rem .35rem !important; background: rgba(255,255,255,.02) !important; }
-    div[data-testid="stSegmentedControl"] label[data-selected="true"] { background: rgba(93,115,175,.22) !important; border-color: rgba(93,115,175,.60) !important; }
-    div[data-testid="stSegmentedControl"] p { font-weight: 700 !important; }
+    div[data-baseweb="input"] > div, div[data-baseweb="select"] > div { background-color: rgba(255,255,255,.03); }
+    .mw-top-gap { margin-top: .1rem; }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
 
 
 # =============================================================================
@@ -347,10 +353,49 @@ def parse_brl_input(value, default: float = 0.0) -> float:
         return default
 
 
-def metric_card(label: str, value: str) -> None:
+def broker_logo_path(broker: str) -> Path | None:
+    broker = norm(broker)
+    name_map = {
+        "XP": ["logo_xp.webp", "logo_xp.png"],
+        "BTG": ["logo_btg.png", "logo_btg.webp"],
+        "CS": ["logo_cs.webp", "logo_cs.png", "logo_schwab.webp"],
+    }
+    candidates = name_map.get(broker, [])
+    for name in candidates:
+        for root in [BASE_DIR, POS_DIR, Path.cwd()]:
+            p = root / name
+            if p.exists():
+                return p
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def file_to_data_uri(path_str: str) -> str:
+    try:
+        p = Path(path_str)
+        if not p.exists():
+            return ""
+        ext = p.suffix.lower()
+        mime = "image/png"
+        if ext == ".webp":
+            mime = "image/webp"
+        elif ext in {".jpg", ".jpeg"}:
+            mime = "image/jpeg"
+        data = base64.b64encode(p.read_bytes()).decode("ascii")
+        return f"data:{mime};base64,{data}"
+    except Exception:
+        return ""
+
+
+def metric_card(label: str, value: str, icon_path: Path | None = None) -> None:
+    icon_html = ""
+    if icon_path:
+        uri = file_to_data_uri(str(icon_path))
+        if uri:
+            icon_html = f'<img class="mw-card-icon" src="{uri}" alt="{escape(str(label))}" />'
     html = (
         '<div class="mw-card">'
-        f'<div class="mw-card-label">{escape(str(label))}</div>'
+        f'<div class="mw-card-head">{icon_html}<div class="mw-card-label">{escape(str(label))}</div></div>'
         f'<div class="mw-card-value">{escape(str(value))}</div>'
         '</div>'
     )
@@ -3129,14 +3174,15 @@ pesos = load_published_models(pesos_base, master_products_path())
 df_contas = load_contas_cached()
 
 lp = logo_path()
-h_left, h_right = st.columns([1.45, 4.55], vertical_alignment="center")
+h_left, h_right = st.columns([1.15, 4.85], vertical_alignment="center")
 with h_left:
     if lp:
-        st.image(str(lp), use_container_width=True)
+        st.image(str(lp), width=280)
     else:
         st.markdown('<h1 class="mw-title">M Wealth</h1>', unsafe_allow_html=True)
     st.markdown(f'<div class="mw-version">Versão {APP_VERSION}</div>', unsafe_allow_html=True)
 with h_right:
+    st.markdown('<div class="mw-top-gap"></div>', unsafe_allow_html=True)
     page = st.segmented_control(
         "",
         ["Controle de Saldo", "Asset Allocation", "Carteira Teórica", "Gestão"],
@@ -3259,13 +3305,6 @@ if page == "Asset Allocation":
     if active_personalizations:
         st.success("Personalização estratégica ativa: " + " | ".join(active_personalizations))
 
-    base_mode = st.radio(
-        "Base usada no balanceamento",
-        ["PL patrimonial total", "PL investível"],
-        horizontal=True,
-        help="PL investível exclui caixa, proventos e ativos fora da estratégia do denominador dos alvos.",
-    )
-
     # Marca somente as posições reais de bolsa pelo preço atual do Yahoo Finance.
     # O PL, os valores atuais e as diferenças passam a refletir quantidade × cotação atual.
     held_tickers = pos_cliente.loc[exchange_position_mask(pos_cliente), "ticker_norm"].dropna().astype(str).tolist()
@@ -3277,10 +3316,6 @@ if page == "Asset Allocation":
     pl_patrimonial = float(pos_cliente["valor_mercado"].sum())
     investible_mask = ~pos_cliente["classe_macro"].isin(["Caixa", "Fora da Estratégia"])
     pl_investivel = float(pos_cliente.loc[investible_mask, "valor_mercado"].sum())
-    pl = pl_patrimonial if base_mode == "PL patrimonial total" else pl_investivel
-    pos_calculo = pos_cliente if base_mode == "PL patrimonial total" else pos_cliente.loc[investible_mask].copy()
-    macro_df, sub_df = portfolio_tables(pos_calculo, p, pl)
-    corretoras_cliente = set(pos_cliente.get("corretora", pd.Series(dtype=str)).dropna().astype(str).unique())
 
     pl_xp = float(pos_cliente.loc[pos_cliente["corretora"].eq("XP"), "valor_mercado"].sum())
     pl_btg = float(pos_cliente.loc[pos_cliente["corretora"].eq("BTG"), "valor_mercado"].sum())
@@ -3289,19 +3324,35 @@ if page == "Asset Allocation":
     manual_matches = int(pos_cliente.get("manual_match", pd.Series([False] * len(pos_cliente), index=pos_cliente.index)).fillna(False).astype(bool).sum())
     nao_class = float(pos_cliente.loc[pos_cliente["subbucket"].eq("Outros / Não Classificado"), "valor_mercado"].sum())
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k0, k1, k2, k3, k4, k5, k6 = st.columns([1.55, 1, 1, 1, 1, 1, 1], vertical_alignment="bottom")
+    with k0:
+        st.markdown('<div class="mw-muted" style="margin-bottom:.35rem; font-weight:700;">Base usada no balanceamento</div>', unsafe_allow_html=True)
+        base_choice = st.segmented_control(
+            "",
+            ["PL total", "PL investível"],
+            default=st.session_state.get("asset_base_mode_inline", "PL total"),
+            key="asset_base_mode_inline",
+            help="PL investível exclui caixa, proventos e ativos fora da estratégia do denominador dos alvos.",
+        )
+    base_mode = "PL patrimonial total" if base_choice == "PL total" else "PL investível"
+    pl = pl_patrimonial if base_mode == "PL patrimonial total" else pl_investivel
+    pos_calculo = pos_cliente if base_mode == "PL patrimonial total" else pos_cliente.loc[investible_mask].copy()
+    macro_df, sub_df = portfolio_tables(pos_calculo, p, pl)
+    corretoras_cliente = set(pos_cliente.get("corretora", pd.Series(dtype=str)).dropna().astype(str).unique())
+
     with k1:
         metric_card("PL Patrimonial", format_brl(pl_patrimonial))
     with k2:
         metric_card("Base de Alocação", format_brl(pl))
     with k3:
-        metric_card("XP", format_brl(pl_xp))
+        metric_card("", format_brl(pl_xp), broker_logo_path("XP"))
     with k4:
-        metric_card("BTG", format_brl(pl_btg))
+        metric_card("", format_brl(pl_btg), broker_logo_path("BTG"))
     with k5:
-        metric_card("CS", format_brl(pl_cs))
+        metric_card("", format_brl(pl_cs), broker_logo_path("CS"))
     with k6:
         metric_card("Saldo", format_brl(saldo))
+
     st.caption(f"Perfil: **{perfil_cliente}** • Modelo aplicado: **{modelo}** • Fundos reconhecidos pelo manual: **{manual_matches}** • Não classificado: **{format_brl(nao_class)}**")
 
     st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
@@ -3312,7 +3363,7 @@ if page == "Asset Allocation":
     macro_view = macro_view.drop(columns=["Ação", "Status"], errors="ignore")
 
     macro_hier = macro_hierarchy_table(sub_df, pl)
-    col1, col2 = st.columns([0.95, 2.45])
+    col1, col2 = st.columns([1.0, 1.7], vertical_alignment="center")
     with col1:
         # Mesmo conceito da carteira teórica: gráfico pela abertura das estratégias,
         # não apenas pelo macro Renda Fixa / Renda Variável / Internacional.
@@ -3323,15 +3374,15 @@ if page == "Asset Allocation":
             plot = macro_df[macro_df["Valor Atual"] > 0].copy()
             plot["Estratégia"] = plot["Classe"].apply(friendly_class_name)
             plot = plot.rename(columns={"Valor Atual": "Quanto tem"})
-        fig = px.pie(plot, names="Estratégia", values="Quanto tem", title="Distribuição atual por estratégia", hole=.48)
-        fig.update_layout(height=365, margin=dict(l=8, r=8, t=45, b=8), showlegend=True, legend_title_text="")
+        fig = px.pie(plot, names="Estratégia", values="Quanto tem", title="Distribuição atual por estratégia", hole=.56)
+        fig.update_layout(height=320, margin=dict(l=0, r=0, t=42, b=0), showlegend=True, legend_title_text="", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF"), legend=dict(bgcolor="rgba(0,0,0,0)"))
         st.plotly_chart(fig, use_container_width=True)
     with col2:
         st.dataframe(
             macro_hierarchy_styler(macro_hier),
             use_container_width=True,
             hide_index=True,
-            height=min(820, max(420, 37 * (len(macro_hier) + 1))),
+            height=min(700, max(360, 34 * (len(macro_hier) + 1))),
         )
 
     st.subheader("Abertura por estratégia")
@@ -3563,10 +3614,10 @@ if page == "Carteira Teórica":
     k3.metric("Renda variável no Brasil", format_brl(renda_variavel))
     k4.metric("Investimentos internacionais", format_brl(internacional))
 
-    col_a, col_b = st.columns([1.05, 1.2])
+    col_a, col_b = st.columns([1.0, 1.35], vertical_alignment="center")
     with col_a:
-        fig = px.pie(macro, names="Classe de investimento", values="Valor sugerido", title="Distribuição sugerida", hole=.48)
-        fig.update_layout(height=330, margin=dict(l=8, r=8, t=45, b=8), legend_title_text="")
+        fig = px.pie(macro, names="Classe de investimento", values="Valor sugerido", title="Distribuição sugerida", hole=.56)
+        fig.update_layout(height=305, margin=dict(l=0, r=0, t=42, b=0), legend_title_text="", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF"), legend=dict(bgcolor="rgba(0,0,0,0)"))
         st.plotly_chart(fig, use_container_width=True)
     with col_b:
         section_title("Resumo da alocação", "Mesma hierarquia utilizada no Asset Allocation.")
@@ -3575,7 +3626,7 @@ if page == "Carteira Teórica":
             theoretical_hierarchy_styler(teor_hier),
             use_container_width=True,
             hide_index=True,
-            height=min(760, max(390, 36 * (len(teor_hier) + 1))),
+            height=min(660, max(340, 34 * (len(teor_hier) + 1))),
         )
 
     st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
