@@ -69,7 +69,7 @@ st.set_page_config(page_title="Wealth | Balanceamento", layout="wide", page_icon
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.8.4"
+APP_VERSION = "6.9"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -1849,6 +1849,14 @@ STRATEGY_PERSONALIZATION_COLUMNS = [
     "PESO_PERSONALIZADO", "ATIVO", "MOTIVO", "STATUS",
 ]
 
+PRODUCT_PERSONALIZATION_COLUMNS = [
+    "ESCOPO", "GRUPO_CLIENTE", "CONTA", "MODELO_BASE", "SUBBUCKET",
+    "ATIVO", "PESO_NO_SUBBUCKET", "MOTIVO", "STATUS",
+]
+
+PERSONALIZABLE_PRODUCT_BUCKETS = ["Ações", "FIIs", "FiInfra Pós", "FiInfra Inflação"]
+
+
 MODEL_KEY_BY_SUBBUCKET = {
     "Pós - Imediato": "Imediato",
     "Pós - 1 a 30 dias": "1 a 30 dias",
@@ -1957,6 +1965,147 @@ def apply_strategy_personalizations(weights: dict[str, float], rules: pd.DataFra
                 p[k] = each
     return p, labels
 
+
+@st.cache_data(show_spinner=False)
+def load_product_personalizations_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) -> pd.DataFrame:
+    path = Path(path_str)
+    if not path.exists():
+        return pd.DataFrame(columns=PRODUCT_PERSONALIZATION_COLUMNS)
+    try:
+        df = pd.read_excel(path, sheet_name="Personalizações de Produtos")
+        df.columns = [str(c).strip() for c in df.columns]
+        df = canonicalize_master_columns(df, PRODUCT_PERSONALIZATION_COLUMNS)
+        for c in PRODUCT_PERSONALIZATION_COLUMNS:
+            if c not in df.columns:
+                df[c] = np.nan if c == "PESO_NO_SUBBUCKET" else ""
+        df["PESO_NO_SUBBUCKET"] = pd.to_numeric(df["PESO_NO_SUBBUCKET"], errors="coerce")
+        df = df[df["STATUS"].fillna("Ativa").astype(str).map(norm).ne("INATIVA")].copy()
+        df = df[df["ATIVO"].fillna("").astype(str).str.strip().ne("")].copy()
+        return df.reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=PRODUCT_PERSONALIZATION_COLUMNS)
+
+
+def applicable_product_personalizations(
+    rules: pd.DataFrame,
+    grupo: str,
+    cliente: str,
+    conta: str,
+    modelo: str,
+) -> pd.DataFrame:
+    """Retorna a composição de produtos mais específica para cada subbucket.
+
+    Conta > Cliente > Grupo. Quando existe ao menos uma linha ativa para um
+    subbucket nesse nível, ela substitui integralmente o universo padrão daquele
+    subbucket, permitindo carteiras de FII/Ações/Fi-Infra realmente personalizadas.
+    """
+    if rules.empty:
+        return rules.copy()
+    out = rules.copy()
+    level = out["ESCOPO"].fillna("").astype(str).map(norm)
+    target = out["GRUPO_CLIENTE"].fillna("").astype(str).map(norm)
+    conta_rule = out["CONTA"].fillna("").astype(str).map(norm)
+    model_rule = out["MODELO_BASE"].fillna("").astype(str).map(norm)
+    match = (
+        (level.eq("GRUPO") & target.eq(norm(grupo))) |
+        (level.eq("CLIENTE") & target.eq(norm(cliente))) |
+        (level.eq("CONTA") & conta_rule.eq(norm(conta)))
+    )
+    out = out[match & (model_rule.eq("") | model_rule.eq(norm(modelo)))].copy()
+    if out.empty:
+        return out
+    out["_specificity"] = out["ESCOPO"].fillna("").astype(str).map(norm).map({"GRUPO":1,"CLIENTE":2,"CONTA":3}).fillna(0)
+    selected=[]
+    for bucket, grp in out.groupby("SUBBUCKET", sort=False):
+        max_spec = grp["_specificity"].max()
+        selected.append(grp[grp["_specificity"].eq(max_spec)].copy())
+    return pd.concat(selected, ignore_index=True).drop(columns="_specificity", errors="ignore") if selected else out.iloc[0:0]
+
+
+def default_product_universe(modelo: str) -> dict[str, list[tuple[str, float]]]:
+    actions = ACOES_COM_RENDA if "RENDA" in norm(modelo) else ACOES_SEM_RENDA
+    base = {
+        "Ações": actions,
+        "FIIs": FIIS_RECOMENDADOS,
+        "FiInfra Pós": FI_INFRA_POS_TICKERS,
+        "FiInfra Inflação": FI_INFRA_INFLACAO_TICKERS,
+    }
+    result={}
+    for bucket, tickers in base.items():
+        tickers=[ticker_clean(t) for t in tickers if ticker_clean(t)]
+        w=1.0/len(tickers) if tickers else 0.0
+        result[bucket]=[(t,w) for t in tickers]
+    return result
+
+
+def product_universe_with_personalization(modelo: str, rules: pd.DataFrame | None = None) -> dict[str, list[tuple[str, float]]]:
+    universe = default_product_universe(modelo)
+    if rules is None or rules.empty:
+        return universe
+    for bucket, grp in rules.groupby("SUBBUCKET", sort=False):
+        bucket = str(bucket).strip()
+        if bucket not in PERSONALIZABLE_PRODUCT_BUCKETS:
+            continue
+        rows=[]
+        for _, r in grp.iterrows():
+            tk=ticker_clean(r.get("ATIVO", ""))
+            if not tk:
+                continue
+            weight=pd.to_numeric(r.get("PESO_NO_SUBBUCKET", np.nan), errors="coerce")
+            rows.append((tk, float(weight) if pd.notna(weight) and float(weight)>=0 else np.nan))
+        if not rows:
+            continue
+        raw=np.array([x[1] for x in rows], dtype=float)
+        if np.isnan(raw).all() or np.nansum(raw)<=0:
+            weights=np.repeat(1.0/len(rows),len(rows))
+        else:
+            raw=np.nan_to_num(raw,nan=0.0)
+            weights=raw/raw.sum()
+        universe[bucket]=[(rows[i][0], float(weights[i])) for i in range(len(rows))]
+    return universe
+
+
+def resolve_scope_context(df: pd.DataFrame, scope: str, target: str = "", account: str = "", modelos: list[str] | None = None) -> dict[str, object]:
+    """Resolve grupo, cliente, conta, perfil e modelo base a partir do Contas.xlsx."""
+    modelos = modelos or []
+    if df is None or df.empty:
+        return {"grupo":"","cliente":"","conta":account,"perfil":"","modelo":modelos[0] if modelos else "","perfis":[]}
+    base=df.copy()
+    scope_n=norm(scope)
+    if scope_n=="GRUPO" and "GRUPO GERAL" in base.columns:
+        base=base[base["GRUPO GERAL"].fillna("").astype(str).map(norm).eq(norm(target))]
+    elif scope_n=="CLIENTE" and "CLIENTE" in base.columns:
+        base=base[base["CLIENTE"].fillna("").astype(str).map(norm).eq(norm(target))]
+    elif scope_n=="CONTA":
+        base=base[base["conta"].fillna("").astype(str).map(norm).eq(norm(account or target))]
+    if base.empty:
+        return {"grupo":"","cliente":"","conta":account,"perfil":"","modelo":modelos[0] if modelos else "","perfis":[]}
+    grupo=str(base.get("GRUPO GERAL",pd.Series([""])).dropna().astype(str).iloc[0]) if "GRUPO GERAL" in base.columns and base["GRUPO GERAL"].notna().any() else ""
+    cliente=str(base.get("CLIENTE",pd.Series([""])).dropna().astype(str).iloc[0]) if "CLIENTE" in base.columns and base["CLIENTE"].notna().any() else ""
+    conta_real=str(base.get("conta",pd.Series([account])).dropna().astype(str).iloc[0]) if "conta" in base.columns and base["conta"].notna().any() else account
+    perfis=[]
+    perfil=""
+    if "Perfil Carteira" in base.columns:
+        s=base["Perfil Carteira"].dropna().astype(str).str.strip()
+        s=s[s.ne("")]
+        perfis=list(dict.fromkeys(s.tolist()))
+        if not s.empty:
+            perfil=str(s.value_counts().index[0])
+    modelo=model_for_profile(perfil, modelos) if modelos else ""
+    return {"grupo":grupo,"cliente":cliente,"conta":conta_real,"perfil":perfil,"modelo":modelo,"perfis":perfis}
+
+
+def custom_weights_from_subbucket_editor(editor_df: pd.DataFrame) -> dict[str,float]:
+    """Converte editor de subbuckets da Carteira Teórica em chaves do motor."""
+    result={}
+    for _,r in editor_df.iterrows():
+        sub=str(r.get("Estratégia","")).strip()
+        val=pd.to_numeric(r.get("Peso",0),errors="coerce")
+        key=MODEL_KEY_BY_SUBBUCKET.get(sub)
+        if key and pd.notna(val) and float(val)>=0:
+            result[key]=float(val)
+    return result
+
 # =============================================================================
 # Modelo/targets
 # =============================================================================
@@ -2030,7 +2179,8 @@ def macro_targets_from_sub(subtarget: pd.DataFrame, pl: float, p: dict[str, floa
 
 
 def rv_universe(modelo: str) -> dict[str, list[str]]:
-    return {"Ações": ACOES_COM_RENDA if "RENDA" in norm(modelo) else ACOES_SEM_RENDA, "FIIs": FIIS_RECOMENDADOS}
+    base = default_product_universe(modelo)
+    return {"Ações": [t for t, _ in base["Ações"]], "FIIs": [t for t, _ in base["FIIs"]]}
 
 
 def portfolio_tables(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -2061,15 +2211,16 @@ def portfolio_tables(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float) 
 
 
 
-def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float, modelo: str, price_ref: dict[str, float] | None = None) -> pd.DataFrame:
+def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float, modelo: str, price_ref: dict[str, float] | None = None, product_universe: dict[str, list[tuple[str,float]]] | None = None) -> pd.DataFrame:
     price_ref = price_ref or {}
     rows = []
-    universe_by_bucket = rv_universe(modelo)
-    model_tickers = {ticker_clean(t) for xs in universe_by_bucket.values() for t in xs}
-    for bucket, tickers in universe_by_bucket.items():
+    universe = product_universe or default_product_universe(modelo)
+    universe_by_bucket = {k: universe.get(k, []) for k in ["Ações", "FIIs"]}
+    model_tickers = {ticker_clean(t) for xs in universe_by_bucket.values() for t, _ in xs}
+    for bucket, entries in universe_by_bucket.items():
         alvo_total = pl * peso_get(p, bucket)
-        alvo_ativo = alvo_total / len(tickers) if tickers else 0
-        for t in tickers:
+        for t, weight in entries:
+            alvo_ativo = alvo_total * float(weight)
             preco, qtd, atual = current_exchange_position(pos_cliente, t, price_ref)
             can_rebalance = ticker_can_rebalance(pos_cliente, t)
             uses_qty = ticker_uses_quantity(pos_cliente, t)
@@ -2094,20 +2245,21 @@ def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float,
     return pd.DataFrame(rows, columns=["Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Grupo"])
 
 
-def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float, price_ref: dict[str, float] | None = None) -> pd.DataFrame:
+def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float, price_ref: dict[str, float] | None = None, product_universe: dict[str, list[tuple[str,float]]] | None = None) -> pd.DataFrame:
     price_ref = price_ref or {}
     rows = []
-    model_tickers = {ticker_clean(t) for t in FI_INFRA_TICKERS}
+    universe = product_universe or default_product_universe("")
+    model_tickers = {ticker_clean(t) for bucket in ["FiInfra Pós","FiInfra Inflação"] for t,_ in universe.get(bucket,[])}
     grupos = [
-        ("Infraestrutura pós-fixada", peso_get(p, "FiInfra e Cetipados"), FI_INFRA_POS_TICKERS),
-        ("Infraestrutura indexada à inflação", peso_get(p, "FiInfra e Cetipado"), FI_INFRA_INFLACAO_TICKERS),
+        ("Infraestrutura pós-fixada", peso_get(p, "FiInfra e Cetipados"), universe.get("FiInfra Pós", [])),
+        ("Infraestrutura indexada à inflação", peso_get(p, "FiInfra e Cetipado"), universe.get("FiInfra Inflação", [])),
     ]
-    for nome, peso_total, tickers in grupos:
+    for nome, peso_total, entries in grupos:
         alvo_total = pl * peso_total
-        if alvo_total <= 0 or not tickers:
+        if alvo_total <= 0 or not entries:
             continue
-        alvo_ativo = alvo_total / len(tickers)
-        for t in tickers:
+        for t, weight in entries:
+            alvo_ativo = alvo_total * float(weight)
             preco, qtd, atual = current_exchange_position(pos_cliente, t, price_ref)
             can_rebalance = ticker_can_rebalance(pos_cliente, t)
             uses_qty = ticker_uses_quantity(pos_cliente, t)
@@ -2130,6 +2282,7 @@ def fiinfra_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: f
         qtd_operar = (-qtd if uses_qty and pd.notna(preco) and preco > 0 else np.nan) if can_rebalance else 0.0
         rows.append([ativo, preco, qtd, atual, 0, 0.0, diff, qtd_operar, "Fora do modelo"])
     return pd.DataFrame(rows, columns=["Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Grupo"])
+
 
 def action_summary(pos_cliente: pd.DataFrame, sub_df: pd.DataFrame, pl: float) -> tuple[pd.DataFrame, float, float]:
     saldo = float(pos_cliente.loc[pos_cliente["subbucket"].eq("Saldo em Conta"), "valor_mercado"].sum())
@@ -2251,13 +2404,14 @@ def fiinfra_tickers_for_component(component: str) -> list[str]:
     return FI_INFRA_TICKERS
 
 
-def theoretical_portfolio(p: dict[str, float], valor: float, modelo: str) -> pd.DataFrame:
+def theoretical_portfolio(p: dict[str, float], valor: float, modelo: str, product_universe: dict[str, list[tuple[str,float]]] | None = None) -> pd.DataFrame:
     """Carteira teórica construída a partir do MESMO motor de targets do Asset Allocation.
 
     Evita divergência entre as telas e impede que chaves de modelo válidas sejam
     agrupadas artificialmente como "Outros instrumentos".
     """
     rows = []
+    universe = product_universe or default_product_universe(modelo)
     targets = subbucket_targets_from_model(p, valor)
     group_map = {
         "Pós - Imediato": ("Renda fixa pós-fixada", "Liquidez imediata"),
@@ -2289,16 +2443,9 @@ def theoretical_portfolio(p: dict[str, float], valor: float, modelo: str) -> pd.
             "Peso": weight, "Valor": valor * weight,
             "Explicação": component_explanation(group, component),
         })
-        if subbucket == "Ações":
-            tickers = rv_universe(modelo).get("Ações", [])
-        elif subbucket == "FIIs":
-            tickers = rv_universe(modelo).get("FIIs", [])
-        elif subbucket in {"FiInfra Pós", "FiInfra Inflação"}:
-            tickers = fiinfra_tickers_for_component(component)
-        else:
-            tickers = []
-        for ticker in tickers:
-            unit_w = weight / len(tickers) if tickers else 0.0
+        entries = universe.get(subbucket, []) if subbucket in PERSONALIZABLE_PRODUCT_BUCKETS else []
+        for ticker, ticker_weight in entries:
+            unit_w = weight * float(ticker_weight)
             rows.append({
                 "Grupo": group, "Composição": component, "Nível": "Ativo", "Ativo": ticker,
                 "Peso": unit_w, "Valor": valor * unit_w,
@@ -2340,7 +2487,7 @@ def pdf_paragraph(value, style_name="Cell", font_size=7.1, bold=False, color="#2
     )
 
 
-def table_for_pdf(rows: list[list[str]], col_widths: list[float], header_bg="#172b4d", font_size=7.1, numeric_cols: list[int] | None = None) -> Table:
+def table_for_pdf(rows: list[list[str]], col_widths: list[float], header_bg="#131925", font_size=7.1, numeric_cols: list[int] | None = None) -> Table:
     """Tabela segura para PDF: todas as células são Paragraph, com wrap e padding."""
     numeric_cols = numeric_cols or []
     wrapped = []
@@ -2376,104 +2523,181 @@ def table_for_pdf(rows: list[list[str]], col_widths: list[float], header_bg="#17
 
 
 def build_pdf_teorico(df_teor: pd.DataFrame, modelo: str, valor: float, cliente: str = "") -> BytesIO:
+    """Gera material institucional, pronto para envio ao cliente.
+
+    A linguagem visual segue a identidade Wealth: #131925, #FFFFFF, #DCC9B1 e
+    #5D73AF. O documento privilegia hierarquia, respiro e leitura executiva.
+    """
     if not HAS_REPORTLAB:
         raise RuntimeError("ReportLab não está instalado.")
     register_pdf_fonts()
     buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.25 * cm, leftMargin=1.25 * cm, topMargin=1.55 * cm, bottomMargin=1.35 * cm)
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="MWCover", parent=styles["Title"], fontName=PDF_FONT_BOLD, fontSize=22, leading=26, textColor=colors.white))
-    styles.add(ParagraphStyle(name="MWCoverSub", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=10, leading=14, textColor=colors.HexColor("#dce5f8")))
-    styles.add(ParagraphStyle(name="MWSection", parent=styles["Heading2"], fontName=PDF_FONT_BOLD, fontSize=12, leading=15, textColor=colors.HexColor("#172b4d"), spaceBefore=10, spaceAfter=5))
-    styles.add(ParagraphStyle(name="MWText", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=8.5, leading=11, textColor=colors.HexColor("#333333")))
-    styles.add(ParagraphStyle(name="MWSmall", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=7.2, leading=9.2, textColor=colors.HexColor("#5b6472")))
 
-    def footer(canvas, doc_obj):
+    MW_DARK = colors.HexColor("#131925")
+    MW_BLUE = colors.HexColor("#5D73AF")
+    MW_BEIGE = colors.HexColor("#DCC9B1")
+    MW_LIGHT = colors.HexColor("#F7F4F0")
+    MW_LINE = colors.HexColor("#E3E5EA")
+    MW_TEXT = colors.HexColor("#27303F")
+    MW_MUTED = colors.HexColor("#667085")
+
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        rightMargin=1.35 * cm, leftMargin=1.35 * cm,
+        topMargin=1.75 * cm, bottomMargin=1.35 * cm,
+        title=f"M Wealth - Estratégia de Investimentos - {cliente or modelo}",
+        author="M Wealth",
+    )
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="MWCover", parent=styles["Title"], fontName=PDF_FONT_BOLD, fontSize=23, leading=27, textColor=colors.white, spaceAfter=6))
+    styles.add(ParagraphStyle(name="MWCoverSub", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=9.5, leading=13.2, textColor=MW_BEIGE))
+    styles.add(ParagraphStyle(name="MWKicker", parent=styles["Normal"], fontName=PDF_FONT_BOLD, fontSize=7.5, leading=10, textColor=MW_BLUE, spaceBefore=3, spaceAfter=3))
+    styles.add(ParagraphStyle(name="MWSection", parent=styles["Heading2"], fontName=PDF_FONT_BOLD, fontSize=12.2, leading=15, textColor=MW_DARK, spaceBefore=12, spaceAfter=6))
+    styles.add(ParagraphStyle(name="MWText", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=8.8, leading=12.2, textColor=MW_TEXT))
+    styles.add(ParagraphStyle(name="MWSmall", parent=styles["Normal"], fontName=PDF_FONT_REGULAR, fontSize=7.2, leading=9.6, textColor=MW_MUTED))
+    styles.add(ParagraphStyle(name="MWGroup", parent=styles["Heading2"], fontName=PDF_FONT_BOLD, fontSize=11.2, leading=14, textColor=colors.white, leftIndent=0))
+
+    black_logo = None
+    for candidate in [BASE_DIR / "Logo-M-Wealth-Preta.png", POS_DIR / "Logo-M-Wealth-Preta.png"]:
+        if candidate.exists():
+            black_logo = candidate
+            break
+    white_logo = None
+    for candidate in [BASE_DIR / "Logo-M-Wealth.png", POS_DIR / "Logo-M-Wealth.png"]:
+        if candidate.exists():
+            white_logo = candidate
+            break
+
+    def page_brand(canvas, doc_obj):
         canvas.saveState()
         width, height = A4
-        canvas.setStrokeColor(colors.HexColor("#dfe4ed"))
-        canvas.line(1.25 * cm, 0.95 * cm, width - 1.25 * cm, 0.95 * cm)
-        canvas.setFont(PDF_FONT_REGULAR, 7)
-        canvas.setFillColor(colors.HexColor("#667085"))
-        canvas.drawString(1.25 * cm, 0.58 * cm, "M Wealth | Estudo de Alocação")
-        canvas.drawRightString(width - 1.25 * cm, 0.58 * cm, f"Página {doc_obj.page}")
+        if doc_obj.page > 1:
+            if black_logo:
+                try:
+                    canvas.drawImage(str(black_logo), 1.35*cm, height-1.15*cm, width=3.25*cm, height=.72*cm, preserveAspectRatio=True, mask='auto')
+                except Exception:
+                    pass
+            canvas.setStrokeColor(MW_BEIGE)
+            canvas.setLineWidth(.55)
+            canvas.line(1.35*cm, height-1.30*cm, width-1.35*cm, height-1.30*cm)
+        canvas.setStrokeColor(MW_LINE)
+        canvas.setLineWidth(.45)
+        canvas.line(1.35*cm, .92*cm, width-1.35*cm, .92*cm)
+        canvas.setFont(PDF_FONT_REGULAR, 6.9)
+        canvas.setFillColor(MW_MUTED)
+        canvas.drawString(1.35*cm, .56*cm, "M Wealth | Estratégia de Investimentos")
+        canvas.drawRightString(width-1.35*cm, .56*cm, f"Página {doc_obj.page}")
         canvas.restoreState()
 
-    story = []
-    lp = logo_pdf_path()
-    logo_flow = Image(str(lp), width=4.7 * cm, height=1.45 * cm, kind="proportional") if lp else Spacer(1, .1 * cm)
-    cover_left = [
-        logo_flow,
-        Spacer(1, .35 * cm),
-        Paragraph("Estudo de Alocação", styles["MWCover"]),
-        Paragraph("Carteira teórica personalizada e organizada por objetivos, liquidez e classes de investimento.", styles["MWCoverSub"]),
-        Spacer(1, .5 * cm),
-        Paragraph(f"<b>Cliente:</b> {escape(cliente.strip() or 'Não informado')}<br/><b>Perfil:</b> {escape(modelo)}<br/><b>Valor analisado:</b> {escape(format_brl(valor))}<br/><b>Data:</b> {datetime.now().strftime('%d/%m/%Y')}", styles["MWCoverSub"]),
-    ]
-    banner = Table([[cover_left]], colWidths=[17.1 * cm], rowHeights=[6.7 * cm])
-    banner.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#172b4d")),
-        ("BOX", (0,0), (-1,-1), 0, colors.HexColor("#172b4d")),
-        ("LEFTPADDING", (0,0), (-1,-1), 20), ("RIGHTPADDING", (0,0), (-1,-1), 20),
-        ("TOPPADDING", (0,0), (-1,-1), 18), ("BOTTOMPADDING", (0,0), (-1,-1), 18),
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-    ]))
-    story.append(banner)
-    story.append(Spacer(1, .45 * cm))
+    story=[]
 
-    macro = portfolio_macro_cliente(df_teor)
-    cards = []
-    for _, r in macro.head(4).iterrows():
-        cards.append([pdf_paragraph(r["Classe de investimento"], font_size=7.2, bold=True, color="#172b4d"), pdf_paragraph(fmt_pct(r["Peso sugerido"]), font_size=11, bold=True, color="#172b4d", align=1), pdf_paragraph(format_brl(r["Valor sugerido"]), font_size=7.5, color="#475467", align=1)])
+    # Capa / timbre institucional
+    cover_logo = Image(str(white_logo), width=4.25*cm, height=1.18*cm, kind="proportional") if white_logo else Spacer(1,.1*cm)
+    client_name = cliente.strip() or "Estudo de alocação"
+    cover_content = [
+        cover_logo,
+        Spacer(1,.30*cm),
+        Paragraph("ESTRATÉGIA DE INVESTIMENTOS", styles["MWCover"]),
+        Paragraph("Alocação orientada por estratégia, liquidez e diversificação.", styles["MWCoverSub"]),
+        Spacer(1,.52*cm),
+        Paragraph(
+            f"<b>{escape(client_name)}</b><br/>"
+            f"Perfil / referência: {escape(modelo)}<br/>"
+            f"Patrimônio simulado: {escape(format_brl(valor))}<br/>"
+            f"Data de referência: {datetime.now().strftime('%d/%m/%Y')}",
+            styles["MWCoverSub"],
+        ),
+    ]
+    banner=Table([[cover_content]], colWidths=[17.1*cm], rowHeights=[5.95*cm])
+    banner.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,-1),MW_DARK),
+        ("LINEBELOW",(0,0),(-1,-1),3,MW_BLUE),
+        ("LEFTPADDING",(0,0),(-1,-1),22),("RIGHTPADDING",(0,0),(-1,-1),22),
+        ("TOPPADDING",(0,0),(-1,-1),18),("BOTTOMPADDING",(0,0),(-1,-1),18),
+        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+    ]))
+    story += [banner, Spacer(1,.42*cm)]
+
+    macro=portfolio_macro_cliente(df_teor)
+    story.append(Paragraph("VISÃO EXECUTIVA", styles["MWKicker"]))
+    story.append(Paragraph(
+        "A proposta organiza o patrimônio entre liquidez, preservação, renda, crescimento e diversificação. "
+        "Os pesos refletem a carteira selecionada no M Wealth Asset Allocation, incluindo personalizações específicas quando aplicáveis.",
+        styles["MWText"],
+    ))
+    story.append(Spacer(1,.24*cm))
+
+    # Cards compactos: classe / peso / valor
+    cards=[]
+    for _,r in macro.iterrows():
+        cards.append([
+            pdf_paragraph(r["Classe de investimento"],font_size=7.6,bold=True,color="#131925"),
+            pdf_paragraph(fmt_pct(r["Peso sugerido"]),font_size=10.5,bold=True,color="#5D73AF",align=1),
+            pdf_paragraph(format_brl(r["Valor sugerido"]),font_size=7.6,color="#475467",align=2),
+        ])
     if cards:
-        card_tbl = Table(cards, colWidths=[7.2 * cm, 3.1 * cm, 5.0 * cm])
+        card_tbl=Table(cards,colWidths=[8.4*cm,2.8*cm,4.7*cm])
         card_tbl.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#f4f6fa")),
-            ("GRID", (0,0), (-1,-1), .25, colors.HexColor("#dfe4ed")),
-            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-            ("LEFTPADDING", (0,0), (-1,-1), 8), ("RIGHTPADDING", (0,0), (-1,-1), 8),
-            ("TOPPADDING", (0,0), (-1,-1), 7), ("BOTTOMPADDING", (0,0), (-1,-1), 7),
+            ("BACKGROUND",(0,0),(-1,-1),MW_LIGHT),
+            ("LINEBELOW",(0,0),(-1,-1),.3,MW_LINE),
+            ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+            ("LEFTPADDING",(0,0),(-1,-1),8),("RIGHTPADDING",(0,0),(-1,-1),8),
+            ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
         ]))
         story.append(card_tbl)
 
-    story.append(Paragraph("Resumo executivo", styles["MWSection"]))
-    story.append(Paragraph(
-        "A carteira apresentada traduz o perfil selecionado em uma distribuição objetiva entre liquidez, proteção, geração de renda, crescimento e diversificação internacional. Os valores são indicativos e devem ser confirmados conforme disponibilidade dos produtos, condições de mercado e particularidades do investidor.",
-        styles["MWText"],
-    ))
-
-    hierarchy = theoretical_hierarchy_table({r["Composição"]: r["Peso"] for _, r in df_teor[df_teor["Nível"].eq("Composição")].iterrows()}, valor)
-    # Usa diretamente a estrutura do dataframe teórico quando as chaves amigáveis não são as do modelo.
-    data = [["Estratégia", "Peso sugerido", "Valor sugerido"]]
-    for _, r in macro.iterrows():
-        data.append([r["Classe de investimento"], fmt_pct(r["Peso sugerido"]), format_brl(r["Valor sugerido"])])
-    story.append(Paragraph("Alocação recomendada", styles["MWSection"]))
-    story.append(table_for_pdf(data, [8.4, 3.0, 4.2], font_size=7.8, numeric_cols=[1,2]))
+    story.append(Paragraph("Alocação recomendada",styles["MWSection"]))
+    data=[["Classe de investimento","Peso sugerido","Valor sugerido"]]
+    for _,r in macro.iterrows():
+        data.append([r["Classe de investimento"],fmt_pct(r["Peso sugerido"]),format_brl(r["Valor sugerido"])])
+    story.append(table_for_pdf(data,[8.2,3.0,4.4],header_bg="#131925",font_size=7.9,numeric_cols=[1,2]))
     story.append(PageBreak())
 
+    # Detalhamento por classe - uma leitura executiva, sem excesso de texto.
     for group in macro["Classe de investimento"].tolist():
-        comp = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Composição"))].copy()
-        ativos = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Ativo"))].copy()
-        story.append(Paragraph(group, styles["MWSection"]))
-        story.append(Paragraph(GROUP_DESCRIPTIONS.get(group, "Componente da estratégia de alocação."), styles["MWText"]))
-        story.append(Spacer(1, .12 * cm))
-        data = [["Estratégia", "Peso", "Valor", "Objetivo"]]
-        for _, r in comp.iterrows():
-            data.append([r["Composição"], fmt_pct(r["Peso"]), format_brl(r["Valor"]), r["Explicação"]])
-        story.append(table_for_pdf(data, [4.5, 2.0, 3.0, 7.2], font_size=6.9, numeric_cols=[1,2]))
+        comp=df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Composição"))].copy()
+        ativos=df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Ativo"))].copy()
+        group_bar=Table([[Paragraph(escape(group),styles["MWGroup"])]],colWidths=[17.1*cm])
+        group_bar.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,-1),MW_BLUE),
+            ("LINEBELOW",(0,0),(-1,-1),2,MW_BEIGE),
+            ("LEFTPADDING",(0,0),(-1,-1),9),("RIGHTPADDING",(0,0),(-1,-1),9),
+            ("TOPPADDING",(0,0),(-1,-1),7),("BOTTOMPADDING",(0,0),(-1,-1),7),
+        ]))
+        story += [group_bar, Spacer(1,.16*cm), Paragraph(GROUP_DESCRIPTIONS.get(group,"Componente da estratégia de alocação."),styles["MWText"]), Spacer(1,.18*cm)]
+        data=[["Estratégia","Peso","Valor"]]
+        for _,r in comp.iterrows():
+            data.append([r["Composição"],fmt_pct(r["Peso"]),format_brl(r["Valor"])])
+        story.append(table_for_pdf(data,[9.0,2.8,4.0],header_bg="#131925",font_size=7.6,numeric_cols=[1,2]))
         if not ativos.empty:
-            story.append(Spacer(1, .16 * cm))
-            data = [["Produto / ativo", "Estratégia", "Peso", "Valor"]]
-            for _, r in ativos.iterrows():
-                data.append([r["Ativo"], r["Composição"], fmt_pct(r["Peso"]), format_brl(r["Valor"])])
-            story.append(table_for_pdf(data, [3.2, 6.1, 2.2, 3.5], font_size=7.0, numeric_cols=[2,3]))
-        story.append(Spacer(1, .25 * cm))
+            story.append(Spacer(1,.22*cm))
+            story.append(Paragraph("Produtos / ativos da estratégia",styles["MWKicker"]))
+            data=[["Produto / ativo","Estratégia","Peso","Valor"]]
+            for _,r in ativos.iterrows():
+                data.append([r["Ativo"],r["Composição"],fmt_pct(r["Peso"]),format_brl(r["Valor"])])
+            story.append(table_for_pdf(data,[3.0,6.4,2.2,3.6],header_bg="#5D73AF",font_size=7.1,numeric_cols=[2,3]))
+        story.append(Spacer(1,.38*cm))
 
-    story.append(Paragraph("Premissas e observações", styles["MWSection"]))
-    story.append(Paragraph("A indicação de produtos depende do cadastro mestre, da corretora disponível, dos limites de concentração, da disponibilidade dos produtos e das restrições específicas do cliente. Produtos podem ser substituídos por equivalentes do mesmo objetivo sem alterar a arquitetura estratégica.", styles["MWText"]))
-    story.append(Paragraph("Disclaimer", styles["MWSection"]))
-    story.append(Paragraph("Este material é meramente informativo e não constitui promessa de rentabilidade. A composição final depende da análise individual do investidor, suitability, disponibilidade de produtos e condições de mercado. Rentabilidade passada não representa garantia de rentabilidade futura.", styles["MWSmall"]))
-    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    story.append(Paragraph("Premissas do estudo",styles["MWSection"]))
+    story.append(Paragraph(
+        "A implementação final depende de suitability, disponibilidade dos produtos, limites de concentração, restrições específicas do investidor e condições de mercado no momento da execução. "
+        "Produtos podem ser substituídos por equivalentes com o mesmo objetivo estratégico quando necessário.",
+        styles["MWText"],
+    ))
+    story.append(Spacer(1,.18*cm))
+    disclaimer=Table([[Paragraph(
+        "Este material possui caráter informativo e não constitui promessa de rentabilidade. Rentabilidade passada não representa garantia de rentabilidade futura. A composição definitiva deve respeitar o perfil e as condições particulares do investidor.",
+        styles["MWSmall"],
+    )]],colWidths=[17.1*cm])
+    disclaimer.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,-1),MW_LIGHT),
+        ("BOX",(0,0),(-1,-1),.4,MW_LINE),
+        ("LEFTPADDING",(0,0),(-1,-1),9),("RIGHTPADDING",(0,0),(-1,-1),9),
+        ("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8),
+    ]))
+    story.append(disclaimer)
+
+    doc.build(story,onFirstPage=page_brand,onLaterPages=page_brand)
     buf.seek(0)
     return buf
 
@@ -3369,6 +3593,8 @@ if page == "Controle de Saldo":
         st.stop()
 
     st.caption(f"Última consolidação: **{meta.get('built_at', 'n/d')}**")
+    if st.session_state.pop("base_refresh_message", ""):
+        st.success("Base reconstruída com sucesso a partir dos arquivos atuais.")
 
     saldo_conta = (
         df_latest[df_latest["saldo_operacional"]]
@@ -3387,8 +3613,15 @@ if page == "Controle de Saldo":
     with s1:
         force = st.button("Atualizar base", type="primary", use_container_width=True)
         if force:
-            st.cache_data.clear()
-            st.rerun()
+            try:
+                with st.spinner("Reconstruindo posições a partir dos arquivos fonte..."):
+                    posmod.build_latest_from_repo()
+                # Limpa inclusive a entrada cacheada de load_positions_cached(False).
+                st.cache_data.clear()
+                st.session_state["base_refresh_message"] = f"Base atualizada em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Falha ao atualizar a base: {exc}")
     with s2:
         min_saldo_txt = st.text_input("Saldo mínimo", value=format_brl(10000.0), help="Digite no formato financeiro. Ex.: R$ 10.000,00")
         min_saldo = parse_brl_input(min_saldo_txt, 10000.0)
@@ -3461,13 +3694,19 @@ if page == "Asset Allocation":
     strategy_rules_all = load_strategy_personalizations_cached(str(cadastro_ativo), *cadastro_sig)
     strategy_rules_client = applicable_strategy_personalizations(strategy_rules_all, str(grupo_sel), cliente_referencia, conta_real, modelo)
     p, active_personalizations = apply_strategy_personalizations(p_base, strategy_rules_client)
+    product_rules_all = load_product_personalizations_cached(str(cadastro_ativo), *cadastro_sig)
+    product_rules_client = applicable_product_personalizations(product_rules_all, str(grupo_sel), cliente_referencia, conta_real, modelo)
+    client_product_universe = product_universe_with_personalization(modelo, product_rules_client)
     if active_personalizations:
         st.success("Personalização estratégica ativa: " + " | ".join(active_personalizations))
+    if not product_rules_client.empty:
+        _custom_buckets = ", ".join(sorted(set(product_rules_client["SUBBUCKET"].astype(str))))
+        st.caption(f"Composição personalizada de produtos ativa: {_custom_buckets}")
 
     # Marca somente as posições reais de bolsa pelo preço atual do Yahoo Finance.
     # O PL, os valores atuais e as diferenças passam a refletir quantidade × cotação atual.
     held_tickers = pos_cliente.loc[exchange_position_mask(pos_cliente), "ticker_norm"].dropna().astype(str).tolist()
-    model_tickers = [t for xs in rv_universe(modelo).values() for t in xs] + FI_INFRA_TICKERS
+    model_tickers = [t for entries in client_product_universe.values() for t, _ in entries]
     quote_tickers = tuple(sorted({ticker_clean(t) for t in held_tickers + model_tickers if ticker_clean(t)}))
     price_ref = load_yfinance_prices(quote_tickers)
     pos_cliente = mark_exchange_positions_to_market(pos_cliente, price_ref)
@@ -3661,10 +3900,10 @@ if page == "Asset Allocation":
     else:
         st.caption("Preços atualizados pelo Yahoo Finance, com cache de 5 minutos. Valor atual = quantidade real × preço de mercado.")
     rv_df = apply_restrictions_to_market_orders(
-        rv_recommendation(pos_cliente, p, pl, modelo, price_ref), restricoes_cliente, pool_produtos, pl
+        rv_recommendation(pos_cliente, p, pl, modelo, price_ref, client_product_universe), restricoes_cliente, pool_produtos, pl
     )
     fi_df = apply_restrictions_to_market_orders(
-        fiinfra_recommendation(pos_cliente, p, pl, price_ref), restricoes_cliente, pool_produtos, pl
+        fiinfra_recommendation(pos_cliente, p, pl, price_ref, client_product_universe), restricoes_cliente, pool_produtos, pl
     )
     tab_acoes, tab_fiis, tab_infra = st.tabs(["Ações", "FIIs / FIAGROs", "FI-Infra"])
     def render_market_slice(view: pd.DataFrame, empty_text: str, filename: str):
@@ -3710,112 +3949,148 @@ if page == "Carteira Teórica":
         st.error("Pesos-alocacao.xlsx não foi encontrado ou não pôde ser lido.")
         st.stop()
 
-    c1, c2, c3 = st.columns([2, 1.2, 2])
-    with c1:
-        modelo = st.selectbox("Perfil de carteira", modelos)
-    with c2:
-        valor = st.number_input("Valor simulado", min_value=0.0, value=1_000_000.0, step=100_000.0, format="%.2f")
-    with c3:
-        cliente = st.text_input("Nome do cliente no PDF (opcional)")
-
-    p_teor = pesos[modelo]
-    aplicar_personalizacao = st.toggle("Aplicar personalização estratégica cadastrada", value=False)
-    teor_group = ""
-    if aplicar_personalizacao:
-        grupos_teor = sorted(df_contas.get("GRUPO GERAL", pd.Series(dtype=str)).dropna().astype(str).unique()) if not df_contas.empty else []
-        if grupos_teor:
-            teor_group = st.selectbox("Grupo para personalização", grupos_teor, key="teor_group")
-            master_teor = master_products_path()
-            rules_teor = load_strategy_personalizations_cached(str(master_teor), *file_cache_signature(master_teor))
-            applicable_teor = applicable_strategy_personalizations(rules_teor, teor_group, cliente, "", modelo)
-            p_teor, labels_teor = apply_strategy_personalizations(p_teor, applicable_teor)
-            if labels_teor:
-                st.success("Personalização aplicada: " + " | ".join(labels_teor))
-            else:
-                st.info("Nenhuma personalização estratégica ativa foi encontrada para este grupo/modelo.")
-
-    df_teor = theoretical_portfolio(p_teor, valor, modelo)
-    _recognized_weight = float(df_teor.loc[df_teor["Nível"].eq("Composição"), "Peso"].sum()) if not df_teor.empty else 0.0
-    if abs(_recognized_weight - 1.0) > 0.005:
-        st.warning(f"O modelo oficial possui {fmt_pct(_recognized_weight)} em componentes reconhecidos. Verifique o Pesos-alocacao.xlsx antes de usar o PDF.")
-    if df_teor.empty:
-        st.warning("Não encontrei componentes válidos para essa carteira. Verifique a planilha de pesos.")
-        st.stop()
-
-    macro = portfolio_macro_cliente(df_teor)
-    renda_fixa = macro[macro["Classe de investimento"].str.contains("Renda fixa|infraestrutura|Crédito privado", case=False, na=False)]["Valor sugerido"].sum()
-    renda_variavel = macro[macro["Classe de investimento"].str.contains("Ações|Fundos Imobiliários|FIAGROs", case=False, na=False)]["Valor sugerido"].sum()
-    internacional = macro[macro["Classe de investimento"].str.contains("internacionais", case=False, na=False)]["Valor sugerido"].sum()
-
-    st.markdown(
-        f'<div class="mw-muted" style="margin:.10rem 0 .60rem 0;">'
-        f'<b>{escape(str(modelo))}</b> &nbsp;•&nbsp; {escape(format_brl(valor))}'
-        + (f' &nbsp;•&nbsp; Cliente: {escape(cliente)}' if cliente.strip() else '')
-        + '</div>', unsafe_allow_html=True,
+    modo_teor = st.segmented_control(
+        "Montagem da carteira",
+        ["Modelo pré-definido", "Personalização cadastrada", "Montar do zero"],
+        default="Modelo pré-definido",
+        key="theoretical_mode",
     )
 
-    col_a, col_b = st.columns([0.82, 1.48], vertical_alignment="center", gap="medium")
-    with col_a:
-        fig = px.pie(macro, names="Classe de investimento", values="Valor sugerido", title="Distribuição sugerida", hole=.58, color_discrete_sequence=["#5D73AF", "#DCC9B1", "#7F91C2", "#B4A189", "#9AA8CE", "#E8DED1", "#3F558E", "#C6B49D"])
-        fig.update_layout(height=280, margin=dict(l=0, r=0, t=38, b=0), legend_title_text="", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF", size=11), legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)))
-        st.plotly_chart(fig, use_container_width=True)
-    with col_b:
-        section_title("Resumo da alocação", "Mesma hierarquia utilizada no Asset Allocation.")
-        teor_hier = theoretical_hierarchy_table(p_teor, valor)
-        st.dataframe(
-            theoretical_hierarchy_styler(teor_hier),
+    c_val, c_cliente = st.columns([1.05, 2.0], gap="small")
+    with c_val:
+        valor = st.number_input("Valor simulado", min_value=0.0, value=1_000_000.0, step=100_000.0, format="%.2f")
+    with c_cliente:
+        cliente_pdf = st.text_input("Nome do cliente no PDF (opcional)")
+
+    modelo = modelos[0]
+    p_teor: dict[str,float] = {}
+    product_universe_teor = default_product_universe(modelo)
+    source_label = ""
+
+    if modo_teor == "Modelo pré-definido":
+        modelo = st.selectbox("Perfil de carteira", modelos, key="teor_model_standard")
+        p_teor = deepcopy(pesos[modelo])
+        product_universe_teor = default_product_universe(modelo)
+        source_label = modelo
+
+    elif modo_teor == "Personalização cadastrada":
+        scope_teor = st.segmented_control("Escopo", ["Grupo","Cliente","Conta"], default="Grupo", key="teor_scope")
+        target_teor=""; account_teor=""
+        if scope_teor == "Grupo":
+            opts=sorted(df_contas.get("GRUPO GERAL",pd.Series(dtype=str)).dropna().astype(str).unique()) if not df_contas.empty else []
+            target_teor=st.selectbox("Grupo",opts,key="teor_registered_group") if opts else ""
+        elif scope_teor == "Cliente":
+            opts=sorted(df_contas.get("CLIENTE",pd.Series(dtype=str)).dropna().astype(str).unique()) if not df_contas.empty and "CLIENTE" in df_contas.columns else []
+            target_teor=st.selectbox("Cliente",opts,key="teor_registered_client") if opts else ""
+        else:
+            opts=[]
+            if not df_contas.empty:
+                opts=[f"{r.get('CLIENTE','')} • {r.get('corretora','')} ({r.get('conta','')})" for _,r in df_contas.iterrows()]
+            chosen=st.selectbox("Conta",opts,key="teor_registered_account") if opts else ""
+            if chosen:
+                account_teor=chosen.split("(")[-1].rstrip(")")
+                target_teor=account_teor
+        ctx=resolve_scope_context(df_contas,scope_teor,target_teor,account_teor,modelos)
+        modelo=ctx.get("modelo") or modelos[0]
+        st.caption(f"Modelo base identificado: **{modelo}**" + (f" • Perfil no Contas.xlsx: {ctx.get('perfil','')}" if ctx.get('perfil') else ""))
+        p_teor=deepcopy(pesos[modelo])
+        master_teor=master_products_path(); sig_teor=file_cache_signature(master_teor)
+        rules_teor=load_strategy_personalizations_cached(str(master_teor),*sig_teor)
+        app_teor=applicable_strategy_personalizations(rules_teor,str(ctx.get('grupo','')),str(ctx.get('cliente','')),str(ctx.get('conta','')),modelo)
+        p_teor,labels_teor=apply_strategy_personalizations(p_teor,app_teor)
+        prod_rules=load_product_personalizations_cached(str(master_teor),*sig_teor)
+        prod_app=applicable_product_personalizations(prod_rules,str(ctx.get('grupo','')),str(ctx.get('cliente','')),str(ctx.get('conta','')),modelo)
+        product_universe_teor=product_universe_with_personalization(modelo,prod_app)
+        if labels_teor:
+            st.caption("Pesos personalizados: " + " | ".join(labels_teor))
+        if not prod_app.empty:
+            st.caption("Produtos personalizados: " + ", ".join(sorted(set(prod_app["SUBBUCKET"].astype(str)))))
+        source_label=f"{modelo} personalizado"
+
+    else:
+        modelo="Personalizada"
+        st.caption("Defina livremente os pesos. O único requisito para gerar o material é a soma final de 100%.")
+        editor_base=pd.DataFrame({
+            "Estratégia":[b for b in MODEL_KEY_BY_SUBBUCKET.keys() if b != "Pós - 31 a 180 dias"],
+            "Peso":0.0,
+        })
+        edited_custom=st.data_editor(
+            editor_base,
             use_container_width=True,
             hide_index=True,
-            height=min(590, max(300, 31 * (len(teor_hier) + 1))),
+            disabled=["Estratégia"],
+            column_config={
+                "Estratégia":st.column_config.TextColumn("Estratégia"),
+                "Peso":st.column_config.NumberColumn("Peso",min_value=0.0,max_value=1.0,step=0.005,format="%.3f"),
+            },
+            key="theoretical_custom_weights",
         )
+        total_custom=float(pd.to_numeric(edited_custom["Peso"],errors="coerce").fillna(0).sum())
+        cc1,cc2=st.columns([1,3])
+        with cc1: metric_card("Soma",fmt_pct(total_custom))
+        with cc2:
+            if abs(total_custom-1)<=.0005: st.success("Carteira personalizada fechando 100%.")
+            else: st.warning("Ajuste os pesos até 100% para gerar a carteira e o PDF.")
+        p_teor=custom_weights_from_subbucket_editor(edited_custom)
+        # Sem um modelo base, usa a cesta padrão sem renda como ponto de partida para Ações/FIIs.
+        product_universe_teor=default_product_universe("")
+        source_label="Carteira personalizada do zero"
 
-    st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
-    st.subheader("Detalhamento da estratégia")
+    df_teor=theoretical_portfolio(p_teor,valor,modelo,product_universe_teor)
+    recognized=float(df_teor.loc[df_teor["Nível"].eq("Composição"),"Peso"].sum()) if not df_teor.empty else 0.0
+    valid_total=abs(recognized-1.0)<=0.005
+    if not valid_total:
+        st.warning(f"A carteira possui {fmt_pct(recognized)} em componentes reconhecidos. O PDF só será liberado quando fechar 100%.")
+    if df_teor.empty:
+        st.info("Defina ao menos uma estratégia com peso positivo para visualizar a carteira.")
+    else:
+        macro=portfolio_macro_cliente(df_teor)
+        st.markdown(
+            f'<div class="mw-muted" style="margin:.10rem 0 .60rem 0;"><b>{escape(source_label)}</b> &nbsp;•&nbsp; {escape(format_brl(valor))}'
+            + (f' &nbsp;•&nbsp; Cliente: {escape(cliente_pdf)}' if cliente_pdf.strip() else '') + '</div>',
+            unsafe_allow_html=True,
+        )
+        col_a,col_b=st.columns([0.78,1.52],vertical_alignment="center",gap="medium")
+        with col_a:
+            fig=px.pie(macro,names="Classe de investimento",values="Valor sugerido",title="Distribuição sugerida",hole=.60,color_discrete_sequence=["#5D73AF","#DCC9B1","#7F91C2","#B4A189","#9AA8CE","#E8DED1","#3F558E","#C6B49D"])
+            fig.update_layout(height=270,margin=dict(l=0,r=0,t=36,b=0),legend_title_text="",paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",font=dict(color="#FFFFFF",size=10),legend=dict(bgcolor="rgba(0,0,0,0)",font=dict(size=9)))
+            st.plotly_chart(fig,use_container_width=True)
+        with col_b:
+            section_title("Resumo da alocação")
+            teor_hier=theoretical_hierarchy_table(p_teor,valor)
+            st.dataframe(theoretical_hierarchy_styler(teor_hier),use_container_width=True,hide_index=True,height=min(540,max(280,30*(len(teor_hier)+1))))
 
-    for group in macro["Classe de investimento"].tolist():
-        comp = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Composição"))].copy()
-        ativos = df_teor[(df_teor["Grupo"].eq(group)) & (df_teor["Nível"].eq("Ativo"))].copy()
-        total_group = float(comp["Valor"].sum())
-        peso_group = float(comp["Peso"].sum())
-        with st.expander(f"{group} — {fmt_pct(peso_group)} | {format_brl(total_group)}", expanded=False):
-            tabela_comp = comp.rename(columns={"Peso": "Peso sugerido", "Valor": "Valor sugerido"})[["Composição", "Peso sugerido", "Valor sugerido", "Explicação"]]
-            st.dataframe(
-                prepare_display(tabela_comp, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
-                use_container_width=True,
-                hide_index=True,
-            )
+        st.markdown('<div class="mw-line"></div>',unsafe_allow_html=True)
+        st.subheader("Detalhamento da carteira")
+        group_options=macro["Classe de investimento"].astype(str).tolist()
+        selected_group=st.selectbox("Classe para detalhar",group_options,key="theor_detail_group")
+        comp=df_teor[(df_teor["Grupo"].eq(selected_group)) & (df_teor["Nível"].eq("Composição"))].copy()
+        ativos=df_teor[(df_teor["Grupo"].eq(selected_group)) & (df_teor["Nível"].eq("Ativo"))].copy()
+        d1,d2=st.columns([1.05,1.35],gap="medium")
+        with d1:
+            st.markdown(f"**{selected_group}**  ")
+            st.caption(GROUP_DESCRIPTIONS.get(selected_group,"Componente da estratégia de alocação."))
+            tabela_comp=comp.rename(columns={"Peso":"Peso sugerido","Valor":"Valor sugerido"})[["Composição","Peso sugerido","Valor sugerido"]]
+            st.dataframe(prepare_display(tabela_comp,money_cols=["Valor sugerido"],pct_cols=["Peso sugerido"]),use_container_width=True,hide_index=True)
+        with d2:
             if not ativos.empty:
-                st.markdown("**Ativos utilizados na carteira modelo**")
-                if ativos["Composição"].nunique() > 1:
-                    for comp_nome, ativos_comp in ativos.groupby("Composição", sort=False):
-                        st.markdown(f"_{comp_nome}_")
-                        tabela_ativos = ativos_comp.rename(columns={"Peso": "Peso sugerido", "Valor": "Valor sugerido"})[["Ativo", "Peso sugerido", "Valor sugerido"]]
-                        st.dataframe(
-                            prepare_display(tabela_ativos, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-                else:
-                    tabela_ativos = ativos.rename(columns={"Peso": "Peso sugerido", "Valor": "Valor sugerido"})[["Ativo", "Peso sugerido", "Valor sugerido"]]
-                    st.dataframe(
-                        prepare_display(tabela_ativos, money_cols=["Valor sugerido"], pct_cols=["Peso sugerido"]),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
+                st.markdown("**Produtos / ativos da estratégia**")
+                tabela_ativos=ativos.rename(columns={"Peso":"Peso sugerido","Valor":"Valor sugerido"})[["Ativo","Composição","Peso sugerido","Valor sugerido"]]
+                st.dataframe(prepare_display(tabela_ativos,money_cols=["Valor sugerido"],pct_cols=["Peso sugerido"]),use_container_width=True,hide_index=True)
+            else:
+                st.markdown("**Implementação**")
+                st.caption("A seleção do produto específico ocorre no Asset Allocation por meio do pool cadastrado para esta estratégia.")
 
-    st.markdown('<div class="mw-line"></div>', unsafe_allow_html=True)
-    st.subheader("Gerar material para cliente")
-    try:
-        pdf = build_pdf_teorico(df_teor, modelo, valor, cliente)
-        st.download_button(
-            "Baixar PDF da carteira teórica",
-            data=pdf,
-            file_name=f"carteira_teorica_mwealth_{modelo.lower().replace(' ', '_')}.pdf",
-            mime="application/pdf",
-            type="primary",
-        )
-    except Exception as e:
-        st.info(f"PDF indisponível: {e}")
+        st.markdown('<div class="mw-line"></div>',unsafe_allow_html=True)
+        st.subheader("Material para o cliente")
+        if valid_total:
+            try:
+                pdf=build_pdf_teorico(df_teor,modelo,valor,cliente_pdf)
+                st.download_button("Baixar PDF institucional",data=pdf,file_name=f"carteira_teorica_mwealth_{norm(modelo).lower().replace(' ','_')}.pdf",mime="application/pdf",type="primary")
+            except Exception as e:
+                st.info(f"PDF indisponível: {e}")
+        else:
+            st.info("O PDF será habilitado quando a carteira fechar 100%.")
 
 
 # =============================================================================
@@ -3836,7 +4111,7 @@ if page == "Gestão":
     with k4: metric_card("Fundos e previdência", str(len(fundos_admin)))
 
 
-    section_title("Personalizar cliente", "Crie exceções sem precisar editar linhas técnicas do Excel. As regras salvas refletem no Asset Allocation na próxima leitura.")
+    section_title("Personalizar cliente")
     with st.container(border=True):
         scope = st.segmented_control("Escopo", ["Grupo", "Cliente", "Conta"], default="Grupo", key="pers_scope")
         target=""; target_account=""
@@ -3847,29 +4122,101 @@ if page == "Gestão":
             opts=sorted(df_contas.get("CLIENTE",pd.Series(dtype=str)).dropna().astype(str).unique()) if not df_contas.empty and "CLIENTE" in df_contas.columns else []
             target=st.selectbox("Cliente",opts,key="pers_client") if opts else ""
         else:
-            if not df_contas.empty:
-                opts=[f"{r.get('CLIENTE','')} • {r.get('corretora','')} ({r.get('conta','')})" for _,r in df_contas.iterrows()]
-            else: opts=[]
+            opts=[f"{r.get('CLIENTE','')} • {r.get('corretora','')} ({r.get('conta','')})" for _,r in df_contas.iterrows()] if not df_contas.empty else []
             chosen=st.selectbox("Conta",opts,key="pers_account") if opts else ""
             if chosen:
                 target_account=chosen.split("(")[-1].rstrip(")")
-                target=chosen
-        change_type=st.selectbox("Tipo de personalização",["Peso de estratégia","Restrição de ativo/produto","Restrição de setor","Restrição de classe"],key="pers_type")
-        if change_type == "Peso de estratégia":
-            c1,c2,c3=st.columns(3)
-            model_p=c1.selectbox("Modelo base",list(pesos.keys()),key="pers_model")
-            sub_p=c2.selectbox("Estratégia",list(MODEL_KEY_BY_SUBBUCKET.keys()),format_func=friendly_strategy_name,key="pers_sub")
-            weight_p=c3.number_input("Novo peso",min_value=0.0,max_value=1.0,value=0.10,step=0.005,format="%.3f",key="pers_weight")
+                target=target_account
+
+        ctx=resolve_scope_context(df_contas,scope,target,target_account,list(pesos.keys()))
+        inferred_model=str(ctx.get("modelo") or (list(pesos.keys())[0] if pesos else ""))
+        perfis=ctx.get("perfis",[]) or []
+        if inferred_model:
+            info=f"Modelo base identificado: **{inferred_model}**"
+            if ctx.get("perfil"): info+=f" • Perfil no Contas.xlsx: {ctx.get('perfil')}"
+            st.info(info)
+        if len(perfis)>1:
+            st.caption("Este escopo possui mais de um Perfil Carteira. O app utiliza o perfil mais recorrente como base; você pode revisar abaixo antes de salvar.")
+        model_p=st.selectbox("Modelo base",list(pesos.keys()),index=(list(pesos.keys()).index(inferred_model) if inferred_model in list(pesos.keys()) else 0),key=f"pers_model::{scope}::{target}::{target_account}") if pesos else ""
+
+        change_type=st.selectbox(
+            "Tipo de personalização",
+            ["Pesos da carteira", "Composição de Ações / FIIs / FI-Infra", "Restrição de ativo/produto", "Restrição de setor", "Restrição de classe"],
+            key="pers_type",
+        )
+
+        if change_type == "Pesos da carteira":
+            base_weights=deepcopy(pesos.get(model_p,{}))
+            master_person=master_products_path(); person_sig=file_cache_signature(master_person)
+            existing_rules=load_strategy_personalizations_cached(str(master_person),*person_sig)
+            existing_app=applicable_strategy_personalizations(existing_rules,str(ctx.get('grupo','')),str(ctx.get('cliente','')),str(ctx.get('conta','')),model_p)
+            current_weights,_=apply_strategy_personalizations(base_weights,existing_app)
+            rows=[]
+            for sub,key in MODEL_KEY_BY_SUBBUCKET.items():
+                if sub=="Pós - 31 a 180 dias": continue
+                rows.append({"Estratégia":sub,"Peso":float(current_weights.get(key,0) or 0)})
+            weights_edit=st.data_editor(
+                pd.DataFrame(rows),use_container_width=True,hide_index=True,disabled=["Estratégia"],
+                column_config={"Peso":st.column_config.NumberColumn("Peso",min_value=0.0,max_value=1.0,step=0.005,format="%.3f")},
+                key=f"pers_weights_editor::{scope}::{target}::{model_p}",
+            )
+            total=float(pd.to_numeric(weights_edit["Peso"],errors="coerce").fillna(0).sum())
+            csum,cstatus=st.columns([1,3])
+            with csum: metric_card("Soma personalizada",fmt_pct(total))
+            with cstatus:
+                if abs(total-1)<=.0005: st.success("Personalização pronta para salvar.")
+                else: st.warning("A soma deve fechar 100% para representar a carteira completa deste cliente.")
             reason_p=st.text_input("Motivo",key="pers_reason_weight")
-            if st.button("Salvar personalização estratégica",type="primary",use_container_width=True,key="save_pers_weight"):
+            if st.button("Salvar pesos personalizados",type="primary",use_container_width=True,key="save_pers_weight",disabled=abs(total-1)>.0005):
                 raw=read_master_sheet_for_editor("Personalizações de Estratégia",STRATEGY_PERSONALIZATION_COLUMNS)
-                new=pd.DataFrame([{
-                    "ESCOPO":scope,"GRUPO_CLIENTE":target if scope!="Conta" else "","CONTA":target_account,"MODELO_BASE":model_p,
-                    "SUBBUCKET":sub_p,"PESO_PERSONALIZADO":weight_p,"ATIVO":"Sim","MOTIVO":reason_p,"STATUS":"Ativa"
-                }])
-                raw=pd.concat([raw,new],ignore_index=True)
+                # Remove regras anteriores deste mesmo escopo/modelo; a nova grade passa a ser a carteira completa.
+                if not raw.empty:
+                    same=(raw["ESCOPO"].fillna("").astype(str).map(norm).eq(norm(scope))) & (raw["MODELO_BASE"].fillna("").astype(str).map(norm).eq(norm(model_p)))
+                    if scope=="Conta": same &= raw["CONTA"].fillna("").astype(str).map(norm).eq(norm(ctx.get('conta','')))
+                    else: same &= raw["GRUPO_CLIENTE"].fillna("").astype(str).map(norm).eq(norm(target))
+                    raw=raw[~same].copy()
+                new_rows=[]
+                for _,r in weights_edit.iterrows():
+                    new_rows.append({"ESCOPO":scope,"GRUPO_CLIENTE":target if scope!="Conta" else "","CONTA":ctx.get('conta','') if scope=="Conta" else "","MODELO_BASE":model_p,"SUBBUCKET":str(r["Estratégia"]),"PESO_PERSONALIZADO":float(r["Peso"]),"ATIVO":"Sim","MOTIVO":reason_p,"STATUS":"Ativa"})
+                raw=pd.concat([raw,pd.DataFrame(new_rows)],ignore_index=True)
                 ok,msg=save_master_sheet_from_app("Personalizações de Estratégia",raw,STRATEGY_PERSONALIZATION_COLUMNS,"SUBBUCKET")
                 (st.success if ok else st.error)(msg)
+
+        elif change_type == "Composição de Ações / FIIs / FI-Infra":
+            bucket_prod=st.selectbox("Estratégia a personalizar",PERSONALIZABLE_PRODUCT_BUCKETS,format_func=friendly_strategy_name,key="pers_product_bucket")
+            master_person=master_products_path(); person_sig=file_cache_signature(master_person)
+            all_product_rules=load_product_personalizations_cached(str(master_person),*person_sig)
+            app_product_rules=applicable_product_personalizations(all_product_rules,str(ctx.get('grupo','')),str(ctx.get('cliente','')),str(ctx.get('conta','')),model_p)
+            existing=app_product_rules[app_product_rules["SUBBUCKET"].astype(str).eq(bucket_prod)].copy()
+            if existing.empty:
+                default_entries=default_product_universe(model_p).get(bucket_prod,[])
+                prod_editor=pd.DataFrame([{"Ativo":t,"Peso no subbucket":w} for t,w in default_entries])
+            else:
+                prod_editor=existing.rename(columns={"ATIVO":"Ativo","PESO_NO_SUBBUCKET":"Peso no subbucket"})[["Ativo","Peso no subbucket"]].copy()
+            edited_prod=st.data_editor(
+                prod_editor,num_rows="dynamic",use_container_width=True,hide_index=True,
+                column_config={"Peso no subbucket":st.column_config.NumberColumn("Peso no subbucket",min_value=0.0,max_value=1.0,step=0.01,format="%.3f")},
+                key=f"pers_products::{scope}::{target}::{model_p}::{bucket_prod}",
+            )
+            prod_total=float(pd.to_numeric(edited_prod.get("Peso no subbucket",pd.Series(dtype=float)),errors="coerce").fillna(0).sum())
+            st.caption(f"Soma da composição: {fmt_pct(prod_total)}. Se os pesos ficarem zerados, o app divide igualmente entre os ativos cadastrados.")
+            reason_prod=st.text_input("Motivo da composição personalizada",key="pers_product_reason")
+            if st.button("Salvar composição personalizada",type="primary",use_container_width=True,key="save_pers_products"):
+                raw=read_master_sheet_for_editor("Personalizações de Produtos",PRODUCT_PERSONALIZATION_COLUMNS)
+                if not raw.empty:
+                    same=(raw["ESCOPO"].fillna("").astype(str).map(norm).eq(norm(scope))) & (raw["MODELO_BASE"].fillna("").astype(str).map(norm).eq(norm(model_p))) & (raw["SUBBUCKET"].fillna("").astype(str).map(norm).eq(norm(bucket_prod)))
+                    if scope=="Conta": same &= raw["CONTA"].fillna("").astype(str).map(norm).eq(norm(ctx.get('conta','')))
+                    else: same &= raw["GRUPO_CLIENTE"].fillna("").astype(str).map(norm).eq(norm(target))
+                    raw=raw[~same].copy()
+                new=[]
+                for _,r in edited_prod.iterrows():
+                    tk=ticker_clean(r.get("Ativo",""))
+                    if not tk: continue
+                    new.append({"ESCOPO":scope,"GRUPO_CLIENTE":target if scope!="Conta" else "","CONTA":ctx.get('conta','') if scope=="Conta" else "","MODELO_BASE":model_p,"SUBBUCKET":bucket_prod,"ATIVO":tk,"PESO_NO_SUBBUCKET":pd.to_numeric(r.get("Peso no subbucket",np.nan),errors="coerce"),"MOTIVO":reason_prod,"STATUS":"Ativa"})
+                raw=pd.concat([raw,pd.DataFrame(new)],ignore_index=True)
+                ok,msg=save_master_sheet_from_app("Personalizações de Produtos",raw,PRODUCT_PERSONALIZATION_COLUMNS,"ATIVO")
+                (st.success if ok else st.error)(msg)
+
         else:
             type_map={"Restrição de ativo/produto":"Ticker","Restrição de setor":"Setor","Restrição de classe":"Classe"}
             rule_type=type_map[change_type]
@@ -3879,11 +4226,8 @@ if page == "Gestão":
             reason=st.text_input("Motivo da restrição",key="pers_reason_restr")
             if st.button("Salvar restrição",type="primary",use_container_width=True,key="save_pers_restr"):
                 raw=read_master_sheet_for_editor("Restrições por Cliente",RESTRICTION_COLUMNS)
-                target_value=target_account if scope=="Conta" else target
-                new=pd.DataFrame([{
-                    "GRUPO_CLIENTE":target_value,"NIVEL":scope,"TIPO_REGRA":rule_type,"IDENTIFICADOR":ident,"ACAO":action,
-                    "LIMITE_PERCENTUAL":np.nan,"SUBSTITUTO":"","ATIVO":"Sim","DATA_INICIO":"","DATA_FIM":"","MOTIVO":reason,"STATUS":"Ativa"
-                }])
+                target_value=ctx.get('conta','') if scope=="Conta" else target
+                new=pd.DataFrame([{"GRUPO_CLIENTE":target_value,"NIVEL":scope,"TIPO_REGRA":rule_type,"IDENTIFICADOR":ident,"ACAO":action,"LIMITE_PERCENTUAL":np.nan,"SUBSTITUTO":"","ATIVO":"Sim","DATA_INICIO":"","DATA_FIM":"","MOTIVO":reason,"STATUS":"Ativa"}])
                 raw=pd.concat([raw,new],ignore_index=True)
                 ok,msg=save_master_sheet_from_app("Restrições por Cliente",raw,RESTRICTION_COLUMNS,"GRUPO_CLIENTE")
                 (st.success if ok else st.error)(msg)
@@ -3919,7 +4263,7 @@ if page == "Gestão":
             else: st.error(message)
 
     with tab_personalizacoes:
-        p_pool, p_restr, p_b3, p_fundos = st.tabs(["Pool de Produtos", "Restrições por Cliente", "Ativos B3", "Overrides de Fundos/Prev"])
+        p_pool, p_restr, p_prod_custom, p_b3, p_fundos = st.tabs(["Pool de Produtos", "Restrições por Cliente", "Composições personalizadas", "Ativos B3", "Overrides de Fundos/Prev"])
 
         with p_pool:
             section_title("Pool de produtos", "Defina exatamente quais produtos podem receber cada necessidade de alocação.")
@@ -3952,6 +4296,22 @@ if page == "Gestão":
             )
             if st.button("Salvar Restrições", type="primary", use_container_width=True):
                 ok, msg = save_master_sheet_from_app("Restrições por Cliente", restr_edit, RESTRICTION_COLUMNS, "GRUPO_CLIENTE")
+                (st.success if ok else st.error)(msg)
+
+        with p_prod_custom:
+            section_title("Composições personalizadas")
+            prod_raw = read_master_sheet_for_editor("Personalizações de Produtos", PRODUCT_PERSONALIZATION_COLUMNS)
+            prod_edit = st.data_editor(
+                prod_raw, num_rows="dynamic", use_container_width=True, hide_index=True,
+                column_config={
+                    "ESCOPO": st.column_config.SelectboxColumn("ESCOPO", options=["Grupo", "Cliente", "Conta"]),
+                    "SUBBUCKET": st.column_config.SelectboxColumn("SUBBUCKET", options=PERSONALIZABLE_PRODUCT_BUCKETS),
+                    "PESO_NO_SUBBUCKET": st.column_config.NumberColumn("PESO_NO_SUBBUCKET", min_value=0.0, max_value=1.0, step=0.01, format="%.3f"),
+                    "STATUS": st.column_config.SelectboxColumn("STATUS", options=["Ativa", "Inativa"]),
+                }, key="product_personalization_editor_direct",
+            )
+            if st.button("Salvar Composições Personalizadas", type="primary", use_container_width=True):
+                ok, msg = save_master_sheet_from_app("Personalizações de Produtos", prod_edit, PRODUCT_PERSONALIZATION_COLUMNS, "ATIVO")
                 (st.success if ok else st.error)(msg)
 
         with p_b3:
@@ -3989,14 +4349,47 @@ if page == "Gestão":
                     selected = st.selectbox("Fundo", labels)
                     source_idx = int(selected.split(" • ", 1)[0])
                     row = raw_override.loc[source_idx]
-                    c1, c2, c3 = st.columns(3)
-                    classe_op = c1.text_input("CLASSE_OPERACIONAL", value=optional_text(row.get("CLASSE_OPERACIONAL", "")), key=f"ov_classe_{source_idx}_{origem_override}")
-                    subbucket_op = c2.text_input("SUBBUCKET_OPERACIONAL", value=optional_text(row.get("SUBBUCKET_OPERACIONAL", "")), key=f"ov_sub_{source_idx}_{origem_override}")
-                    liq_default = pd.to_numeric(row.get("LIQUIDEZ_OPERACIONAL", np.nan), errors="coerce")
-                    liquidez_op = c3.number_input("LIQUIDEZ_OPERACIONAL", min_value=0.0, value=float(liq_default) if pd.notna(liq_default) else 0.0, step=1.0, key=f"ov_liq_{source_idx}_{origem_override}")
-                    c4, c5 = st.columns(2)
-                    rebalancear_op = c4.selectbox("REBALANCEAR", ["", "Sim", "Não"], index=0, key=f"ov_reb_{source_idx}_{origem_override}")
-                    obs_op = c5.text_input("OBSERVACAO_OPERACIONAL", value=optional_text(row.get("OBSERVACAO_OPERACIONAL", "")), key=f"ov_obs_{source_idx}_{origem_override}")
+                    # Mostra primeiro os dados originais para que o override seja uma decisão consciente.
+                    if origem_override == "Fundos de Investimentos":
+                        original_class = optional_text(row.get("CLASSIFICAÇÃO_XP", row.get("CLASSIFICAÇÃO_CVM", "")))
+                        original_cot = parse_days_from_text(row.get("COTIZAÇÃO_RESGATE", np.nan))
+                        original_liq = parse_days_from_text(row.get("LIQUIDAÇÃO_RESGATE", np.nan))
+                        original_days = (0 if pd.isna(original_cot) else original_cot) + (0 if pd.isna(original_liq) else original_liq) if (pd.notna(original_cot) or pd.notna(original_liq)) else np.nan
+                    else:
+                        original_class = optional_text(row.get("Classificação XP", "Previdência"))
+                        original_days = parse_days_from_text(row.get("Liquidação ", row.get("Liquidação", np.nan)))
+                    i1,i2,i3=st.columns(3)
+                    with i1: metric_card("Classificação original", original_class or "Não informada")
+                    with i2: metric_card("Liquidez original", f"D+{int(original_days)}" if pd.notna(original_days) else "Não informada")
+                    with i3: metric_card("CNPJ", optional_text(row.get("CNPJ_FUNDO", row.get("CNPJ", ""))) or "Não informado")
+
+                    class_options=["RF Brasil","RV Brasil","Internacional","Alternativos","Caixa","Fora da Estratégia"]
+                    current_class=optional_text(row.get("CLASSE_OPERACIONAL", ""))
+                    if current_class and current_class not in class_options: class_options=[current_class]+class_options
+                    sub_options=[b for b in SUBBUCKET_ORDER]
+                    current_sub=optional_text(row.get("SUBBUCKET_OPERACIONAL", ""))
+                    if current_sub and current_sub not in sub_options: sub_options=[current_sub]+sub_options
+                    c1,c2,c3=st.columns(3)
+                    classe_op=c1.selectbox("Classe operacional",class_options,index=(class_options.index(current_class) if current_class in class_options else 0),key=f"ov_classe_{source_idx}_{origem_override}")
+                    # Filtra estratégias compatíveis quando possível, sem impedir exceções já existentes.
+                    class_bucket_map={
+                        "RF Brasil":[b for b in SUBBUCKET_ORDER if b.startswith("Pós -") or b.startswith("FiInfra") or b.startswith("Pré -") or b.startswith("Inflação -") or b=="Crédito Privado"],
+                        "RV Brasil":["Ações","FIIs"],
+                        "Internacional":["Renda Fixa Internacional","Renda Variável Internacional","Caixa Internacional"],
+                        "Alternativos":["Bitcoin","Ouro"],
+                        "Caixa":["Saldo em Conta","Proventos a Receber"],
+                        "Fora da Estratégia":["Previdência","COE / Estruturados","Fundos de Investimento / Sem Liquidez Mapeada","Outros / Não Classificado"],
+                    }
+                    compatible=class_bucket_map.get(classe_op,sub_options)
+                    if current_sub and current_sub not in compatible: compatible=[current_sub]+compatible
+                    subbucket_op=c2.selectbox("Estratégia / subbucket",compatible,index=(compatible.index(current_sub) if current_sub in compatible else 0),key=f"ov_sub_{source_idx}_{origem_override}")
+                    liq_default=pd.to_numeric(row.get("LIQUIDEZ_OPERACIONAL", np.nan),errors="coerce")
+                    liquidez_op=c3.number_input("Liquidez operacional (dias)",min_value=0.0,value=float(liq_default) if pd.notna(liq_default) else (float(original_days) if pd.notna(original_days) else 0.0),step=1.0,key=f"ov_liq_{source_idx}_{origem_override}")
+                    c4,c5=st.columns(2)
+                    current_reb=optional_text(row.get("REBALANCEAR", ""))
+                    reb_opts=["","Sim","Não"]
+                    rebalancear_op=c4.selectbox("Rebalancear",reb_opts,index=(reb_opts.index(current_reb) if current_reb in reb_opts else 0),key=f"ov_reb_{source_idx}_{origem_override}")
+                    obs_op=c5.text_input("Observação operacional",value=optional_text(row.get("OBSERVACAO_OPERACIONAL", "")),key=f"ov_obs_{source_idx}_{origem_override}")
                     if st.button("Salvar override do fundo", type="primary", use_container_width=True):
                         updates = {
                             "CLASSE_OPERACIONAL": classe_op,
