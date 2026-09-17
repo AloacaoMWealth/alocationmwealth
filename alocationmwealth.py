@@ -69,7 +69,7 @@ st.set_page_config(page_title="Wealth | Balanceamento", layout="wide", page_icon
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.9"
+APP_VERSION = "6.9.1"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -2731,20 +2731,19 @@ def load_product_pool_cached(path_str: str, mtime_ns: int = 0, file_size: int = 
         df.columns = [str(c).strip() for c in df.columns]
         expected = [
             "ID_PRODUTO", "NOME_PRODUTO", "TIPO_IDENTIFICADOR", "IDENTIFICADOR",
-            "CLASSE", "SUBBUCKET", "POOL", "CORRETORA", "PERFIL_MINIMO",
-            "PRIORIDADE_COMPRA", "PESO_NO_POOL", "APORTE_MINIMO",
+            "CLASSE", "SUBBUCKET", "POOL", "CORRETORA",
+            "PRIORIDADE_COMPRA", "PESO_NO_POOL",
             "LIMITE_POR_CLIENTE", "ELEGIVEL_COMPRA", "APENAS_MANUTENCAO",
             "PRODUTO_FECHADO", "INDEXADOR", "GESTORA_EMISSOR", "SETOR", "OBSERVACAO",
         ]
         df = canonicalize_master_columns(df, expected)
         for c in expected:
             if c not in df.columns:
-                df[c] = np.nan if c in {"PRIORIDADE_COMPRA", "PESO_NO_POOL", "APORTE_MINIMO", "LIMITE_POR_CLIENTE"} else ""
+                df[c] = np.nan if c in {"PRIORIDADE_COMPRA", "PESO_NO_POOL", "LIMITE_POR_CLIENTE"} else ""
         df = df[df["NOME_PRODUTO"].fillna("").astype(str).str.strip().ne("")].copy()
         df["IDENTIFICADOR_NORM"] = df["IDENTIFICADOR"].fillna("").astype(str).map(norm)
         df["PRIORIDADE_COMPRA"] = pd.to_numeric(df["PRIORIDADE_COMPRA"], errors="coerce").fillna(999)
         df["PESO_NO_POOL"] = pd.to_numeric(df["PESO_NO_POOL"], errors="coerce").fillna(0.0)
-        df["APORTE_MINIMO"] = pd.to_numeric(df["APORTE_MINIMO"], errors="coerce").fillna(0.0)
         df["LIMITE_POR_CLIENTE"] = pd.to_numeric(df["LIMITE_POR_CLIENTE"], errors="coerce").fillna(1.0)
         return df.reset_index(drop=True)
     except Exception as exc:
@@ -2802,8 +2801,8 @@ def applicable_restrictions(restrictions: pd.DataFrame, grupo: str, cliente: str
 
 POOL_COLUMNS = [
     "ID_PRODUTO", "NOME_PRODUTO", "TIPO_IDENTIFICADOR", "IDENTIFICADOR",
-    "CLASSE", "SUBBUCKET", "POOL", "CORRETORA", "PERFIL_MINIMO",
-    "PRIORIDADE_COMPRA", "PESO_NO_POOL", "APORTE_MINIMO",
+    "CLASSE", "SUBBUCKET", "POOL", "CORRETORA",
+    "PRIORIDADE_COMPRA", "PESO_NO_POOL",
     "LIMITE_POR_CLIENTE", "ELEGIVEL_COMPRA", "APENAS_MANUTENCAO",
     "PRODUTO_FECHADO", "INDEXADOR", "GESTORA_EMISSOR", "SETOR", "OBSERVACAO",
 ]
@@ -2830,7 +2829,7 @@ def read_master_sheet_for_editor(sheet_name: str, expected: list[str]) -> pd.Dat
         raw = canonicalize_master_columns(raw, expected)
         for c in expected:
             if c not in raw.columns:
-                raw[c] = np.nan if c in {"PRIORIDADE_COMPRA", "PESO_NO_POOL", "APORTE_MINIMO", "LIMITE_POR_CLIENTE", "LIMITE_PERCENTUAL", "LIQUIDEZ_OPERACIONAL"} else ""
+                raw[c] = np.nan if c in {"PRIORIDADE_COMPRA", "PESO_NO_POOL", "LIMITE_POR_CLIENTE", "LIMITE_PERCENTUAL", "LIQUIDEZ_OPERACIONAL"} else ""
         return raw[expected].copy()
     except Exception:
         return pd.DataFrame(columns=expected)
@@ -2918,14 +2917,241 @@ def update_fund_override_from_app(sheet_name: str, row_index: int, updates: dict
         return False, f"Falha ao salvar override: {exc}"
 
 
-def current_value_for_pool_product(pos_cliente: pd.DataFrame, prod: pd.Series) -> float:
-    """Calcula a posição atual do produto do pool usando a melhor chave disponível.
 
-    Para fundos por CNPJ, primeiro usa o CNPJ bruto da corretora; se ele não
-    existir, usa o CNPJ do casamento com o Cadastro Mestre e, por último, o nome
-    normalizado já reconciliado. Isso evita recomendar o alvo cheio para um fundo
-    que o cliente já possui, mas cujo relatório veio sem CNPJ.
+
+def issuer_key(value: str) -> str:
+    """Normaliza nomes de emissores bancários para casamento entre relatórios e Tier Bancário."""
+    s = norm(value)
+    s = re.sub(r"[^A-Z0-9 ]+", " ", s)
+    stop = {
+        "BANCO", "BANK", "SA", "S A", "S/A", "LTDA", "BRASIL", "DO", "DA", "DE",
+        "FINANCEIRA", "FINANCEIRO", "CIA", "COMPANHIA", "CREDIT", "CREDITO",
+    }
+    tokens = [t for t in s.split() if t and t not in stop]
+    return " ".join(tokens).strip()
+
+
+def issuer_match_mask(pos_cliente: pd.DataFrame, issuer: str) -> pd.Series:
+    """Casa emissor por chave normalizada, aceitando pequenas extensões do nome jurídico."""
+    if pos_cliente.empty:
+        return pd.Series(dtype=bool, index=pos_cliente.index)
+    target = issuer_key(issuer)
+    if not target:
+        return pd.Series(False, index=pos_cliente.index)
+    src = pos_cliente.get("emissor", pd.Series("", index=pos_cliente.index)).fillna("").astype(str).map(issuer_key)
+    return src.map(lambda x: bool(x) and (x == target or target in x or x in target))
+
+
+def bank_tier_source_path() -> Path:
+    """Prioriza Tier Bancário no Cadastro Mestre; usa o Manual como compatibilidade."""
+    master = master_products_path()
+    if master.exists():
+        try:
+            if "Tier Bancário" in pd.ExcelFile(master).sheet_names:
+                return master
+        except Exception:
+            pass
+    manual = find_file("Manual de Alocação.xlsx")
+    return manual
+
+
+@st.cache_data(show_spinner=False)
+def load_bank_tiers_cached(path_str: str, mtime_ns: int = 0, file_size: int = 0) -> pd.DataFrame:
+    """Lê Tier Bancário em formato estruturado ou no layout legado do Manual de Alocação."""
+    cols = ["EMISSOR", "TIER", "LIMITE_TIER_ESTRATEGIA", "LIMITE_EMISSOR_PL", "STATUS"]
+    path = Path(path_str)
+    if not path.exists():
+        return pd.DataFrame(columns=cols)
+    try:
+        xls = pd.ExcelFile(path)
+        if "Tier Bancário" not in xls.sheet_names:
+            return pd.DataFrame(columns=cols)
+
+        # Formato novo/estruturado no Cadastro Mestre.
+        structured = pd.read_excel(path, sheet_name="Tier Bancário")
+        structured.columns = [str(c).strip() for c in structured.columns]
+        structured = canonicalize_master_columns(structured, cols)
+        if {"EMISSOR", "TIER"}.issubset(set(structured.columns)):
+            for c in cols:
+                if c not in structured.columns:
+                    structured[c] = ""
+            structured["LIMITE_TIER_ESTRATEGIA"] = pd.to_numeric(structured["LIMITE_TIER_ESTRATEGIA"], errors="coerce")
+            structured["LIMITE_EMISSOR_PL"] = pd.to_numeric(structured["LIMITE_EMISSOR_PL"], errors="coerce")
+            structured["STATUS"] = structured["STATUS"].fillna("Ativo").astype(str)
+            structured = structured[
+                structured["EMISSOR"].fillna("").astype(str).str.strip().ne("") &
+                ~structured["STATUS"].map(norm).eq("INATIVO")
+            ].copy()
+            structured["EMISSOR_KEY"] = structured["EMISSOR"].map(issuer_key)
+            return structured[cols + ["EMISSOR_KEY"]].reset_index(drop=True)
+
+        # Layout legado do Manual: B=Emissor/Tier, D=limite tier, E=limite emissor.
+        raw = pd.read_excel(path, sheet_name="Tier Bancário", header=None).fillna("")
+        rows = []
+        current_tier = ""
+        current_tier_limit = float("nan")
+        current_issuer_limit = float("nan")
+
+        def pct_value(v):
+            s = norm(v).replace("%", "").replace(",", ".")
+            if not s or "SEM LIMITE" in s:
+                return float("nan")
+            m = re.search(r"(\d+(?:\.\d+)?)", s)
+            return float(m.group(1)) / 100.0 if m else float("nan")
+
+        for _, r in raw.iterrows():
+            name = str(r.iloc[1]).strip() if len(r) > 1 else ""
+            if not name:
+                continue
+            n = norm(name).replace(" ", "")
+            if n.startswith("TIER1") or n.startswith("TIER2") or n.startswith("TIER3"):
+                m = re.search(r"([123])", n)
+                current_tier = f"TIER {m.group(1)}" if m else norm(name)
+                current_tier_limit = pct_value(r.iloc[3] if len(r) > 3 else "")
+                current_issuer_limit = pct_value(r.iloc[4] if len(r) > 4 else "")
+                continue
+            if current_tier:
+                rows.append({
+                    "EMISSOR": name,
+                    "TIER": current_tier,
+                    "LIMITE_TIER_ESTRATEGIA": current_tier_limit,
+                    "LIMITE_EMISSOR_PL": current_issuer_limit,
+                    "STATUS": "Ativo",
+                    "EMISSOR_KEY": issuer_key(name),
+                })
+        return pd.DataFrame(rows, columns=cols + ["EMISSOR_KEY"])
+    except Exception:
+        return pd.DataFrame(columns=cols + ["EMISSOR_KEY"])
+
+
+def load_bank_tiers() -> pd.DataFrame:
+    path = bank_tier_source_path()
+    return load_bank_tiers_cached(str(path), *file_cache_signature(path))
+
+
+def bank_tier_row_for_issuer(issuer: str, tiers: pd.DataFrame) -> pd.Series | None:
+    if tiers is None or tiers.empty:
+        return None
+    key = issuer_key(issuer)
+    if not key:
+        return None
+    exact = tiers[tiers["EMISSOR_KEY"].astype(str).eq(key)]
+    if not exact.empty:
+        return exact.iloc[0]
+    for _, r in tiers.iterrows():
+        rk = str(r.get("EMISSOR_KEY", ""))
+        if rk and (rk in key or key in rk):
+            return r
+    return None
+
+
+def issuer_exposure(pos_cliente: pd.DataFrame, issuer: str) -> float:
+    mask = issuer_match_mask(pos_cliente, issuer)
+    if mask.empty or not mask.any():
+        return 0.0
+    return float(pd.to_numeric(pos_cliente.loc[mask, "valor_mercado"], errors="coerce").fillna(0.0).sum())
+
+
+def tier_exposure(pos_cliente: pd.DataFrame, tier_name: str, tiers: pd.DataFrame) -> float:
+    if tiers is None or tiers.empty or not tier_name:
+        return 0.0
+    issuers = tiers[tiers["TIER"].astype(str).map(norm).eq(norm(tier_name))]["EMISSOR"].dropna().astype(str).tolist()
+    total = 0.0
+    already = pd.Series(False, index=pos_cliente.index)
+    for issuer in issuers:
+        m = issuer_match_mask(pos_cliente, issuer) & ~already
+        if m.any():
+            total += float(pd.to_numeric(pos_cliente.loc[m, "valor_mercado"], errors="coerce").fillna(0.0).sum())
+            already = already | m
+    return total
+
+
+def is_bank_pool_product(prod: pd.Series) -> bool:
+    return norm(prod.get("TIPO_IDENTIFICADOR", "")) == "EMISSOR" or "BANC" in norm(prod.get("POOL", ""))
+
+
+def position_matches_pool_product(row: pd.Series, prod: pd.Series) -> bool:
+    tipo = norm(prod.get("TIPO_IDENTIFICADOR", ""))
+    ident = str(prod.get("IDENTIFICADOR", "") or "").strip()
+    if tipo == "CNPJ":
+        key = only_digits_str(ident)
+        raw = only_digits_str(row.get("cnpj", ""))
+        mapped = only_digits_str(row.get("manual_cnpj", ""))
+        if key and key in {raw, mapped}:
+            return True
+        target_name = fund_name_key(str(prod.get("NOME_PRODUTO", "") or ""))
+        names = [fund_name_key(row.get("manual_fundo", "")), fund_name_key(row.get("asset_nome", "")), fund_name_key(row.get("asset_id", ""))]
+        return bool(target_name) and target_name in names
+    if tipo == "NOME":
+        key = fund_name_key(ident or prod.get("NOME_PRODUTO", ""))
+        names = [fund_name_key(row.get("manual_fundo", "")), fund_name_key(row.get("asset_nome", "")), fund_name_key(row.get("asset_id", ""))]
+        return bool(key) and key in names
+    if tipo == "EMISSOR":
+        return bool(issuer_match_mask(pd.DataFrame([row]), ident).iloc[0])
+    return ticker_clean(row.get("ticker_norm", row.get("asset_id", ""))) == ticker_clean(ident)
+
+
+def out_of_pool_position(need: pd.Series, pos_cliente: pd.DataFrame, pool: pd.DataFrame) -> dict | None:
+    """Retorna a maior posição rebalanceável do subbucket que não pertence ao Pool ativo."""
+    if pos_cliente.empty or pool.empty:
+        return None
+    class_mask = pos_cliente.get("classe_macro", pd.Series("", index=pos_cliente.index)).astype(str).map(norm).eq(norm(need.get("Classe", "")))
+    sub_mask = pos_cliente.get("subbucket", pd.Series("", index=pos_cliente.index)).astype(str).map(norm).eq(norm(need.get("Subbucket", "")))
+    held = pos_cliente[class_mask & sub_mask].copy()
+    if held.empty:
+        return None
+    candidates = pool[
+        pool["CLASSE"].fillna("").astype(str).map(norm).eq(norm(need.get("Classe", ""))) &
+        pool["SUBBUCKET"].fillna("").astype(str).map(norm).eq(norm(need.get("Subbucket", "")))
+    ].copy()
+    if candidates.empty:
+        return None
+
+    outside = []
+    for idx, row in held.iterrows():
+        if candidates.apply(lambda p: position_matches_pool_product(row, p), axis=1).any():
+            continue
+        if not bool(row.get("rebalancear", True)):
+            continue
+        val = float(pd.to_numeric(row.get("valor_mercado", 0), errors="coerce") or 0.0)
+        if val <= 50:
+            continue
+        outside.append((idx, row, val))
+    if not outside:
+        return None
+    _, row, val = max(outside, key=lambda x: x[2])
+    ident = str(row.get("cnpj", "") or "").strip() or str(row.get("ticker_norm", "") or "").strip() or str(row.get("asset_id", "") or "").strip()
+    name = str(row.get("manual_fundo", "") or "").strip() or str(row.get("asset_nome", "") or "").strip() or str(row.get("asset_id", "") or "").strip()
+    return {"name": name, "identifier": ident, "value": val, "broker": str(row.get("corretora", ""))}
+
+
+def purchase_effective_weights(candidates: pd.DataFrame) -> pd.Series:
+    """Redistribui o peso somente entre produtos efetivamente compráveis.
+
+    Produtos fechados, apenas manutenção, inelegíveis ou bloqueados para compra
+    deixam de receber alvo novo; o peso deles é redistribuído entre os elegíveis.
+    Produtos de backup com PESO_NO_POOL=0 continuam como fallback de prioridade.
     """
+    buyable = (
+        candidates["ELEGIVEL_COMPRA"].map(lambda x: parse_yes_no(x, True)) &
+        ~candidates["APENAS_MANUTENCAO"].map(lambda x: parse_yes_no(x, False)) &
+        ~candidates["PRODUTO_FECHADO"].map(lambda x: parse_yes_no(x, False)) &
+        ~candidates["_restriction"].map(lambda a: norm(a) == "NAO COMPRAR")
+    )
+    raw = pd.to_numeric(candidates["PESO_NO_POOL"], errors="coerce").fillna(0.0).clip(lower=0)
+    positive = raw.where(buyable, 0.0)
+    result = pd.Series(0.0, index=candidates.index)
+    if positive.sum() > 0:
+        result.loc[positive.index] = positive / positive.sum()
+    else:
+        eligible_idx = candidates.index[buyable]
+        if len(eligible_idx):
+            first = candidates.loc[eligible_idx].sort_values("PRIORIDADE_COMPRA").index[0]
+            result.loc[first] = 1.0
+    return result
+
+def current_value_for_pool_product(pos_cliente: pd.DataFrame, prod: pd.Series) -> float:
+    """Calcula posição atual do produto usando CNPJ, nome, ticker ou emissor."""
     if pos_cliente.empty:
         return 0.0
 
@@ -2935,13 +3161,14 @@ def current_value_for_pool_product(pos_cliente: pd.DataFrame, prod: pd.Series) -
     idx = pos_cliente.index
     mask = pd.Series(False, index=idx)
 
-    if tipo == "CNPJ":
+    if tipo == "EMISSOR":
+        mask = issuer_match_mask(pos_cliente, str(ident or prod.get("GESTORA_EMISSOR", "")))
+    elif tipo == "CNPJ":
         key = only_digits_str(ident)
         if key:
             raw_cnpj = pos_cliente.get("cnpj", pd.Series("", index=idx)).apply(only_digits_str)
             mapped_cnpj = pos_cliente.get("manual_cnpj", pd.Series("", index=idx)).apply(only_digits_str)
             mask = raw_cnpj.eq(key) | mapped_cnpj.eq(key)
-
         if not mask.any() and nome_produto:
             key_name = fund_name_key(nome_produto)
             if key_name:
@@ -2949,7 +3176,6 @@ def current_value_for_pool_product(pos_cliente: pd.DataFrame, prod: pd.Series) -
                 asset_names = pos_cliente.get("asset_nome", pd.Series("", index=idx)).astype(str).apply(fund_name_key)
                 asset_ids = pos_cliente.get("asset_id", pd.Series("", index=idx)).astype(str).apply(fund_name_key)
                 mask = manual_names.eq(key_name) | asset_names.eq(key_name) | asset_ids.eq(key_name)
-
     elif tipo == "NOME":
         key = fund_name_key(str(ident or nome_produto))
         if key:
@@ -2957,7 +3183,6 @@ def current_value_for_pool_product(pos_cliente: pd.DataFrame, prod: pd.Series) -
             asset_names = pos_cliente.get("asset_nome", pd.Series("", index=idx)).astype(str).apply(fund_name_key)
             asset_ids = pos_cliente.get("asset_id", pd.Series("", index=idx)).astype(str).apply(fund_name_key)
             mask = manual_names.eq(key) | asset_names.eq(key) | asset_ids.eq(key)
-
     else:
         key = ticker_clean(ident)
         series = pos_cliente.get("ticker_norm", pd.Series("", index=idx)).astype(str)
@@ -2966,7 +3191,6 @@ def current_value_for_pool_product(pos_cliente: pd.DataFrame, prod: pd.Series) -
     if not mask.any():
         return 0.0
     return float(pd.to_numeric(pos_cliente.loc[mask, "valor_mercado"], errors="coerce").fillna(0.0).sum())
-
 
 def pool_metadata_for_ticker(ticker: str, pool: pd.DataFrame) -> dict[str, str]:
     tk = ticker_clean(ticker)
@@ -3105,6 +3329,8 @@ def _pool_product_key(prod: pd.Series) -> str:
         return "CNPJ:" + only_digits_str(ident)
     if tipo == "NOME":
         return "NOME:" + fund_name_key(ident or prod.get("NOME_PRODUTO", ""))
+    if tipo == "EMISSOR":
+        return "EMISSOR:" + issuer_key(ident or prod.get("GESTORA_EMISSOR", ""))
     return "TICKER:" + ticker_clean(ident)
 
 
@@ -3143,6 +3369,141 @@ def current_value_for_pool_product_simulated(pos_cliente: pd.DataFrame, prod: pd
     return base + float(sim_adjustments.get(_pool_product_key(prod), 0.0) or 0.0)
 
 
+def _prepare_pool_candidates(
+    need: pd.Series,
+    pool: pd.DataFrame,
+    restrictions: pd.DataFrame,
+    corretoras_cliente: set[str],
+) -> pd.DataFrame:
+    candidates = pool[
+        pool["CLASSE"].fillna("").astype(str).map(norm).eq(norm(need["Classe"])) &
+        pool["SUBBUCKET"].fillna("").astype(str).map(norm).eq(norm(need["Subbucket"]))
+    ].copy()
+    if candidates.empty:
+        return candidates
+    if corretoras_cliente:
+        allowed_brokers = {"TODAS", "", *{norm(x) for x in corretoras_cliente}}
+        candidates = candidates[candidates["CORRETORA"].fillna("Todas").astype(str).map(norm).isin(allowed_brokers)]
+    kept = []
+    for _, prod in candidates.iterrows():
+        action, reason, limit_override = restriction_action_for_product(prod, restrictions)
+        if norm(action) == "EXCLUIR DA CARTEIRA":
+            continue
+        q = prod.copy()
+        q["_restriction"] = action
+        q["_reason"] = reason
+        q["_limit_override"] = limit_override
+        kept.append(q)
+    return pd.DataFrame(kept) if kept else candidates.iloc[0:0].copy()
+
+
+def _bank_capacity(
+    prod: pd.Series,
+    pos_cliente: pd.DataFrame,
+    need: pd.Series,
+    pl_base: float,
+    sim_adjustments: dict[str, float] | None = None,
+) -> tuple[float, float, float, str]:
+    """Capacidade do emissor respeitando limite por emissor e limite agregado do Tier."""
+    tiers = load_bank_tiers()
+    issuer = str(prod.get("IDENTIFICADOR", "") or prod.get("GESTORA_EMISSOR", "") or prod.get("NOME_PRODUTO", ""))
+    tier_row = bank_tier_row_for_issuer(issuer, tiers)
+    current = current_value_for_pool_product_simulated(pos_cliente, prod, sim_adjustments)
+    if tier_row is None:
+        # Sem Tier cadastrado, aplica apenas LIMITE_POR_CLIENTE, se houver.
+        local_limit = pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", np.nan), errors="coerce")
+        cap = max(0.0, pl_base * float(local_limit) - current) if pd.notna(local_limit) else float("inf")
+        return cap, current, float("nan"), "Emissor sem Tier Bancário cadastrado"
+
+    issuer_limit = pd.to_numeric(tier_row.get("LIMITE_EMISSOR_PL", np.nan), errors="coerce")
+    tier_limit = pd.to_numeric(tier_row.get("LIMITE_TIER_ESTRATEGIA", np.nan), errors="coerce")
+    issuer_cap = float("inf") if pd.isna(issuer_limit) else max(0.0, pl_base * float(issuer_limit) - current)
+
+    tier_name = str(tier_row.get("TIER", ""))
+    tier_current = tier_exposure(pos_cliente, tier_name, tiers)
+    if sim_adjustments:
+        # Ajustes simulados de emissores pertencentes ao mesmo tier também consomem/liberam capacidade.
+        tier_keys = {
+            "EMISSOR:" + issuer_key(x)
+            for x in tiers[tiers["TIER"].astype(str).map(norm).eq(norm(tier_name))]["EMISSOR"].astype(str)
+        }
+        tier_current += sum(float(v or 0) for k, v in sim_adjustments.items() if k in tier_keys)
+    strategy_target = float(pd.to_numeric(need.get("Valor Ideal", 0), errors="coerce") or 0.0)
+    tier_cap = float("inf") if pd.isna(tier_limit) else max(0.0, strategy_target * float(tier_limit) - tier_current)
+
+    local_limit = pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", np.nan), errors="coerce")
+    local_cap = float("inf") if pd.isna(local_limit) else max(0.0, pl_base * float(local_limit) - current)
+    capacity = min(issuer_cap, tier_cap, local_cap)
+    note = f"{tier_name} | limite emissor {fmt_pct(issuer_limit) if pd.notna(issuer_limit) else 'sem limite'} | limite tier {fmt_pct(tier_limit) if pd.notna(tier_limit) else 'sem limite'}"
+    return max(0.0, capacity), current, float(issuer_limit) if pd.notna(issuer_limit) else float("nan"), note
+
+
+def _bank_limit_breach_recommendation(
+    need: pd.Series,
+    pos_cliente: pd.DataFrame,
+    candidates: pd.DataFrame,
+    pl_base: float,
+    sim_adjustments: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    cols = ["Estratégia", "Ação", "Produto recomendado", "Identificador", "Corretora", "Valor atual no produto", "Alvo do produto", "Valor recomendado", "Prioridade", "Peso no pool", "Limite", "Restrição", "Observação"]
+    tiers = load_bank_tiers()
+    if tiers.empty or candidates.empty:
+        return pd.DataFrame(columns=cols)
+
+    # Primeiro: excesso por emissor. Menor prioridade econômica (maior número) sai antes.
+    for _, prod in candidates.sort_values("PRIORIDADE_COMPRA", ascending=False).iterrows():
+        if not is_bank_pool_product(prod):
+            continue
+        if norm(prod.get("_restriction", "")) in {"NAO VENDER", "MANTER POSICAO"}:
+            continue
+        issuer = str(prod.get("IDENTIFICADOR", "") or prod.get("GESTORA_EMISSOR", "") or prod.get("NOME_PRODUTO", ""))
+        tr = bank_tier_row_for_issuer(issuer, tiers)
+        if tr is None:
+            continue
+        lim = pd.to_numeric(tr.get("LIMITE_EMISSOR_PL", np.nan), errors="coerce")
+        if pd.isna(lim):
+            continue
+        current = current_value_for_pool_product_simulated(pos_cliente, prod, sim_adjustments)
+        max_value = pl_base * float(lim)
+        excesso = current - max_value
+        if excesso > 50:
+            return pd.DataFrame([[
+                friendly_strategy_name(str(need["Subbucket"])), "Vender", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]), str(prod["CORRETORA"]),
+                float(current), float(max_value), -float(excesso), int(prod["PRIORIDADE_COMPRA"]), 0.0, float(lim), str(prod.get("_restriction", "")),
+                f"Excesso sobre limite do emissor ({str(tr.get('TIER',''))})",
+            ]], columns=cols)
+
+    # Segundo: excesso agregado do tier. Libera a menor prioridade daquele tier.
+    for tier_name, grp in tiers.groupby("TIER", sort=False):
+        tier_lim = pd.to_numeric(grp["LIMITE_TIER_ESTRATEGIA"].iloc[0], errors="coerce")
+        if pd.isna(tier_lim):
+            continue
+        strategy_target = float(pd.to_numeric(need.get("Valor Ideal", 0), errors="coerce") or 0.0)
+        max_tier = strategy_target * float(tier_lim)
+        current_tier = tier_exposure(pos_cliente, str(tier_name), tiers)
+        if sim_adjustments:
+            tier_keys = {"EMISSOR:" + issuer_key(x) for x in grp["EMISSOR"].astype(str)}
+            current_tier += sum(float(v or 0) for k, v in sim_adjustments.items() if k in tier_keys)
+        excesso_tier = current_tier - max_tier
+        if excesso_tier <= 50:
+            continue
+        tier_issuers = set(grp["EMISSOR_KEY"].astype(str))
+        tier_candidates = candidates[candidates.apply(lambda p: issuer_key(p.get("IDENTIFICADOR", p.get("GESTORA_EMISSOR", ""))) in tier_issuers, axis=1)].sort_values("PRIORIDADE_COMPRA", ascending=False)
+        for _, prod in tier_candidates.iterrows():
+            if norm(prod.get("_restriction", "")) in {"NAO VENDER", "MANTER POSICAO"}:
+                continue
+            current = current_value_for_pool_product_simulated(pos_cliente, prod, sim_adjustments)
+            if current <= 50:
+                continue
+            amount = min(current, excesso_tier)
+            return pd.DataFrame([[
+                friendly_strategy_name(str(need["Subbucket"])), "Vender", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]), str(prod["CORRETORA"]),
+                float(current), max(0.0, current - amount), -float(amount), int(prod["PRIORIDADE_COMPRA"]), 0.0, float(tier_lim), str(prod.get("_restriction", "")),
+                f"Excesso agregado do {tier_name}",
+            ]], columns=cols)
+    return pd.DataFrame(columns=cols)
+
+
 def internal_pool_recommendation(
     need: pd.Series,
     pos_cliente: pd.DataFrame,
@@ -3152,49 +3513,47 @@ def internal_pool_recommendation(
     corretoras_cliente: set[str],
     sim_adjustments: dict[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Quando o subbucket está no alvo, corrige a distribuição interna do pool.
-
-    Primeiro libera excesso da prioridade numérica mais baixa (maior número).
-    Após a venda ser simulada, a estratégia passa a ter déficit e o motor normal
-    direciona a compra para a prioridade mais alta ainda incompleta.
-    """
+    """Corrige composição interna: fora do pool, Tier Bancário e prioridades."""
     cols = ["Estratégia", "Ação", "Produto recomendado", "Identificador", "Corretora", "Valor atual no produto", "Alvo do produto", "Valor recomendado", "Prioridade", "Peso no pool", "Limite", "Restrição", "Observação"]
-    candidates = pool[
-        pool["CLASSE"].fillna("").astype(str).map(norm).eq(norm(need["Classe"])) &
-        pool["SUBBUCKET"].fillna("").astype(str).map(norm).eq(norm(need["Subbucket"]))
-    ].copy()
+
+    # Posição legada fora do Pool: sinaliza rotação mesmo quando o subbucket está no alvo.
+    outside = out_of_pool_position(need, pos_cliente, pool)
+    if outside:
+        return pd.DataFrame([[
+            friendly_strategy_name(str(need["Subbucket"])), "Vender", outside["name"], outside["identifier"], outside["broker"],
+            float(outside["value"]), 0.0, -float(outside["value"]), 9999, 0.0, np.nan, "", "Produto fora do Pool ativo",
+        ]], columns=cols)
+
+    candidates = _prepare_pool_candidates(need, pool, restrictions, corretoras_cliente)
     if candidates.empty:
         return pd.DataFrame(columns=cols)
-    if corretoras_cliente:
-        allowed_brokers = {"TODAS", "", *{norm(x) for x in corretoras_cliente}}
-        candidates = candidates[candidates["CORRETORA"].fillna("Todas").astype(str).map(norm).isin(allowed_brokers)]
-    if candidates.empty:
-        return pd.DataFrame(columns=cols)
-    kept=[]
-    for _, prod in candidates.iterrows():
-        action, reason, limit_override = restriction_action_for_product(prod, restrictions)
-        if norm(action) == "EXCLUIR DA CARTEIRA":
+
+    # Bancário: primeiro saneia violações de limite de emissor/tier.
+    if candidates.apply(is_bank_pool_product, axis=1).any():
+        breach = _bank_limit_breach_recommendation(need, pos_cliente, candidates, pl_base, sim_adjustments)
+        if not breach.empty:
+            return breach
+
+    # Fundos/produtos comuns: target efetivo de compra redistribui fechados/inaptos.
+    effective = purchase_effective_weights(candidates)
+    candidates = candidates.assign(_peso_efetivo=effective)
+    valor_ideal = float(pd.to_numeric(need.get("Valor Ideal", 0), errors="coerce") or 0)
+
+    vendiveis = candidates[~candidates["_restriction"].map(lambda a: norm(a) in {"NAO VENDER", "MANTER POSICAO"})].sort_values("PRIORIDADE_COMPRA", ascending=False)
+    for _, prod in vendiveis.iterrows():
+        if is_bank_pool_product(prod):
             continue
-        q=prod.copy(); q["_restriction"]=action; q["_reason"]=reason; q["_limit_override"]=limit_override; kept.append(q)
-    if not kept:
-        return pd.DataFrame(columns=cols)
-    candidates=pd.DataFrame(kept)
-    w=pd.to_numeric(candidates["PESO_NO_POOL"],errors="coerce").fillna(0).clip(lower=0)
-    if w.sum()<=0: w=pd.Series(1.0,index=candidates.index)
-    candidates["_peso"]=w/w.sum()
-    valor_ideal=float(pd.to_numeric(need.get("Valor Ideal",0),errors="coerce") or 0)
-    vendiveis=candidates[~candidates["_restriction"].map(lambda a:norm(a) in {"NAO VENDER","MANTER POSICAO"})].sort_values("PRIORIDADE_COMPRA",ascending=False)
-    for _,prod in vendiveis.iterrows():
-        ideal=valor_ideal*float(prod["_peso"])
-        current=current_value_for_pool_product_simulated(pos_cliente,prod,sim_adjustments)
-        excesso=current-ideal
-        if excesso<=300:
+        ideal = valor_ideal * float(prod.get("_peso_efetivo", 0.0))
+        current = current_value_for_pool_product_simulated(pos_cliente, prod, sim_adjustments)
+        excesso = current - ideal
+        if excesso <= 300:
             continue
         return pd.DataFrame([[
-            friendly_strategy_name(str(need["Subbucket"])),"Vender",str(prod["NOME_PRODUTO"]),str(prod["IDENTIFICADOR"]),str(prod["CORRETORA"]),
-            float(current),float(ideal),-float(excesso),int(prod["PRIORIDADE_COMPRA"]),float(prod["_peso"]),np.nan,str(prod.get("_restriction","")),"Rebalanceamento interno do pool"
-        ]],columns=cols)
+            friendly_strategy_name(str(need["Subbucket"])), "Vender", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]), str(prod["CORRETORA"]),
+            float(current), float(ideal), -float(excesso), int(prod["PRIORIDADE_COMPRA"]), float(prod.get("_peso_efetivo", 0.0)), np.nan, str(prod.get("_restriction", "")), "Rebalanceamento interno do pool",
+        ]], columns=cols)
     return pd.DataFrame(columns=cols)
+
 
 def recommend_exact_products(
     sub_df: pd.DataFrame,
@@ -3207,24 +3566,7 @@ def recommend_exact_products(
     strategy_filter: str | None = None,
     execution_budget: float | None = None,
 ) -> pd.DataFrame:
-    """Recomenda no máximo um produto do pool por classe/subbucket que precisa de ajuste.
-
-    Lógica em cascata por prioridade (não mais rateio proporcional do valor todo
-    entre todos os produtos elegíveis de uma vez):
-
-    - Compra: percorre as prioridades em ordem crescente (1, 2, 3...). O valor
-      ideal de cada prioridade é o peso dela (PESO_NO_POOL) aplicado sobre o
-      Valor Ideal da classe inteira. Assim que encontra a primeira prioridade
-      cujo valor já aplicado está abaixo do ideal dela, recomenda comprar só
-      essa - as prioridades seguintes só aparecem quando essa estiver completa.
-    - Venda: percorre as prioridades em ordem decrescente (a mais baixa
-      primeiro). Assim que encontra a primeira prioridade com valor aplicado
-      acima do ideal dela, recomenda vender o excesso só dessa.
-
-    Resultado: uma linha por classe que precisa de ajuste, e não uma lista
-    fragmentada em N produtos. PERFIL_MINIMO e APORTE_MINIMO não participam
-    da decisão: as restrições de perfil já são definidas pelas carteiras.
-    """
+    """Recomendação em cascata com redistribuição, fora-do-pool e Tier Bancário."""
     columns = ["Estratégia", "Ação", "Produto recomendado", "Identificador", "Corretora", "Valor atual no produto", "Alvo do produto", "Valor recomendado", "Prioridade", "Peso no pool", "Limite", "Restrição", "Observação"]
     if pool.empty or sub_df.empty or pl_base <= 0:
         return pd.DataFrame(columns=columns)
@@ -3232,96 +3574,152 @@ def recommend_exact_products(
     needs = sub_df[(pd.to_numeric(sub_df["Diferença"], errors="coerce").abs() > 300) & (~sub_df["Classe"].isin(["Caixa", "Fora da Estratégia"]))]
     if strategy_filter:
         needs = needs[needs["Subbucket"].astype(str).eq(str(strategy_filter))]
+
     for _, need in needs.iterrows():
-        candidates = pool[
+        candidates_all = pool[
             pool["CLASSE"].fillna("").astype(str).map(norm).eq(norm(need["Classe"])) &
             pool["SUBBUCKET"].fillna("").astype(str).map(norm).eq(norm(need["Subbucket"]))
         ].copy()
-        if candidates.empty:
-            continue
-        if corretoras_cliente:
-            candidates = candidates[candidates["CORRETORA"].fillna("Todas").astype(str).map(norm).isin({"TODAS", "", *{norm(x) for x in corretoras_cliente}})]
-        if candidates.empty:
+        if candidates_all.empty:
             continue
 
-        allowed = []
-        for _, prod in candidates.iterrows():
-            action, reason, limit_override = restriction_action_for_product(prod, restrictions)
-            if norm(action) == "EXCLUIR DA CARTEIRA":
-                continue
-            prod = prod.copy()
-            prod["_restriction"] = action
-            prod["_reason"] = reason
-            prod["_limit_override"] = limit_override
-            allowed.append(prod)
-        if not allowed:
-            continue
-        candidates = pd.DataFrame(allowed)
-
-        weights = pd.to_numeric(candidates["PESO_NO_POOL"], errors="coerce").clip(lower=0)
-        weights = weights.fillna(0)
-        if weights.sum() <= 0:
-            weights = pd.Series(1.0, index=candidates.index)
-        weights = weights / weights.sum()
-        candidates = candidates.assign(_peso=weights)
-
-        valor_ideal_classe = float(pd.to_numeric(need.get("Valor Ideal", 0), errors="coerce") or 0.0)
         diff = float(need["Diferença"])
+        valor_ideal_classe = float(pd.to_numeric(need.get("Valor Ideal", 0), errors="coerce") or 0.0)
+
+        # Se a estratégia está em excesso, posições fora do Pool saem antes dos produtos válidos.
+        if diff < -300:
+            outside = out_of_pool_position(need, pos_cliente, pool)
+            if outside:
+                amount = min(abs(diff), float(outside["value"]))
+                rows.append([
+                    friendly_strategy_name(str(need["Subbucket"])), "Vender", outside["name"], outside["identifier"], outside["broker"],
+                    float(outside["value"]), max(0.0, float(outside["value"]) - amount), -float(amount), 9999, 0.0, np.nan, "", "Produto fora do Pool ativo",
+                ])
+                continue
+
+        candidates = _prepare_pool_candidates(need, pool, restrictions, corretoras_cliente)
+        if candidates.empty:
+            continue
+
+        bank_mode = candidates.apply(is_bank_pool_product, axis=1).any()
+
+        # Violações de Tier/emissor são saneadas antes de novas compras bancárias.
+        if bank_mode:
+            breach = _bank_limit_breach_recommendation(need, pos_cliente, candidates, pl_base, sim_adjustments)
+            if not breach.empty and diff <= 300:
+                return breach
 
         if diff > 300:
-            # Compra: sobe da prioridade 1 em diante.
-            # Campos operacionais vazios seguem o comportamento padrão:
-            # elegível para compra = Sim; apenas manutenção = Não; produto fechado = Não.
-            # Assim o usuário só precisa preencher essas colunas quando quiser criar uma exceção.
-            compraveis = candidates[
-                candidates["ELEGIVEL_COMPRA"].map(lambda x: parse_yes_no(x, True)) &
-                ~candidates["APENAS_MANUTENCAO"].map(lambda x: parse_yes_no(x, False)) &
-                ~candidates["PRODUTO_FECHADO"].map(lambda x: parse_yes_no(x, False)) &
-                ~candidates["_restriction"].map(lambda a: norm(a) == "NAO COMPRAR")
-            ].sort_values("PRIORIDADE_COMPRA", ascending=True)
-            for _, prod in compraveis.iterrows():
-                ideal_tier = valor_ideal_classe * float(prod["_peso"])
-                current = current_value_for_pool_product_simulated(pos_cliente, prod, sim_adjustments)
-                gap = ideal_tier - current
-                if gap <= 50:
-                    continue  # esta prioridade já está completa, olha a próxima
-                limit_pct = prod.get("_limit_override")
-                if limit_pct is None:
-                    limit_pct = float(pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", 1), errors="coerce") or 1)
-                capacity = max(0.0, pl_base * float(limit_pct) - current)
-                amount = min(gap, diff, capacity)
-                if execution_budget is not None:
-                    amount = min(amount, max(0.0, float(execution_budget)))
-                if amount <= 0:
-                    continue
-                rows.append([
-                    friendly_strategy_name(str(need["Subbucket"])), "Comprar", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]),
-                    str(prod["CORRETORA"]), float(current), float(ideal_tier), float(amount), int(prod["PRIORIDADE_COMPRA"]), float(prod["_peso"]),
-                    float(limit_pct), str(prod.get("_restriction", "")), str(prod.get("OBSERVACAO", "")),
-                ])
-                break  # só uma linha por classe
+            if bank_mode:
+                compraveis = candidates[
+                    candidates["ELEGIVEL_COMPRA"].map(lambda x: parse_yes_no(x, True)) &
+                    ~candidates["APENAS_MANUTENCAO"].map(lambda x: parse_yes_no(x, False)) &
+                    ~candidates["PRODUTO_FECHADO"].map(lambda x: parse_yes_no(x, False)) &
+                    ~candidates["_restriction"].map(lambda a: norm(a) == "NAO COMPRAR")
+                ].sort_values("PRIORIDADE_COMPRA", ascending=True)
+                for _, prod in compraveis.iterrows():
+                    capacity, current, issuer_limit, note = _bank_capacity(prod, pos_cliente, need, pl_base, sim_adjustments)
+                    amount = min(diff, capacity)
+                    if execution_budget is not None:
+                        amount = min(amount, max(0.0, float(execution_budget)))
+                    if amount <= 50:
+                        continue
+                    rows.append([
+                        friendly_strategy_name(str(need["Subbucket"])), "Comprar", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]), str(prod["CORRETORA"]),
+                        float(current), float(current + amount), float(amount), int(prod["PRIORIDADE_COMPRA"]), 0.0, issuer_limit, str(prod.get("_restriction", "")), note,
+                    ])
+                    break
+            else:
+                effective = purchase_effective_weights(candidates)
+                candidates = candidates.assign(_peso_efetivo=effective)
+                compraveis = candidates[
+                    candidates["ELEGIVEL_COMPRA"].map(lambda x: parse_yes_no(x, True)) &
+                    ~candidates["APENAS_MANUTENCAO"].map(lambda x: parse_yes_no(x, False)) &
+                    ~candidates["PRODUTO_FECHADO"].map(lambda x: parse_yes_no(x, False)) &
+                    ~candidates["_restriction"].map(lambda a: norm(a) == "NAO COMPRAR")
+                ].sort_values("PRIORIDADE_COMPRA", ascending=True)
+
+                # 1) Produtos com peso efetivo > 0 absorvem o peso dos fechados/inaptos.
+                bought = False
+                for _, prod in compraveis[compraveis["_peso_efetivo"].gt(0)].iterrows():
+                    ideal_tier = valor_ideal_classe * float(prod["_peso_efetivo"])
+                    current = current_value_for_pool_product_simulated(pos_cliente, prod, sim_adjustments)
+                    gap = ideal_tier - current
+                    if gap <= 50:
+                        continue
+                    limit_pct = prod.get("_limit_override")
+                    if limit_pct is None:
+                        limit_pct = pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", np.nan), errors="coerce")
+                    capacity = float("inf") if pd.isna(limit_pct) else max(0.0, pl_base * float(limit_pct) - current)
+                    amount = min(gap, diff, capacity)
+                    if execution_budget is not None:
+                        amount = min(amount, max(0.0, float(execution_budget)))
+                    if amount <= 50:
+                        continue
+                    rows.append([
+                        friendly_strategy_name(str(need["Subbucket"])), "Comprar", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]), str(prod["CORRETORA"]),
+                        float(current), float(ideal_tier), float(amount), int(prod["PRIORIDADE_COMPRA"]), float(prod["_peso_efetivo"]),
+                        float(limit_pct) if pd.notna(limit_pct) else np.nan, str(prod.get("_restriction", "")), str(prod.get("OBSERVACAO", "")),
+                    ])
+                    bought = True
+                    break
+
+                # 2) Se todos os alvos ponderados estiverem completos/limitados, usa backups peso 0 por prioridade.
+                if not bought:
+                    for _, prod in compraveis[compraveis["_peso_efetivo"].le(0)].iterrows():
+                        current = current_value_for_pool_product_simulated(pos_cliente, prod, sim_adjustments)
+                        limit_pct = prod.get("_limit_override")
+                        if limit_pct is None:
+                            limit_pct = pd.to_numeric(prod.get("LIMITE_POR_CLIENTE", np.nan), errors="coerce")
+                        capacity = float("inf") if pd.isna(limit_pct) else max(0.0, pl_base * float(limit_pct) - current)
+                        amount = min(diff, capacity)
+                        if execution_budget is not None:
+                            amount = min(amount, max(0.0, float(execution_budget)))
+                        if amount <= 50:
+                            continue
+                        rows.append([
+                            friendly_strategy_name(str(need["Subbucket"])), "Comprar", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]), str(prod["CORRETORA"]),
+                            float(current), float(current + amount), float(amount), int(prod["PRIORIDADE_COMPRA"]), 0.0,
+                            float(limit_pct) if pd.notna(limit_pct) else np.nan, str(prod.get("_restriction", "")), "Fallback de prioridade: pesos principais indisponíveis/completos",
+                        ])
+                        break
 
         elif diff < -300:
-            # Venda: desce da prioridade mais baixa (número maior) em diante.
-            vendiveis = candidates[
-                ~candidates["_restriction"].map(lambda a: norm(a) in {"NAO VENDER", "MANTER POSICAO"})
-            ].sort_values("PRIORIDADE_COMPRA", ascending=False)
-            excesso_total = abs(diff)
-            for _, prod in vendiveis.iterrows():
-                ideal_tier = valor_ideal_classe * float(prod["_peso"])
-                current = current_value_for_pool_product_simulated(pos_cliente, prod, sim_adjustments)
-                excesso = current - ideal_tier
-                if excesso <= 50:
-                    continue  # esta prioridade já está dentro do ideal, olha a próxima
-                amount = min(excesso, excesso_total)
-                if amount <= 0:
-                    continue
-                rows.append([
-                    friendly_strategy_name(str(need["Subbucket"])), "Vender", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]),
-                    str(prod["CORRETORA"]), float(current), float(ideal_tier), -float(amount), int(prod["PRIORIDADE_COMPRA"]), float(prod["_peso"]),
-                    np.nan, str(prod.get("_restriction", "")), str(prod.get("OBSERVACAO", "")),
-                ])
-                break  # só uma linha por classe
+            if bank_mode:
+                # Excesso da estratégia bancária: vende primeiro a menor prioridade com posição.
+                vendiveis = candidates[
+                    ~candidates["_restriction"].map(lambda a: norm(a) in {"NAO VENDER", "MANTER POSICAO"})
+                ].sort_values("PRIORIDADE_COMPRA", ascending=False)
+                for _, prod in vendiveis.iterrows():
+                    current = current_value_for_pool_product_simulated(pos_cliente, prod, sim_adjustments)
+                    if current <= 50:
+                        continue
+                    amount = min(abs(diff), current)
+                    rows.append([
+                        friendly_strategy_name(str(need["Subbucket"])), "Vender", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]), str(prod["CORRETORA"]),
+                        float(current), max(0.0, current - amount), -float(amount), int(prod["PRIORIDADE_COMPRA"]), 0.0, np.nan, str(prod.get("_restriction", "")), "Redução por excesso da estratégia; menor prioridade primeiro",
+                    ])
+                    break
+            else:
+                effective = purchase_effective_weights(candidates)
+                candidates = candidates.assign(_peso_efetivo=effective)
+                vendiveis = candidates[
+                    ~candidates["_restriction"].map(lambda a: norm(a) in {"NAO VENDER", "MANTER POSICAO"})
+                ].sort_values("PRIORIDADE_COMPRA", ascending=False)
+                excesso_total = abs(diff)
+                for _, prod in vendiveis.iterrows():
+                    ideal_tier = valor_ideal_classe * float(prod.get("_peso_efetivo", 0.0))
+                    current = current_value_for_pool_product_simulated(pos_cliente, prod, sim_adjustments)
+                    excesso = current - ideal_tier
+                    if excesso <= 50:
+                        continue
+                    amount = min(excesso, excesso_total)
+                    rows.append([
+                        friendly_strategy_name(str(need["Subbucket"])), "Vender", str(prod["NOME_PRODUTO"]), str(prod["IDENTIFICADOR"]), str(prod["CORRETORA"]),
+                        float(current), float(ideal_tier), -float(amount), int(prod["PRIORIDADE_COMPRA"]), float(prod.get("_peso_efetivo", 0.0)), np.nan,
+                        str(prod.get("_restriction", "")), str(prod.get("OBSERVACAO", "")),
+                    ])
+                    break
 
     return pd.DataFrame(rows, columns=columns)
 
