@@ -69,7 +69,7 @@ st.set_page_config(page_title="Wealth | Balanceamento", layout="wide", page_icon
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.9.2"
+APP_VERSION = "6.9.3"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -1139,8 +1139,8 @@ def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
 
     A posição continua sendo contabilizada mesmo quando REBALANCEAR=Não. Esse
     campo controla somente a geração da ordem. FONTE_PRECO controla a marcação.
-    Custódia remunerada só entra na quantidade quando não existir a mesma ação
-    na posição principal da mesma conta, evitando dupla contagem.
+    Custódia remunerada é sempre informativa e nunca entra na posição econômica,
+    no PL, na quantidade ou na recomendação de ordem.
     """
     if df.empty:
         return pd.Series(dtype=bool, index=df.index)
@@ -1153,8 +1153,8 @@ def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
     tipo_cadastro = df.get("b3_tipo_produto", pd.Series("", index=idx)).astype(str).map(norm)
 
     real = (
-        asset_tipo.isin(["ACOES", "FUNDOS IMOBILIARIOS", "CUSTODIA REMUNERADA"])
-        | mercado.isin(["RENDA VARIAVEL", "RENDA VARIÁVEL", "CUSTODIA REMUNERADA"])
+        asset_tipo.isin(["ACOES", "FUNDOS IMOBILIARIOS"])
+        | mercado.isin(["RENDA VARIAVEL", "RENDA VARIÁVEL"])
         | classe.isin(["Ações", "FIIs", "FiInfra Pós", "FiInfra Inflação", "FiInfra e Cetipados"])
     )
     excluded = asset_tipo.str.contains(
@@ -1165,24 +1165,10 @@ def exchange_position_mask(df: pd.DataFrame) -> pd.Series:
     non_listed = tipo_cadastro.str.contains("CETIPADO|NAO LISTADO|NÃO LISTADO", regex=True, na=False)
     yahoo = fonte.eq("YAHOO FINANCE")
 
-    # Evita somar a aba de aluguel quando a mesma conta/ticker já aparece na
-    # posição principal. Quando só existe na custódia remunerada, ela é usada.
+    # Custódia Remunerada é informativa e nunca representa posição adicional.
     custody = asset_tipo.eq("CUSTODIA REMUNERADA") | mercado.eq("CUSTODIA REMUNERADA")
-    if custody.any() and "conta" in df.columns:
-        keys = pd.DataFrame({
-            "conta": df.get("conta", pd.Series("", index=idx)).astype(str),
-            "ticker": ticker,
-            "custody": custody,
-        }, index=idx)
-        regular_keys = set(map(tuple, keys.loc[~keys["custody"], ["conta", "ticker"]].values.tolist()))
-        duplicated_custody = pd.Series(
-            [(c, t) in regular_keys for c, t in keys[["conta", "ticker"]].itertuples(index=False, name=None)],
-            index=idx,
-        ) & custody
-    else:
-        duplicated_custody = pd.Series(False, index=idx)
 
-    return (real & yahoo & ~non_listed & ~excluded & ~subscription_right & valid_ticker & ~duplicated_custody).fillna(False)
+    return (real & yahoo & ~non_listed & ~excluded & ~subscription_right & valid_ticker & ~custody).fillna(False)
 
 
 def ticker_rows(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
@@ -1194,7 +1180,12 @@ def ticker_rows(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     if rows.empty:
         return rows
     asset_tipo = rows.get("asset_tipo", pd.Series("", index=rows.index)).astype(str).map(norm)
-    rows = rows[~asset_tipo.str.contains("PROVENT|PROVISAO|EVENTO|OPCOES|OPÇÕES|OPCAO|OPÇÃO", regex=True, na=False)]
+    mercado = rows.get("mercado", pd.Series("", index=rows.index)).astype(str).map(norm)
+    rows = rows[
+        ~asset_tipo.str.contains("PROVENT|PROVISAO|EVENTO|OPCOES|OPÇÕES|OPCAO|OPÇÃO", regex=True, na=False)
+        & ~asset_tipo.eq("CUSTODIA REMUNERADA")
+        & ~mercado.eq("CUSTODIA REMUNERADA")
+    ]
     return rows
 
 
@@ -1819,6 +1810,16 @@ def classify_position(row: pd.Series) -> pd.Series:
 def enrich_positions_cached(df: pd.DataFrame, mapping_signature: tuple = ()) -> pd.DataFrame:
     df = df.copy()
     df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    # Custódia Remunerada (XP) NÃO é uma posição econômica adicional.
+    # A aba informa quanto da posição já existente está disponível para aluguel.
+    # Removemos aqui também para proteger caches antigos e consolidados gerados
+    # por versões anteriores do positions.py.
+    _asset_tipo_norm = df.get("asset_tipo", pd.Series("", index=df.index)).astype(str).map(norm)
+    _mercado_norm = df.get("mercado", pd.Series("", index=df.index)).astype(str).map(norm)
+    _custody_mask = _asset_tipo_norm.eq("CUSTODIA REMUNERADA") | _mercado_norm.eq("CUSTODIA REMUNERADA")
+    if _custody_mask.any():
+        df = df.loc[~_custody_mask].copy()
     df = df.drop(columns=[c for c in ["classe_macro", "subclasse", "subbucket", "tratamento"] if c in df.columns], errors="ignore")
     for c in ["valor_mercado", "quantidade", "valor_original"]:
         if c in df.columns:
@@ -2244,12 +2245,15 @@ def rv_recommendation(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float,
         if not tk or tk in model_tickers:
             continue
         ativo = str(grp["asset_id"].iloc[0])
+        bucket_atual = str(grp["subbucket"].iloc[0]) if "subbucket" in grp.columns else "Ações"
         preco, qtd, atual = current_exchange_position(pos_cliente, tk, price_ref)
         can_rebalance = ticker_can_rebalance(pos_cliente, tk)
         uses_qty = ticker_uses_quantity(pos_cliente, tk)
         diff = -atual if pd.notna(atual) else np.nan
         qtd_operar = (-qtd if uses_qty and pd.notna(preco) and preco > 0 else np.nan) if can_rebalance else 0.0
-        rows.append([ativo, preco, qtd, atual, 0, 0.0, diff, qtd_operar, "Fora do modelo"])
+        # Mantém o ativo na aba econômica correta para que a posição fora do modelo
+        # fique VISÍVEL com alvo zero e recomendação de venda/redução.
+        rows.append([ativo, preco, qtd, atual, 0, 0.0, diff, qtd_operar, bucket_atual])
     return pd.DataFrame(rows, columns=["Ativo", "Preço referência", "Qtd Atual", "Valor Atual", "Qtd Ideal", "Valor Ideal", "Diferença", "Qtd a operar", "Grupo"])
 
 

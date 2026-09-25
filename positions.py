@@ -250,7 +250,8 @@ def parse_xp_positions(src: str | Path) -> pd.DataFrame:
         "Financeiro": {"ativo": None, "valor": "ValorDisponivel", "qtd": None, "conta": "CodigoCliente"},
         "Ações": {"ativo": "CodigoAtivo", "nome": "NomeEmpresaEmitente", "valor": "ValorAtual", "qtd": "QuantidadeTotalComGarantias", "conta": "CodigoCliente"},
         "Fundos Imobiliários": {"ativo": "CodigoAtivo", "nome": "NomeEmpresaEmitente", "valor": "ValorAtual", "qtd": "QuantidadeTotalAtual", "conta": "CodigoCliente"},
-        "Custódia Remunerada": {"ativo": "CodigoAtivo", "valor": "ValorTotal", "qtd": "QuantidadeAtivo", "conta": "CodigoCliente"},
+        # "Custódia Remunerada" é apenas informativa sobre ativos disponíveis para aluguel.
+        # Não representa posição econômica adicional e, portanto, não entra no consolidado.
         "Fundos": {"ativo": "NomeFundo", "valor": "ValorAtual", "qtd": "QuantidadeCotas", "conta": "CodigoCliente"},
         "Tesouro Direto": {"ativo": "NomeTitulo", "valor": "ValorBruto", "qtd": "QuantidadeTotal", "conta": "CodigoCliente"},
         "Previdência": {"ativo": "NomeFundo", "nome": "NomePlanoResumido", "valor": "ValorReservaAcumulada", "qtd": "QuantidadeCotas", "conta": "CodigoCliente"},
