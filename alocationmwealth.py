@@ -69,7 +69,7 @@ st.set_page_config(page_title="Wealth | Balanceamento", layout="wide", page_icon
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.9.1"
+APP_VERSION = "6.9.2"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -700,11 +700,19 @@ def macro_hierarchy_styler(df: pd.DataFrame):
 
 
 def bucket_from_liquidity_days(days) -> str:
+    """Classifica a liquidez operacional por prazo de disponibilidade.
+
+    Regra operacional M Wealth:
+    D+0 = liquidez imediata.
+    D+1 até D+30 = bucket de 1 a 30 dias.
+    """
     try:
         d = float(days)
     except Exception:
         return "Fundos de Investimento / Sem Liquidez Mapeada"
-    if d <= 1:
+    if d < 0:
+        return "Fundos de Investimento / Sem Liquidez Mapeada"
+    if d == 0:
         return "Pós - Imediato"
     if d <= 30:
         return "Pós - 1 a 30 dias"
