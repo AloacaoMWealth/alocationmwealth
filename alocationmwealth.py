@@ -72,7 +72,7 @@ st.set_page_config(page_title="Wealth | Balanceamento", layout="wide", page_icon
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.10.2"
+APP_VERSION = "6.10.4"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -231,11 +231,11 @@ st.markdown(
     .mw-card-label { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:650; line-height:1; }
     .mw-card-value { color:#FFFFFF; font-size:1.04rem; font-weight:800; letter-spacing:-.01em; line-height:1.12; }
     .mw-card-icon { height:18px; max-width:56px; width:auto; object-fit:contain; display:block; background:transparent; }
-    .mw-cust-row { display:flex; gap:1.25rem; align-items:flex-end; flex-wrap:wrap; }
-    .mw-cust { display:flex; flex-direction:column; gap:.28rem; min-width:108px; }
+    .mw-cust-row { display:flex; gap:.78rem; align-items:flex-end; flex-wrap:nowrap; overflow:hidden; }
+    .mw-cust { display:flex; flex-direction:column; gap:.24rem; min-width:0; flex:1 1 0; }
     .mw-cust-name { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:700; letter-spacing:.02em; line-height:18px; }
-    .mw-cust .mw-card-icon { height:28px; max-width:112px; width:auto; object-fit:contain; }
-    .mw-cust-val { color:#FFFFFF; font-size:.98rem; font-weight:800; line-height:1.1; }
+    .mw-cust .mw-card-icon { height:24px; max-width:92px; width:auto; object-fit:contain; }
+    .mw-cust-val { color:#FFFFFF; font-size:.91rem; font-weight:800; line-height:1.1; white-space:nowrap; }
     .mw-cust-pct { color:rgba(255,255,255,.5); font-size:.68rem; font-weight:600; }
     .mw-version-row { margin-top:.12rem; margin-bottom:.12rem; color:rgba(255,255,255,.44); font-size:.74rem; }
     .mw-base-box { display:flex; flex-direction:column; justify-content:flex-end; min-height:70px; padding-right:.20rem; }
@@ -462,7 +462,7 @@ def broker_logo_path(broker: str) -> Path | None:
         "SAFRA": ["logo_safra.png", "Log Safra.png"],
         "AGORA": ["logo_agora.png", "Logo Ágora.png", "Logo Agora.png"],
         "ATIVORE": ["logo_ativore.png", "Logo Ativore.png"],
-        "XP Global": ["logo_xpus.png", "Logo XPUS.png"],
+        "XP GLOBAL": ["logo_xpus.png", "Logo XPUS.png"],
         "XP US": ["logo_xpus.png", "Logo XPUS.png"],
     }
     candidates = name_map.get(broker, [])
@@ -474,7 +474,6 @@ def broker_logo_path(broker: str) -> Path | None:
     return None
 
 
-@st.cache_data(show_spinner=False)
 def file_to_data_uri(path_str: str) -> str:
     try:
         p = Path(path_str)
@@ -4572,13 +4571,14 @@ if page == "Asset Allocation":
     if sim_key not in st.session_state:
         st.session_state[sim_key] = []
 
-    k_pl, k_cust, k_saldo = st.columns([1.35, 4.2, 1.0], vertical_alignment="bottom", gap="small")
+    # Três cards de mesma largura para uma leitura mais harmônica do dashboard.
+    k_pl, k_cust, k_saldo = st.columns(3, vertical_alignment="bottom", gap="small")
     with k_pl:
         metric_card("PL Total Agregado", format_brl(pl_patrimonial))
     with k_cust:
         _cust_df = custody_summary(pos_cliente, pl_patrimonial)
-        custody_card(_cust_df, top=5)
-        if len(_cust_df) > 5:
+        custody_card(_cust_df, top=3)
+        if len(_cust_df) > 3:
             with st.popover("Ver todas as custódias", use_container_width=True):
                 st.dataframe(prepare_display(_cust_df, money_cols=["Valor"], pct_cols=["% do PL"]), use_container_width=True, hide_index=True)
     with k_saldo:
