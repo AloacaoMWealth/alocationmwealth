@@ -33,10 +33,10 @@ def repo_files() -> dict[str, Path]:
         "XP": find_repo_file("XP.xlsx"),
         "BTG": find_repo_file("BTG.xlsx"),
         "CS": find_repo_file("CSProdutos.csv"),
-        "SAFRA": find_repo_file("Posição Safra.xlsx") if find_repo_file("Posição Safra.xlsx").exists() else find_repo_file("Posicao Safra.xlsx"),
-        "AGORA": find_repo_file("Posição Ágora.xlsx") if find_repo_file("Posição Ágora.xlsx").exists() else find_repo_file("Posicao Agora.xlsx"),
+        "SAFRA": find_repo_file("Safra.xlsx") if find_repo_file("Safra.xlsx").exists() else find_repo_file("Safra.xlsx"),
+        "AGORA": find_repo_file("Agora.xlsx") if find_repo_file("Agora.xlsx").exists() else find_repo_file("Agora.xlsx"),
         # Complementar: XP US, XP Global, Atívore e outras fontes sem parser nativo.
-        "OUTRAS": find_repo_file("Posicoes_Outras_Custodias.xlsx"),
+        "OUTRAS": find_repo_file("Outras Custodias.xlsx"),
     }
 
 
