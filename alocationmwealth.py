@@ -230,11 +230,11 @@ st.markdown(
     .mw-card-head { display:flex; align-items:center; gap:.45rem; min-height:18px; margin-bottom:.26rem; }
     .mw-card-label { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:650; line-height:1; }
     .mw-card-value { color:#FFFFFF; font-size:1.04rem; font-weight:800; letter-spacing:-.01em; line-height:1.12; }
-    .mw-card-icon { height:18px; max-width:48px; width:auto; object-fit:contain; display:block; }
-    .mw-cust-row { display:flex; gap:1.1rem; align-items:flex-end; flex-wrap:wrap; }
-    .mw-cust { display:flex; flex-direction:column; gap:.28rem; min-width:96px; }
+    .mw-card-icon { height:18px; max-width:56px; width:auto; object-fit:contain; display:block; background:transparent; }
+    .mw-cust-row { display:flex; gap:1.25rem; align-items:flex-end; flex-wrap:wrap; }
+    .mw-cust { display:flex; flex-direction:column; gap:.28rem; min-width:108px; }
     .mw-cust-name { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:700; letter-spacing:.02em; line-height:18px; }
-    .mw-cust .mw-card-icon { height:24px; max-width:88px; }
+    .mw-cust .mw-card-icon { height:28px; max-width:112px; width:auto; object-fit:contain; }
     .mw-cust-val { color:#FFFFFF; font-size:.98rem; font-weight:800; line-height:1.1; }
     .mw-cust-pct { color:rgba(255,255,255,.5); font-size:.68rem; font-weight:600; }
     .mw-version-row { margin-top:.12rem; margin-bottom:.12rem; color:rgba(255,255,255,.44); font-size:.74rem; }
@@ -4570,7 +4570,9 @@ if page == "Asset Allocation":
     if sim_key not in st.session_state:
         st.session_state[sim_key] = []
 
-    k_cust, k_saldo = st.columns([4.7, 1.0], vertical_alignment="bottom", gap="small")
+    k_pl, k_cust, k_saldo = st.columns([1.35, 4.2, 1.0], vertical_alignment="bottom", gap="small")
+    with k_pl:
+        metric_card("PL Total Agregado", format_brl(pl_patrimonial))
     with k_cust:
         _cust_df = custody_summary(pos_cliente, pl_patrimonial)
         custody_card(_cust_df, top=5)
