@@ -24,6 +24,7 @@ except Exception:
     HAS_YFINANCE = False
 
 import positions as posmod
+import persistence
 
 try:
     from reportlab.lib import colors
@@ -48,6 +49,8 @@ def register_pdf_fonts() -> tuple[str, str]:
     if not HAS_REPORTLAB:
         return PDF_FONT_REGULAR, PDF_FONT_BOLD
     candidates = [
+        # Identidade M Wealth: coloque Bitter-Regular.ttf e Bitter-Bold.ttf na pasta "fonts" do repositório.
+        (str(BASE_DIR / "fonts" / "Bitter-Regular.ttf"), str(BASE_DIR / "fonts" / "Bitter-Bold.ttf")),
         ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         ("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
     ]
@@ -69,10 +72,37 @@ st.set_page_config(page_title="Wealth | Balanceamento", layout="wide", page_icon
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.9.3"
+APP_VERSION = "6.10"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
+
+
+def persist_changes(paths: list[Path], what: str) -> str:
+    """Envia ao GitHub os arquivos que o app acabou de gravar. Devolve uma frase para o usuário.
+
+    O disco do Streamlit Cloud é efêmero: sem este passo, tudo que é salvo pelo app se perde
+    na próxima reinicialização."""
+    paths = [Path(p) for p in paths if p and Path(p).exists()]
+    if not paths:
+        return ""
+    if not persistence.is_configured():
+        return " Atenção: salvo só no disco do app. Configure GITHUB_TOKEN e GITHUB_REPO em Secrets para a alteração sobreviver à reinicialização."
+    ok, msg = persistence.push_files(paths, BASE_DIR, f"App M Wealth: {what}")
+    return f" {msg}" if ok else f" Atenção: salvo localmente, mas NÃO foi enviado ao GitHub. {msg}"
+
+
+@st.cache_resource(show_spinner=False)
+def restore_persisted_files() -> list[str]:
+    """Na primeira execução do processo, baixa do GitHub a versão mais recente dos arquivos editados pelo app."""
+    if not persistence.is_configured():
+        return []
+    targets = [master_products_path(), PUBLISHED_MODELS_PATH, MODEL_HISTORY_PATH]
+    out = []
+    for t in targets:
+        ok, msg = persistence.pull_file(t, BASE_DIR)
+        out.append(msg)
+    return out
 
 
 # Estratégia de RV e FiInfra permanece no código, conforme orientação da gestão.
@@ -105,7 +135,8 @@ ATIVOS_ESTRATEGICOS_B3 = {
 SUBBUCKET_ORDER = [
     "Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 90 dias", "Pós - 91 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias",
     "FiInfra Pós", "FiInfra Inflação", "Pré - Bancário", "Pré - Tesouro", "Inflação - Bancário", "Inflação - Tesouro", "Crédito Privado",
-    "Ações", "FIIs", "Bitcoin", "Ouro", "Renda Fixa Internacional", "Renda Variável Internacional", "Caixa Internacional",
+    "Ações", "FIIs", "Bitcoin", "Ouro", "Renda Fixa Internacional", "Renda Variável Internacional", "Caixa Internacional", "Internacional (sem estratégia)",
+    "RF Brasil (sem estratégia)", "RV Brasil (sem estratégia)", "Brasil (sem estratégia)",
     "Saldo em Conta", "Proventos a Receber", "Direitos de Subscrição", "Fundos de Investimento / Sem Liquidez Mapeada", "Previdência", "COE / Estruturados", "Outros / Não Classificado",
 ]
 
@@ -200,6 +231,11 @@ st.markdown(
     .mw-card-label { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:650; line-height:1; }
     .mw-card-value { color:#FFFFFF; font-size:1.04rem; font-weight:800; letter-spacing:-.01em; line-height:1.12; }
     .mw-card-icon { height:18px; max-width:48px; width:auto; object-fit:contain; display:block; }
+    .mw-cust-row { display:flex; gap:1.1rem; align-items:flex-end; flex-wrap:wrap; }
+    .mw-cust { display:flex; flex-direction:column; gap:.28rem; min-width:78px; }
+    .mw-cust-name { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:700; letter-spacing:.02em; line-height:18px; }
+    .mw-cust-val { color:#FFFFFF; font-size:.98rem; font-weight:800; line-height:1.1; }
+    .mw-cust-pct { color:rgba(255,255,255,.5); font-size:.68rem; font-weight:600; }
     .mw-version-row { margin-top:.12rem; margin-bottom:.12rem; color:rgba(255,255,255,.44); font-size:.74rem; }
     .mw-base-box { display:flex; flex-direction:column; justify-content:flex-end; min-height:70px; padding-right:.20rem; }
     .mw-base-label { color:rgba(255,255,255,.58); font-size:.69rem; font-weight:700; margin-bottom:.20rem; line-height:1; }
@@ -465,6 +501,31 @@ def metric_card(label: str, value: str, icon_path: Path | None = None) -> None:
     st.markdown(html, unsafe_allow_html=True)
 
 
+def custody_summary(pos: pd.DataFrame, pl: float) -> pd.DataFrame:
+    """Valor por custodiante, do maior para o menor."""
+    if pos.empty:
+        return pd.DataFrame(columns=["Custódia", "Valor", "% do PL", "Contas"])
+    g = pos.groupby("corretora", dropna=False).agg(Valor=("valor_mercado", "sum"), Contas=("conta", "nunique")).reset_index()
+    g = g.rename(columns={"corretora": "Custódia"}).sort_values("Valor", ascending=False)
+    g["% do PL"] = np.where(pl > 0, g["Valor"] / pl, 0.0)
+    return g[["Custódia", "Valor", "% do PL", "Contas"]].reset_index(drop=True)
+
+
+def custody_card(summary: pd.DataFrame, top: int = 3) -> None:
+    """Card único de custódias: as maiores em destaque e o restante agrupado, para não lotar a tela
+    quando o cliente tem muitas corretoras."""
+    items = []
+    for r in summary.head(top).itertuples(index=False):
+        logo = broker_logo_path(r[0])
+        uri = file_to_data_uri(str(logo)) if logo else ""
+        head = f'<img class="mw-card-icon" src="{uri}" alt="{escape(str(r[0]))}" />' if uri else f'<div class="mw-cust-name">{escape(str(r[0]))}</div>'
+        items.append(f'<div class="mw-cust">{head}<div class="mw-cust-val">{escape(format_brl(r[1]))}</div><div class="mw-cust-pct">{float(r[2]) * 100:.0f}% do PL</div></div>')
+    rest = summary.iloc[top:]
+    if not rest.empty:
+        items.append(f'<div class="mw-cust"><div class="mw-cust-name">+{len(rest)} custódia(s)</div><div class="mw-cust-val">{escape(format_brl(float(rest["Valor"].sum())))}</div><div class="mw-cust-pct">{float(rest["% do PL"].sum()) * 100:.0f}% do PL</div></div>')
+    st.markdown(f'<div class="mw-card"><div class="mw-card-label" style="margin-bottom:.4rem">Custódias</div><div class="mw-cust-row">{"".join(items)}</div></div>', unsafe_allow_html=True)
+
+
 def page_intro(eyebrow: str, title: str, text: str, pills: list[str] | None = None) -> None:
     return None
 
@@ -529,6 +590,10 @@ def friendly_strategy_name(x: str) -> str:
         "Renda Fixa Internacional": "Renda fixa internacional",
         "Renda Variável Internacional": "Renda variável internacional",
         "Caixa Internacional": "Caixa internacional",
+        "Internacional (sem estratégia)": "Internacional (custódia sem estratégia)",
+        "RF Brasil (sem estratégia)": "Renda fixa — custódia sem abertura",
+        "RV Brasil (sem estratégia)": "Renda variável — custódia sem abertura",
+        "Brasil (sem estratégia)": "Brasil — custódia sem abertura",
         "Saldo em Conta": "Saldo em conta",
         "Proventos a Receber": "Proventos a receber",
         "Direitos de Subscrição": "Direitos de subscrição",
@@ -596,7 +661,8 @@ def macro_hierarchy_table(sub_df: pd.DataFrame, pl: float) -> pd.DataFrame:
             part = base[base["Subbucket"].isin(buckets or [])].copy()
         atual = float(part["Valor Atual"].sum()) if not part.empty else 0.0
         ideal = float(part["Valor Ideal"].sum()) if not part.empty else 0.0
-        diff = ideal - atual
+        enquadramento = float(part["Valor p/ Enquadramento"].sum()) if (not part.empty and "Valor p/ Enquadramento" in part.columns and not is_header) else atual
+        diff = ideal - enquadramento
         return {
             "Estratégia": label,
             "Quanto tem": atual,
@@ -604,7 +670,7 @@ def macro_hierarchy_table(sub_df: pd.DataFrame, pl: float) -> pd.DataFrame:
             "Deveria ter (%)": ideal / pl if pl > 0 else 0.0,
             "Deveria ter R$": ideal,
             "Ajuste necessário": diff,
-            "Diferença": (atual - ideal) / pl if pl > 0 else 0.0,
+            "Diferença": (enquadramento - ideal) / pl if pl > 0 else 0.0,
             "_header": is_header,
         }
 
@@ -622,6 +688,7 @@ def macro_hierarchy_table(sub_df: pd.DataFrame, pl: float) -> pd.DataFrame:
         ("INVESTIMENTOS INTERNACIONAIS", None, ["Internacional"], True),
         ("  Renda fixa internacional", ["Renda Fixa Internacional"], None, False),
         ("  Renda variável internacional", ["Renda Variável Internacional"], None, False),
+        ("  Internacional sem estratégia (XP Global etc.)", ["Internacional (sem estratégia)"], None, False),
         ("ALTERNATIVOS", None, ["Alternativos"], True),
         ("  Bitcoin", ["Bitcoin"], None, False),
         ("  Ouro", ["Ouro"], None, False),
@@ -1345,22 +1412,82 @@ def operation_text(qtd_diff, diff_value) -> str:
 
 
 
-def basket_excel_bytes(df_orders: pd.DataFrame, cliente: str = "") -> BytesIO:
-    """Gera um Excel simples de basket para acelerar a execução."""
+LOT_SIZE_ACTION = 100
+
+
+def lot_size_for_order(row: pd.Series) -> int:
+    """Lote operacional por natureza do ativo."""
+    return LOT_SIZE_ACTION if norm(row.get("Grupo", "")) == "ACOES" else 1
+
+
+def split_lot_fraction(qtd, lot_size: int = 100) -> tuple[int, int]:
+    try:
+        q = abs(int(math.floor(abs(float(qtd)))))
+    except Exception:
+        return 0, 0
+    lot_size = max(1, int(lot_size or 1))
+    if lot_size <= 1:
+        return q, 0
+    lote = (q // lot_size) * lot_size
+    return lote, q - lote
+
+
+def scale_market_orders(view: pd.DataFrame, buy_budget: float | None = None, sell_budget: float | None = None) -> pd.DataFrame:
+    """Ajusta as ordens ao orçamento da rodada, sem ultrapassar o valor definido."""
+    out = view.copy()
+    if out.empty or "Qtd a operar" not in out.columns:
+        return out
+    qtd = pd.to_numeric(out["Qtd a operar"], errors="coerce").fillna(0.0)
+    preco = pd.to_numeric(out.get("Preço referência", np.nan), errors="coerce")
+    valor_full = (qtd * preco).fillna(0.0)
+    new_qtd = qtd.copy()
+    for sign, budget in ((1, buy_budget), (-1, sell_budget)):
+        if budget is None:
+            continue
+        mask = (np.sign(qtd) == sign) & preco.notna() & (preco > 0)
+        total = float(valor_full[mask].abs().sum())
+        if total <= 0 or float(budget) >= total:
+            continue
+        factor = max(0.0, float(budget)) / total
+        new_qtd[mask] = np.floor(qtd[mask].abs() * factor) * sign
+
+    out["Qtd a operar"] = new_qtd
+    lotes, fracs = [], []
+    for idx, q in new_qtd.items():
+        lote, frac = split_lot_fraction(q, lot_size_for_order(out.loc[idx]))
+        sign = 1 if q >= 0 else -1
+        lotes.append(lote * sign)
+        fracs.append(frac * sign)
+    out["Lote cheio"] = lotes
+    out["Fracionário"] = fracs
+    out["Valor da ordem"] = (new_qtd * preco).fillna(0.0)
+    return out
+
+
+def basket_excel_bytes(df_orders: pd.DataFrame, cliente: str = "", split_fractional: bool = True) -> BytesIO:
+    """Gera basket respeitando lote por tipo de ativo; sufixo F apenas para ações."""
     base = df_orders.copy()
-    if base.empty or "Qtd a operar" not in base.columns:
-        out = pd.DataFrame(columns=["C/V", "Ativo", "Quantidade", "Preço referência", "Valor estimado", "Cliente/Grupo"])
-    else:
+    cols = ["C/V", "Ativo", "Mercado", "Quantidade", "Preço referência", "Valor estimado", "Cliente/Grupo"]
+    rows = []
+    if not base.empty and "Qtd a operar" in base.columns:
         base["Qtd a operar"] = pd.to_numeric(base["Qtd a operar"], errors="coerce").fillna(0)
-        base = base[base["Qtd a operar"].round().ne(0)].copy()
-        out = pd.DataFrame({
-            "C/V": np.where(base["Qtd a operar"] > 0, "C", "V"),
-            "Ativo": base["Ativo"].astype(str),
-            "Quantidade": base["Qtd a operar"].abs().round().astype(int),
-            "Preço referência": pd.to_numeric(base.get("Preço referência", np.nan), errors="coerce"),
-            "Valor estimado": pd.to_numeric(base.get("Diferença", 0), errors="coerce").abs(),
-            "Cliente/Grupo": cliente,
-        })
+        for _, r in base[base["Qtd a operar"].round().ne(0)].iterrows():
+            q = float(r["Qtd a operar"])
+            cv = "C" if q > 0 else "V"
+            preco = pd.to_numeric(r.get("Preço referência", np.nan), errors="coerce")
+            ativo = str(r["Ativo"]).strip()
+            lot_size = lot_size_for_order(r)
+            lote, frac = split_lot_fraction(q, lot_size)
+            if lot_size <= 1 or not split_fractional:
+                qty = lote + frac
+                if qty > 0:
+                    rows.append([cv, ativo, "Quantidade unitária" if lot_size <= 1 else "Total", int(qty), preco, (qty * preco) if pd.notna(preco) else np.nan, cliente])
+            else:
+                if lote > 0:
+                    rows.append([cv, ativo, "Lote cheio", int(lote), preco, (lote * preco) if pd.notna(preco) else np.nan, cliente])
+                if frac > 0:
+                    rows.append([cv, ativo + "F", "Fracionário", int(frac), preco, (frac * preco) if pd.notna(preco) else np.nan, cliente])
+    out = pd.DataFrame(rows, columns=cols)
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         out.to_excel(writer, index=False, sheet_name="Basket")
@@ -1467,9 +1594,24 @@ def load_pesos_xlsx(path_str: str, mtime_ns: int = 0, file_size: int = 0) -> dic
             w = float(str(row.iloc[1]).replace(",", ".").strip())
         except Exception:
             w = 0.0
+        # Variações de nome do mesmo componente (ex.: "Ações Qualidade") viram a chave oficial,
+        # senão o peso fica de fora das metas e a carteira não fecha 100%.
+        a = WEIGHT_KEY_ALIASES.get(norm(a), a)
         # Mantém chaves iguais somadas, caso a planilha repita conceitos.
         pesos[carteira][a] = pesos[carteira].get(a, 0.0) + w
     return {k: v for k, v in pesos.items() if v}
+
+
+WEIGHT_KEY_ALIASES = {}  # Divergência de nomenclatura deve ser avisada/corrigida, não mascarada silenciosamente.
+
+
+def model_weight_issues(p: dict[str, float]) -> list[str]:
+    """Avisos de consistência de um modelo: componentes que não fecham 100% ou sem destino no motor."""
+    issues = []
+    total = sum(float(v or 0.0) for k, v in p.items() if norm(k) not in PARENT_WEIGHT_KEYS)
+    if abs(total - 1.0) > 0.0005:
+        issues.append(f"Os componentes do modelo somam {total * 100:.2f}% (deveriam somar 100%).")
+    return issues
 
 
 @st.cache_data(show_spinner=False)
@@ -1573,6 +1715,39 @@ def infer_liquidity_days_from_row(row: pd.Series) -> float:
         if pd.notna(d): return float(d)
     return np.nan
 
+CUSTODY_CLASS_BY_SUBBUCKET = {
+    **{b: "RF Brasil" for b in ["Pós - Imediato", "Pós - 1 a 30 dias", "Pós - 31 a 90 dias", "Pós - 91 a 180 dias", "Pós - 181 a 360 dias", "Pós - 361+ dias",
+                                "FiInfra Pós", "FiInfra Inflação", "Pré - Bancário", "Pré - Tesouro", "Inflação - Bancário", "Inflação - Tesouro", "Crédito Privado"]},
+    "Ações": "RV Brasil", "FIIs": "RV Brasil", "Bitcoin": "Alternativos", "Ouro": "Alternativos",
+    "Renda Fixa Internacional": "Internacional", "Renda Variável Internacional": "Internacional",
+    "Caixa Internacional": "Internacional", "Internacional (sem estratégia)": "Internacional",
+    "RF Brasil (sem estratégia)": "RF Brasil", "RV Brasil (sem estratégia)": "RV Brasil",
+    "Brasil (sem estratégia)": "Fora da Estratégia",
+}
+CUSTODY_CLASS_ALIASES = {
+    "INTERNACIONAL": "Internacional", "INVESTIMENTOS INTERNACIONAIS": "Internacional", "EXTERIOR": "Internacional",
+    "RF BRASIL": "RF Brasil", "RENDA FIXA BRASIL": "RF Brasil", "RENDA FIXA NO BRASIL": "RF Brasil",
+    "RV BRASIL": "RV Brasil", "RENDA VARIAVEL BRASIL": "RV Brasil", "RENDA VARIAVEL NO BRASIL": "RV Brasil",
+    "ALTERNATIVOS": "Alternativos",
+}
+
+
+def resolve_custody_strategy(classe: str, estrategia: str, corretora: str) -> tuple[str, str] | None:
+    """Classe/estratégia informadas na planilha de outras custódias. Sem informação, XP US/Global
+    entra como Internacional sem estratégia; o resto segue para o motor normal de classificação."""
+    est_key = norm(estrategia)
+    if est_key:
+        lookup = {norm(k): k for k in CUSTODY_CLASS_BY_SUBBUCKET}
+        lookup.update({norm(friendly_strategy_name(k)): k for k in CUSTODY_CLASS_BY_SUBBUCKET})
+        if est_key in lookup:
+            sub = lookup[est_key]
+            return CUSTODY_CLASS_BY_SUBBUCKET[sub], sub
+    cls = CUSTODY_CLASS_ALIASES.get(norm(classe), "")
+    if cls == "Internacional" or (not est_key and corretora in {"XP US", "XP GLOBAL"}):
+        return "Internacional", "Internacional (sem estratégia)"
+    return None
+
+
 def classify_position(row: pd.Series) -> pd.Series:
     corretora = norm(row.get("corretora", ""))
     asset_id = ticker_clean(row.get("asset_id", ""))
@@ -1611,6 +1786,11 @@ def classify_position(row: pd.Series) -> pd.Series:
     has_taxa_nominal = pd.notna(taxa_num) and abs(float(taxa_num)) > 0.0001 and not has_cdi and not has_ipca
     pre_by_report = (has_pre or (indexador_blank and has_taxa_nominal and ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF", "DEB", "CRI", "CRA", "CDCA")))))
     liq_days = infer_liquidity_days_from_row(row)
+
+    # Outras custódias (Safra, Ágora, XP US/Global): classe/estratégia informadas na planilha prevalecem.
+    _cust = resolve_custody_strategy(optional_text(row.get("custodia_classe", "")), optional_text(row.get("custodia_estrategia", "")), corretora)
+    if _cust and not bool(row.get("saldo_operacional", False)):
+        return pd.Series([_cust[0], _cust[1], _cust[1], "Custódia informada na planilha de outras custódias"])
 
     # Cadastro explícito por ticker tem prioridade sobre a base de fundos.
     # Isso evita conflito quando um código listado também aparece em cadastros
@@ -1796,7 +1976,7 @@ def classify_position(row: pd.Series) -> pd.Series:
     # Renda fixa local por indexador/taxa.
     is_rf_local = ("RENDA FIXA" in mercado or "RENDA FIXA" in asset_tipo or asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF", "DEB", "CRI", "CRA", "CDCA")))
     if is_rf_local or has_any_phrase(text, ["CDB", "LCI", "LCA", "LCD", "LF", "CRI", "CRA", "DEB", "DEBENTURE", "CDCA"]):
-        bank_title = asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF"))
+        bank_title = asset_id.startswith(("CDB", "LCI", "LCA", "LCD", "LF")) or "BANC" in sub_mercado
         if not bank_title:
             return pd.Series(["RF Brasil", "Crédito Privado", "Crédito Privado", "Título privado não bancário"])
         if has_ipca:
@@ -2192,6 +2372,81 @@ def rv_universe(modelo: str) -> dict[str, list[str]]:
     return {"Ações": [t for t, _ in base["Ações"]], "FIIs": [t for t, _ in base["FIIs"]]}
 
 
+UNALLOCATED_CUSTODY_BUCKETS = {
+    "RF Brasil": "RF Brasil (sem estratégia)",
+    "RV Brasil": "RV Brasil (sem estratégia)",
+    "Internacional": "Internacional (sem estratégia)",
+}
+
+
+def apply_unallocated_custody_credit(sub: pd.DataFrame, pl: float) -> pd.DataFrame:
+    """Conta custódia sem abertura no enquadramento, sem inventar sua composição."""
+    out = sub.copy()
+    if out.empty:
+        return out
+    out["Crédito sem abertura"] = 0.0
+    out["Valor p/ Enquadramento"] = pd.to_numeric(out["Valor Atual"], errors="coerce").fillna(0.0)
+
+    for classe, unknown_bucket in UNALLOCATED_CUSTODY_BUCKETS.items():
+        umask = out["Classe"].astype(str).eq(classe) & out["Subbucket"].astype(str).eq(unknown_bucket)
+        unknown = float(pd.to_numeric(out.loc[umask, "Valor Atual"], errors="coerce").fillna(0.0).sum())
+        if unknown <= 0:
+            continue
+        target_mask = (
+            out["Classe"].astype(str).eq(classe)
+            & ~out["Subbucket"].astype(str).eq(unknown_bucket)
+            & pd.to_numeric(out["Valor Ideal"], errors="coerce").fillna(0.0).gt(0)
+        )
+        targets = out.loc[target_mask].copy()
+        if targets.empty:
+            continue
+        gaps = (
+            pd.to_numeric(targets["Valor Ideal"], errors="coerce").fillna(0.0)
+            - pd.to_numeric(targets["Valor Atual"], errors="coerce").fillna(0.0)
+        ).clip(lower=0)
+        total_gap = float(gaps.sum())
+        if total_gap <= 0:
+            continue
+        credits = gaps / total_gap * min(unknown, total_gap)
+        for ridx, credit in credits.items():
+            out.at[ridx, "Crédito sem abertura"] = float(credit)
+            out.at[ridx, "Valor p/ Enquadramento"] = float(out.at[ridx, "Valor Atual"]) + float(credit)
+
+    target_rows = pd.to_numeric(out["Valor Ideal"], errors="coerce").fillna(0.0).gt(0)
+    out.loc[target_rows, "Diferença"] = (
+        pd.to_numeric(out.loc[target_rows, "Valor Ideal"], errors="coerce").fillna(0.0)
+        - pd.to_numeric(out.loc[target_rows, "Valor p/ Enquadramento"], errors="coerce").fillna(0.0)
+    )
+    unknown_rows = out["Subbucket"].isin(list(UNALLOCATED_CUSTODY_BUCKETS.values()))
+    out.loc[unknown_rows, "Diferença"] = 0.0
+    out.loc[unknown_rows, "Status"] = "Custódia sem abertura"
+    out.loc[unknown_rows, "Ação"] = "Monitorar / detalhar"
+    out["Peso p/ Enquadramento"] = np.where(
+        pl > 0, pd.to_numeric(out["Valor p/ Enquadramento"], errors="coerce").fillna(0.0) / pl, 0.0
+    )
+    for ridx in out.index[target_rows]:
+        diff = float(out.at[ridx, "Diferença"])
+        ideal = float(out.at[ridx, "Valor Ideal"])
+        out.at[ridx, "Status"] = status_por_diff(diff, ideal)
+        out.at[ridx, "Ação"] = acao_por_diff(diff)
+    return out
+
+
+def unallocated_classes(pos_cliente: pd.DataFrame) -> dict[str, float]:
+    result: dict[str, float] = {}
+    if pos_cliente is None or pos_cliente.empty:
+        return result
+    for classe, bucket in UNALLOCATED_CUSTODY_BUCKETS.items():
+        mask = (
+            pos_cliente.get("classe_macro", pd.Series("", index=pos_cliente.index)).astype(str).eq(classe)
+            & pos_cliente.get("subbucket", pd.Series("", index=pos_cliente.index)).astype(str).eq(bucket)
+        )
+        value = float(pd.to_numeric(pos_cliente.loc[mask, "valor_mercado"], errors="coerce").fillna(0.0).sum())
+        if value > 0.01:
+            result[classe] = value
+    return result
+
+
 def portfolio_tables(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float) -> tuple[pd.DataFrame, pd.DataFrame]:
     sub_target = subbucket_targets_from_model(p, pl)
     macro_target = macro_targets_from_sub(sub_target, pl, p)
@@ -2212,10 +2467,15 @@ def portfolio_tables(pos_cliente: pd.DataFrame, p: dict[str, float], pl: float) 
     sub["Status"] = sub.apply(lambda r: status_por_diff(r["Diferença"], r["Valor Ideal"]), axis=1)
     sub["Prioridade"] = sub["Diferença"].apply(lambda x: prioridade_por_diff(x, pl))
     sub["Ação"] = sub["Diferença"].apply(acao_por_diff)
+    sub = apply_unallocated_custody_credit(sub, pl)
     order = {b: i for i, b in enumerate(SUBBUCKET_ORDER)}
     sub["_ord"] = sub["Subbucket"].map(order).fillna(999)
     sub = sub.sort_values(["Classe", "_ord", "Subbucket"]).drop(columns="_ord")
-    sub = sub[["Classe", "Subbucket", "Status", "Prioridade", "Peso Atual", "Peso Ideal", "Valor Atual", "Valor Ideal", "Diferença", "Ação"]]
+    _cols = ["Classe", "Subbucket", "Status", "Prioridade", "Peso Atual", "Peso Ideal", "Valor Atual", "Valor Ideal", "Diferença", "Ação"]
+    for _extra in ["Crédito sem abertura", "Valor p/ Enquadramento", "Peso p/ Enquadramento"]:
+        if _extra in sub.columns:
+            _cols.append(_extra)
+    sub = sub[_cols]
     return macro, sub
 
 
@@ -2896,11 +3156,38 @@ def save_master_sheet_from_app(sheet_name: str, df: pd.DataFrame, columns: list[
         wb.save(tmp)
         tmp.replace(path)
         st.cache_data.clear()
-        return True, f"{sheet_name}: {len(clean)} registro(s) salvos no Cadastro Mestre."
+        extra = persist_changes([path], f"atualização da aba {sheet_name}")
+        return True, f"{sheet_name}: {len(clean)} registro(s) salvos no Cadastro Mestre." + extra
     except PermissionError:
         return False, "Não foi possível salvar. Feche o Cadastro Mestre no Excel e tente novamente."
     except Exception as exc:
         return False, f"Falha ao salvar {sheet_name}: {exc}"
+
+
+def other_custody_path() -> Path:
+    return posmod.find_repo_file("Posicoes_Outras_Custodias.xlsx")
+
+
+def save_other_custody(df: pd.DataFrame) -> tuple[bool, str]:
+    """Grava a planilha de outras custódias, reconstrói o consolidado e envia ao GitHub."""
+    try:
+        clean = df.copy()
+        for c in posmod.OUTRAS_CUSTODIAS_COLUMNS:
+            if c not in clean.columns:
+                clean[c] = ""
+        clean = clean[posmod.OUTRAS_CUSTODIAS_COLUMNS]
+        clean = clean[clean["CONTA"].fillna("").astype(str).str.strip().ne("") & clean["VALOR"].notna()].reset_index(drop=True)
+        path = other_custody_path()
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        clean.to_excel(path, index=False)
+        posmod.parse_other_custody(path)  # valida antes de seguir
+        posmod.build_latest_from_repo()
+        st.cache_data.clear()
+        return True, f"{len(clean)} posição(ões) salvas e consolidado atualizado." + persist_changes([path], "outras custódias")
+    except Exception as exc:
+        return False, f"Não foi possível salvar as outras custódias: {exc}"
+
 
 
 def update_fund_override_from_app(sheet_name: str, row_index: int, updates: dict[str, object]) -> tuple[bool, str]:
@@ -2922,7 +3209,8 @@ def update_fund_override_from_app(sheet_name: str, row_index: int, updates: dict
         wb.save(tmp)
         tmp.replace(path)
         st.cache_data.clear()
-        return True, "Override salvo no Cadastro Mestre."
+        extra = persist_changes([path], f"override de fundo em {sheet_name}")
+        return True, "Override salvo no Cadastro Mestre." + extra
     except PermissionError:
         return False, "Feche o Cadastro Mestre no Excel antes de salvar pelo app."
     except Exception as exc:
@@ -3103,8 +3391,30 @@ def position_matches_pool_product(row: pd.Series, prod: pd.Series) -> bool:
     return ticker_clean(row.get("ticker_norm", row.get("asset_id", ""))) == ticker_clean(ident)
 
 
-def out_of_pool_position(need: pd.Series, pos_cliente: pd.DataFrame, pool: pd.DataFrame) -> dict | None:
-    """Retorna a maior posição rebalanceável do subbucket que não pertence ao Pool ativo."""
+def sim_key_for_identifier(identifier, name="") -> str:
+    """Chave estável para abater/somar operações simuladas numa posição.
+
+    Segue o mesmo formato de _pool_product_key (CNPJ:/TICKER:/NOME:), de modo que uma venda
+    simulada de um fundo fora do cadastro mestre também reduz a posição daquele fundo."""
+    digits = only_digits_str(identifier)
+    if len(digits) >= 11:
+        return "CNPJ:" + digits
+    if is_valid_b3_ticker(identifier):
+        return "TICKER:" + ticker_clean(identifier)
+    return "NOME:" + fund_name_key(str(name or identifier))
+
+
+def _position_identity(row: pd.Series) -> tuple[str, str, str]:
+    """(identificador, nome, chave de simulação) de uma linha de posição."""
+    ident = str(row.get("cnpj", "") or "").strip() or str(row.get("manual_cnpj", "") or "").strip() \
+        or str(row.get("ticker_norm", "") or "").strip() or str(row.get("asset_id", "") or "").strip()
+    name = str(row.get("manual_fundo", "") or "").strip() or str(row.get("asset_nome", "") or "").strip() or str(row.get("asset_id", "") or "").strip()
+    return ident, name, sim_key_for_identifier(ident, name)
+
+
+def out_of_pool_position(need: pd.Series, pos_cliente: pd.DataFrame, pool: pd.DataFrame, sim_adjustments: dict[str, float] | None = None) -> dict | None:
+    """Retorna a maior posição rebalanceável do subbucket que não pertence ao Pool ativo,
+    já descontando as operações simuladas da rodada."""
     if pos_cliente.empty or pool.empty:
         return None
     class_mask = pos_cliente.get("classe_macro", pd.Series("", index=pos_cliente.index)).astype(str).map(norm).eq(norm(need.get("Classe", "")))
@@ -3119,22 +3429,100 @@ def out_of_pool_position(need: pd.Series, pos_cliente: pd.DataFrame, pool: pd.Da
     if candidates.empty:
         return None
 
-    outside = []
-    for idx, row in held.iterrows():
+    # Agrupa por identidade: um mesmo fundo pode estar em mais de uma conta/corretora.
+    grouped: dict[str, dict] = {}
+    for _, row in held.iterrows():
         if candidates.apply(lambda p: position_matches_pool_product(row, p), axis=1).any():
             continue
         if not bool(row.get("rebalancear", True)):
             continue
         val = float(pd.to_numeric(row.get("valor_mercado", 0), errors="coerce") or 0.0)
-        if val <= 50:
-            continue
-        outside.append((idx, row, val))
+        ident, name, key = _position_identity(row)
+        g = grouped.setdefault(key, {"name": name, "identifier": ident, "value": 0.0, "broker": str(row.get("corretora", "")), "product_key": key})
+        g["value"] += val
+    outside = []
+    for key, g in grouped.items():
+        adjusted = g["value"] + float((sim_adjustments or {}).get(key, 0.0) or 0.0)
+        if adjusted > 50:
+            outside.append({**g, "original_value": g["value"], "value": adjusted})
     if not outside:
         return None
-    _, row, val = max(outside, key=lambda x: x[2])
-    ident = str(row.get("cnpj", "") or "").strip() or str(row.get("ticker_norm", "") or "").strip() or str(row.get("asset_id", "") or "").strip()
-    name = str(row.get("manual_fundo", "") or "").strip() or str(row.get("asset_nome", "") or "").strip() or str(row.get("asset_id", "") or "").strip()
-    return {"name": name, "identifier": ident, "value": val, "broker": str(row.get("corretora", ""))}
+    return max(outside, key=lambda g: g["value"])
+
+
+def strategy_product_map(need: pd.Series, pos_cliente: pd.DataFrame, pool: pd.DataFrame, restrictions: pd.DataFrame,
+                         corretoras_cliente: set[str], sim_adjustments: dict[str, float] | None = None) -> pd.DataFrame:
+    """Mapa de produtos da estratégia: o que o cliente tem, o que está no cadastro mestre e em que ordem
+    comprar/vender. Fora do cadastro vende primeiro; dentro do cadastro, vende da prioridade mais baixa
+    (número maior) para a mais alta e compra da prioridade 1 em diante."""
+    cols = ["Ordem venda", "Ordem compra", "Produto", "Situação", "Prioridade", "Corretora", "Valor atual", "Após simulação", "Observação"]
+    sim = sim_adjustments or {}
+    classe, sub = need.get("Classe", ""), need.get("Subbucket", "")
+    held = pos_cliente[
+        pos_cliente.get("classe_macro", pd.Series("", index=pos_cliente.index)).astype(str).map(norm).eq(norm(classe)) &
+        pos_cliente.get("subbucket", pd.Series("", index=pos_cliente.index)).astype(str).map(norm).eq(norm(sub))
+    ].copy() if not pos_cliente.empty else pos_cliente
+    cands = _prepare_pool_candidates(need, pool, restrictions, corretoras_cliente) if not pool.empty else pd.DataFrame()
+
+    rows: list[dict] = []
+    matched_pool: set[int] = set()
+    unreg: dict[str, dict] = {}
+    if not held.empty:
+        for _, r in held.iterrows():
+            val = float(pd.to_numeric(r.get("valor_mercado", 0), errors="coerce") or 0.0)
+            hit = None
+            if not cands.empty:
+                for pi, prod in cands.iterrows():
+                    if position_matches_pool_product(r, prod):
+                        hit = pi
+                        break
+            if hit is not None:
+                matched_pool.add(hit)
+                continue
+            ident, name, key = _position_identity(r)
+            blocked = not bool(r.get("rebalancear", True))
+            g = unreg.setdefault(key, {"Produto": name, "Corretora": str(r.get("corretora", "")), "Valor atual": 0.0, "key": key, "blocked": blocked})
+            g["Valor atual"] += val
+    for key, g in unreg.items():
+        after = g["Valor atual"] + float(sim.get(key, 0.0) or 0.0)
+        rows.append({"Produto": g["Produto"], "Situação": "Fora do cadastro mestre", "Prioridade": np.nan, "Corretora": g["Corretora"],
+                     "Valor atual": g["Valor atual"], "Após simulação": max(0.0, after),
+                     "Observação": "Não rebalancear (cadastro)" if g["blocked"] else "Vender primeiro", "_grp": 0, "_blocked": g["blocked"]})
+    if not cands.empty:
+        for pi, prod in cands.iterrows():
+            cur = current_value_for_pool_product(pos_cliente, prod) if not held.empty else 0.0
+            after = cur + float(sim.get(_pool_product_key(prod), 0.0) or 0.0)
+            action = norm(prod.get("_restriction", ""))
+            can_buy = parse_yes_no(prod.get("ELEGIVEL_COMPRA", True), True) and not parse_yes_no(prod.get("APENAS_MANUTENCAO", False), False) \
+                and not parse_yes_no(prod.get("PRODUTO_FECHADO", False), False) and action != "NAO COMPRAR"
+            obs = []
+            if parse_yes_no(prod.get("PRODUTO_FECHADO", False), False): obs.append("Fechado p/ captação")
+            if parse_yes_no(prod.get("APENAS_MANUTENCAO", False), False): obs.append("Só manutenção")
+            if action in {"NAO COMPRAR", "NAO VENDER", "MANTER POSICAO"}: obs.append(str(prod.get("_restriction", "")))
+            rows.append({"Produto": str(prod.get("NOME_PRODUTO", "")), "Situação": "Cadastrado", "Prioridade": int(pd.to_numeric(prod.get("PRIORIDADE_COMPRA", 99), errors="coerce") or 99),
+                         "Corretora": str(prod.get("CORRETORA", "")), "Valor atual": cur, "Após simulação": max(0.0, after),
+                         "Observação": "; ".join(obs), "_grp": 1, "_can_buy": can_buy, "_can_sell": action not in {"NAO VENDER", "MANTER POSICAO"}})
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(rows)
+    for _c, _d in (("_blocked", False), ("_can_buy", False), ("_can_sell", True)):
+        if _c not in df.columns:
+            df[_c] = _d
+    df["Ordem venda"] = np.nan
+    df["Ordem compra"] = np.nan
+    # venda: fora do cadastro (maior primeiro) -> cadastrados da prioridade mais baixa para a mais alta
+    sells = df[(df["Após simulação"] > 50) & (((df["_grp"] == 0) & ~df["_blocked"].fillna(False).astype(bool)) | ((df["_grp"] == 1) & df["_can_sell"].fillna(True).astype(bool)))].copy()
+    sells["_p"] = sells["Prioridade"].fillna(10_000)
+    sells = sells.sort_values(["_grp", "_p", "Após simulação"], ascending=[True, False, False])
+    # fora do cadastro (grp 0) tem _p=10000 e ordena por valor desc; cadastrados por prioridade desc
+    for n, idx in enumerate(sells.index, start=1):
+        df.at[idx, "Ordem venda"] = n
+    buys = df[(df["_grp"] == 1) & df["_can_buy"].fillna(False).astype(bool)].sort_values("Prioridade")
+    for n, idx in enumerate(buys.index, start=1):
+        df.at[idx, "Ordem compra"] = n
+    df = df.sort_values(["_grp", "Prioridade", "Valor atual"], ascending=[True, True, False])
+    df["Prioridade"] = df["Prioridade"].astype("Int64")
+    return df[cols].reset_index(drop=True)
 
 
 def purchase_effective_weights(candidates: pd.DataFrame) -> pd.Series:
@@ -3356,21 +3744,47 @@ def simulated_product_adjustments(operations: list[dict]) -> dict[str, float]:
 
 
 def apply_simulation_to_sub_df(sub_df: pd.DataFrame, operations: list[dict], pl_base: float) -> pd.DataFrame:
+    """Aplica a rodada simulada preservando o patrimônio: ativo e caixa andam juntos."""
     out = sub_df.copy()
     if out.empty or not operations:
         return out
     for op in operations:
         subbucket = str(op.get("subbucket", ""))
         signed = float(op.get("signed_amount", 0) or 0)
-        mask = out["Subbucket"].astype(str).eq(subbucket)
-        if not mask.any():
-            continue
-        idx = out.index[mask][0]
-        out.at[idx, "Valor Atual"] = float(out.at[idx, "Valor Atual"]) + signed
-        out.at[idx, "Peso Atual"] = float(out.at[idx, "Valor Atual"]) / pl_base if pl_base > 0 else 0.0
-        out.at[idx, "Diferença"] = float(out.at[idx, "Valor Ideal"]) - float(out.at[idx, "Valor Atual"])
-        out.at[idx, "Status"] = status_por_diff(float(out.at[idx, "Diferença"]), float(out.at[idx, "Valor Ideal"]))
-        out.at[idx, "Ação"] = acao_por_diff(float(out.at[idx, "Diferença"]))
+        cash_effect = float(op.get("cash_effect", -signed) or 0)
+
+        smask = out["Subbucket"].astype(str).eq(subbucket)
+        if smask.any():
+            idx = out.index[smask][0]
+            out.at[idx, "Valor Atual"] = float(out.at[idx, "Valor Atual"]) + signed
+            if "Valor p/ Enquadramento" in out.columns:
+                out.at[idx, "Valor p/ Enquadramento"] = float(out.at[idx, "Valor p/ Enquadramento"]) + signed
+
+        cmask = out["Subbucket"].astype(str).eq("Saldo em Conta")
+        if cmask.any():
+            cidx = out.index[cmask][0]
+            out.at[cidx, "Valor Atual"] = float(out.at[cidx, "Valor Atual"]) + cash_effect
+            if "Valor p/ Enquadramento" in out.columns:
+                out.at[cidx, "Valor p/ Enquadramento"] = float(out.at[cidx, "Valor Atual"])
+
+    for idx in out.index:
+        atual = float(pd.to_numeric(out.at[idx, "Valor Atual"], errors="coerce") or 0.0)
+        ideal = float(pd.to_numeric(out.at[idx, "Valor Ideal"], errors="coerce") or 0.0)
+        effective = atual
+        if "Valor p/ Enquadramento" in out.columns:
+            ev = pd.to_numeric(out.at[idx, "Valor p/ Enquadramento"], errors="coerce")
+            effective = float(ev) if pd.notna(ev) else atual
+        out.at[idx, "Peso Atual"] = atual / pl_base if pl_base > 0 else 0.0
+        if "Peso p/ Enquadramento" in out.columns:
+            out.at[idx, "Peso p/ Enquadramento"] = effective / pl_base if pl_base > 0 else 0.0
+        if out.at[idx, "Subbucket"] in UNALLOCATED_CUSTODY_BUCKETS.values():
+            out.at[idx, "Diferença"] = 0.0
+            out.at[idx, "Status"] = "Custódia sem abertura"
+            out.at[idx, "Ação"] = "Monitorar / detalhar"
+        else:
+            out.at[idx, "Diferença"] = ideal - effective
+            out.at[idx, "Status"] = status_por_diff(float(out.at[idx, "Diferença"]), ideal)
+            out.at[idx, "Ação"] = acao_por_diff(float(out.at[idx, "Diferença"]))
     return out
 
 
@@ -3600,7 +4014,7 @@ def recommend_exact_products(
 
         # Se a estratégia está em excesso, posições fora do Pool saem antes dos produtos válidos.
         if diff < -300:
-            outside = out_of_pool_position(need, pos_cliente, pool)
+            outside = out_of_pool_position(need, pos_cliente, pool, sim_adjustments)
             if outside:
                 amount = min(abs(diff), float(outside["value"]))
                 rows.append([
@@ -3836,7 +4250,7 @@ def load_published_models(base: dict[str, dict[str, float]], master_path: Path |
             canonical = {}
             for k, v in weights.items():
                 raw_key = str(k).strip()
-                key = MODEL_KEY_BY_SUBBUCKET.get(raw_key, raw_key)
+                key = WEIGHT_KEY_ALIASES.get(norm(raw_key), MODEL_KEY_BY_SUBBUCKET.get(raw_key, raw_key))
                 canonical[key] = canonical.get(key, 0.0) + float(v or 0.0)
             total_children = sum(float(v or 0.0) for k, v in canonical.items() if norm(k) not in PARENT_WEIGHT_KEYS)
             if abs(total_children - 1.0) <= 0.0005:
@@ -3871,7 +4285,8 @@ def publish_model(name: str, weights: dict[str, float], author: str, reason: str
     with MODEL_HISTORY_PATH.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"model": name, **record}, ensure_ascii=False) + "\n")
     synced, sync_msg = sync_published_model_to_master(name, weights, version, author, reason)
-    return True, f"Modelo publicado na versão {version}. {sync_msg}"
+    extra = persist_changes([PUBLISHED_MODELS_PATH, MODEL_HISTORY_PATH, master_products_path()], f"publicação do modelo {name} v{version}")
+    return True, f"Modelo publicado na versão {version}. {sync_msg}" + extra
 
 
 def model_history() -> pd.DataFrame:
@@ -3921,6 +4336,7 @@ def theoretical_hierarchy_styler(df: pd.DataFrame):
 # =============================================================================
 # Layout global
 # =============================================================================
+restore_persisted_files()
 pesos_path = find_file("Pesos-alocacao.xlsx")
 pesos_base = load_pesos_xlsx(str(pesos_path), *file_cache_signature(pesos_path))
 pesos = load_published_models(pesos_base, master_products_path())
@@ -4101,6 +4517,8 @@ if page == "Asset Allocation":
     restricoes_cliente = applicable_restrictions(restricoes_base, str(grupo_sel), cliente_referencia, conta_real)
 
     p_base = pesos[modelo]
+    for _issue in model_weight_issues(p_base):
+        st.warning(f"Modelo {modelo}: {_issue} Revise o Pesos-alocacao.xlsx ou publique uma nova versão em Gestão.")
     strategy_rules_all = load_strategy_personalizations_cached(str(cadastro_ativo), *cadastro_sig)
     strategy_rules_client = applicable_strategy_personalizations(strategy_rules_all, str(grupo_sel), cliente_referencia, conta_real, modelo)
     p, active_personalizations = apply_strategy_personalizations(p_base, strategy_rules_client)
@@ -4132,7 +4550,7 @@ if page == "Asset Allocation":
     manual_matches = int(pos_cliente.get("manual_match", pd.Series([False] * len(pos_cliente), index=pos_cliente.index)).fillna(False).astype(bool).sum())
     nao_class = float(pos_cliente.loc[pos_cliente["subbucket"].eq("Outros / Não Classificado"), "valor_mercado"].sum())
 
-    k0, k1, k2, k3, k4, k5, k6 = st.columns([.78, 1.0, 1.0, .92, .92, .92, .98], vertical_alignment="bottom", gap="small")
+    k0, k1, k2, k3, k6 = st.columns([.78, 1.0, 1.0, 2.7, .98], vertical_alignment="bottom", gap="small")
     with k0:
         st.markdown('<div class="mw-base-label">Base de cálculo</div>', unsafe_allow_html=True)
         _base_opts = ["PL total", "PL investível"]
@@ -4149,17 +4567,21 @@ if page == "Asset Allocation":
     pos_calculo = pos_cliente if base_mode == "PL patrimonial total" else pos_cliente.loc[investible_mask].copy()
     macro_df, sub_df = portfolio_tables(pos_calculo, p, pl)
     corretoras_cliente = set(pos_cliente.get("corretora", pd.Series(dtype=str)).dropna().astype(str).unique())
+    # A rodada simulada é lida cedo para que as tabelas de enquadramento possam refleti-la.
+    sim_key = f"exec_round::{grupo_sel}::{conta_real or 'TODAS'}::{modelo}::{base_mode}"
+    if sim_key not in st.session_state:
+        st.session_state[sim_key] = []
 
     with k1:
         metric_card("PL Patrimonial", format_brl(pl_patrimonial))
     with k2:
         metric_card("Base de Alocação", format_brl(pl))
     with k3:
-        metric_card("", format_brl(pl_xp), broker_logo_path("XP"))
-    with k4:
-        metric_card("", format_brl(pl_btg), broker_logo_path("BTG"))
-    with k5:
-        metric_card("", format_brl(pl_cs), broker_logo_path("CS"))
+        _cust_df = custody_summary(pos_cliente, pl_patrimonial)
+        custody_card(_cust_df)
+        if len(_cust_df) > 3:
+            with st.popover("Ver todas as custódias", use_container_width=True):
+                st.dataframe(prepare_display(_cust_df, money_cols=["Valor"], pct_cols=["% do PL"]), use_container_width=True, hide_index=True)
     with k6:
         metric_card("Saldo", format_brl(saldo))
 
@@ -4173,7 +4595,13 @@ if page == "Asset Allocation":
     macro_view["Classe"] = macro_view["Classe"].apply(friendly_class_name)
     macro_view = macro_view.drop(columns=["Ação", "Status"], errors="ignore")
 
-    macro_hier = macro_hierarchy_table(sub_df, pl)
+    sub_df_view = sub_df
+    _ops_now = st.session_state.get(sim_key, [])
+    if _ops_now:
+        if st.toggle(f"Mostrar o enquadramento após a rodada simulada ({len(_ops_now)} operação(ões))", value=True, key=f"show_sim_{sim_key}"):
+            sub_df_view = apply_simulation_to_sub_df(sub_df, _ops_now, pl)
+            st.caption("Valores abaixo já consideram as aplicações e resgates simulados. Para voltar à posição real, desligue a chave ou limpe a simulação.")
+    macro_hier = macro_hierarchy_table(sub_df_view, pl)
     col1, col2 = st.columns([0.82, 1.78], vertical_alignment="center", gap="medium")
     with col1:
         # Mesmo conceito da carteira teórica: gráfico pela abertura das estratégias,
@@ -4199,7 +4627,7 @@ if page == "Asset Allocation":
     st.subheader("Abertura por estratégia")
     class_order = ["RF Brasil", "Alternativos"]
     for classe in class_order:
-        class_df = sub_df[sub_df["Classe"].eq(classe)].copy()
+        class_df = sub_df_view[sub_df_view["Classe"].eq(classe)].copy()
         if class_df.empty:
             continue
         valor_atual_cls = float(class_df["Valor Atual"].sum())
@@ -4238,17 +4666,34 @@ if page == "Asset Allocation":
     with e2: metric_card("Saldo após simulação", format_brl(saldo_virtual))
     with e3: metric_card("Operações na rodada", str(len(simulated_ops)))
 
-    selectable = exec_sub_df[~exec_sub_df["Classe"].isin(["Caixa","Fora da Estratégia"])].copy()
+    _unallocated = unallocated_classes(pos_cliente)
+    if _unallocated:
+        _txt = " • ".join(f"{friendly_class_name(k)}: {format_brl(v)}" for k, v in _unallocated.items())
+        st.warning("Há custódia sem abertura detalhada. Ela conta para o enquadramento macro, mas a execução automática da respectiva classe fica bloqueada para evitar ordens incorretas. " + _txt)
+    _blocked_classes = set(_unallocated)
+    selectable = exec_sub_df[
+        ~exec_sub_df["Classe"].isin(["Caixa","Fora da Estratégia"])
+        & ~exec_sub_df["Subbucket"].isin(list(UNALLOCATED_CUSTODY_BUCKETS.values()))
+        & ~exec_sub_df["Classe"].isin(_blocked_classes)
+    ].copy()
     # Inclui buckets no alvo macro quando o pool ainda está internamente desequilibrado.
-    options=[]
-    for _,r in selectable.iterrows():
-        label=f"{friendly_strategy_name(str(r['Subbucket']))} • {format_brl_label(float(r['Diferença']))}"
-        options.append((label,str(r['Subbucket'])))
+    # A opção é identificada pelo subbucket (estável). O valor do desvio vai só no rótulo: antes ele
+    # fazia parte da própria opção e, ao simular, a opção "mudava" e o seletor voltava para a primeira.
+    option_labels={str(r['Subbucket']): f"{friendly_strategy_name(str(r['Subbucket']))} • {format_brl_label(float(r['Diferença']))}" for _,r in selectable.iterrows()}
+    options=list(option_labels.keys())
     if options:
-        option_map=dict(options)
-        selected_label=st.selectbox("Estratégia para executar",list(option_map.keys()),key=f"strategy_exec_{sim_key}")
-        strategy_sel=option_map[selected_label]
+        strategy_sel=st.selectbox("Estratégia para executar",options,format_func=lambda k: option_labels.get(k,k),key=f"strategy_exec_{sim_key}")
         need_row=exec_sub_df[exec_sub_df["Subbucket"].astype(str).eq(strategy_sel)].iloc[0]
+        with st.expander("Produtos desta estratégia: o que vender e comprar primeiro", expanded=True):
+            st.caption("Fora do cadastro mestre sai primeiro. Dentro do cadastro, vende da prioridade mais baixa para a mais alta e compra da prioridade 1 em diante.")
+            pmap = strategy_product_map(need_row, pos_cliente, pool_produtos, restricoes_cliente, corretoras_cliente, sim_adjust)
+            if pmap.empty:
+                st.info("Nenhuma posição ou produto cadastrado para esta estratégia.")
+            else:
+                st.dataframe(
+                    money_color_styler(pmap, money_cols=["Valor atual","Após simulação"], qty_cols=["Ordem venda","Ordem compra","Prioridade"]),
+                    use_container_width=True, hide_index=True,
+                )
         rec = recommend_exact_products(
             exec_sub_df, pos_cliente, pool_produtos, restricoes_cliente, pl, corretoras_cliente,
             sim_adjustments=sim_adjust, strategy_filter=strategy_sel, execution_budget=max(0.0,saldo_virtual),
@@ -4277,6 +4722,9 @@ if page == "Asset Allocation":
             ]
             if not match_pool.empty:
                 product_key=_pool_product_key(match_pool.iloc[0])
+            else:
+                # Fundo/ativo fora do cadastro mestre: a venda simulada precisa abater a posição dele.
+                product_key=sim_key_for_identifier(row["Identificador"], row["Produto recomendado"])
             if st.button("Adicionar à rodada / simular execução",type="primary",use_container_width=True,key=f"add_exec_{sim_key}_{strategy_sel}"):
                 op={
                     "Estratégia":friendly_strategy_name(strategy_sel),"Ação":action,"Produto":str(row["Produto recomendado"]),
@@ -4316,19 +4764,44 @@ if page == "Asset Allocation":
         fiinfra_recommendation(pos_cliente, p, pl, price_ref, client_product_universe), restricoes_cliente, pool_produtos, pl
     )
     tab_acoes, tab_fiis, tab_infra = st.tabs(["Ações", "FIIs / FIAGROs", "FI-Infra"])
-    def render_market_slice(view: pd.DataFrame, empty_text: str, filename: str):
+    def render_market_slice(view: pd.DataFrame, empty_text: str, filename: str, slice_key: str):
         view = view[view["Valor Ideal"].gt(0) | view["Valor Atual"].gt(0)].copy()
         if view.empty:
             st.info(empty_text); return
-        table=view.drop(columns=["Grupo"],errors="ignore")
-        st.dataframe(money_color_styler(table,money_cols=["Preço referência","Valor Atual","Valor Ideal","Diferença"],qty_cols=["Qtd Atual","Qtd Ideal","Qtd a operar"],diff_cols=["Diferença","Qtd a operar"]),use_container_width=True,hide_index=True)
-        st.download_button("Baixar basket",data=basket_excel_bytes(view,grupo_sel),file_name=filename,mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
+        q = pd.to_numeric(view["Qtd a operar"], errors="coerce").fillna(0.0)
+        px_ = pd.to_numeric(view["Preço referência"], errors="coerce")
+        need_buy = float((q.clip(lower=0) * px_).fillna(0.0).sum())
+        need_sell = float((q.clip(upper=0).abs() * px_).fillna(0.0).sum())
+        with st.expander("Definir o valor desta rodada", expanded=False):
+            st.caption("A necessidade total do modelo continua visível. Aqui você decide quanto quer executar agora; as ordens são reduzidas na mesma proporção e arredondadas para baixo.")
+            b1, b2 = st.columns(2)
+            kb, ks = f"buy_budget::{sim_key}::{slice_key}", f"sell_budget::{sim_key}::{slice_key}"
+            buy_budget = b1.number_input(f"Comprar agora (necessidade: {format_brl(need_buy)})", min_value=0.0, value=float(round(need_buy, 2)), step=1000.0, key=kb, disabled=need_buy <= 0)
+            sell_budget = b2.number_input(f"Vender agora (necessidade: {format_brl(need_sell)})", min_value=0.0, value=float(round(need_sell, 2)), step=1000.0, key=ks, disabled=need_sell <= 0)
+            split_frac = st.checkbox("Separar lote cheio e fracionário no basket", value=True, key=f"split_frac::{slice_key}")
+        scaled = scale_market_orders(view, buy_budget if need_buy > 0 else None, sell_budget if need_sell > 0 else None)
+        m1, m2, m3 = st.columns(3)
+        with m1: metric_card("Compras da rodada", format_brl(float(scaled["Valor da ordem"].clip(lower=0).sum())))
+        with m2: metric_card("Vendas da rodada", format_brl(float(scaled["Valor da ordem"].clip(upper=0).abs().sum())))
+        with m3: metric_card("Necessidade total (compra)", format_brl(need_buy))
+        table = scaled.drop(columns=["Grupo"], errors="ignore")
+        st.dataframe(money_color_styler(table, money_cols=["Preço referência","Valor Atual","Valor Ideal","Diferença","Valor da ordem"], qty_cols=["Qtd Atual","Qtd Ideal","Qtd a operar","Lote cheio","Fracionário"], diff_cols=["Diferença","Qtd a operar","Valor da ordem"]), use_container_width=True, hide_index=True)
+        st.download_button("Baixar basket", data=basket_excel_bytes(scaled, grupo_sel, split_frac), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=f"dl_{slice_key}")
     with tab_acoes:
-        render_market_slice(rv_df[rv_df["Grupo"].eq("Ações")].copy(),"Este modelo não possui alvo ou posição em ações.",f"basket_acoes_{str(grupo_sel).replace(' ','_').lower()}.xlsx")
+        if "RV Brasil" in _blocked_classes:
+            st.warning("Execução automática bloqueada: existe posição agregada de renda variável sem abertura de ativos.")
+        else:
+            render_market_slice(rv_df[rv_df["Grupo"].eq("Ações")].copy(),"Este modelo não possui alvo ou posição em ações.",f"basket_acoes_{str(grupo_sel).replace(' ','_').lower()}.xlsx","acoes")
     with tab_fiis:
-        render_market_slice(rv_df[rv_df["Grupo"].eq("FIIs")].copy(),"Este modelo não possui alvo ou posição em FIIs / FIAGROs.",f"basket_fiis_fiagros_{str(grupo_sel).replace(' ','_').lower()}.xlsx")
+        if "RV Brasil" in _blocked_classes:
+            st.warning("Execução automática bloqueada: existe posição agregada de renda variável sem abertura de ativos.")
+        else:
+            render_market_slice(rv_df[rv_df["Grupo"].eq("FIIs")].copy(),"Este modelo não possui alvo ou posição em FIIs / FIAGROs.",f"basket_fiis_fiagros_{str(grupo_sel).replace(' ','_').lower()}.xlsx","fiis")
     with tab_infra:
-        render_market_slice(fi_df.copy(),"Este modelo não possui alvo ou posição em FI-Infra.",f"basket_fiinfra_{str(grupo_sel).replace(' ','_').lower()}.xlsx")
+        if "RF Brasil" in _blocked_classes:
+            st.warning("Execução automática bloqueada: existe posição agregada de renda fixa sem abertura de ativos.")
+        else:
+            render_market_slice(fi_df.copy(),"Este modelo não possui alvo ou posição em FI-Infra.",f"basket_fiinfra_{str(grupo_sel).replace(' ','_').lower()}.xlsx","fiinfra")
 
     st.subheader("Detalhamento das posições")
     buckets = [b for b in SUBBUCKET_ORDER if b in set(pos_cliente["subbucket"])]
@@ -4520,6 +4993,59 @@ if page == "Gestão":
     with k3: metric_card("Ativos B3", str(len(b3_admin)))
     with k4: metric_card("Fundos e previdência", str(len(fundos_admin)))
 
+
+    _pc = persistence.config()
+    if persistence.is_configured():
+        _s1, _s2 = st.columns([4, 1.4], vertical_alignment="center")
+        _s1.success(f"Salvamento permanente ativo: as alterações vão para {_pc['repo']} (branch {_pc['branch']}).")
+        if _s2.button("Recarregar do GitHub", use_container_width=True, key="btn_pull_github"):
+            for _t in [master_products_path(), PUBLISHED_MODELS_PATH, MODEL_HISTORY_PATH]:
+                persistence.pull_file(_t, BASE_DIR)
+            st.cache_data.clear(); st.rerun()
+    else:
+        st.warning("Salvamento permanente NÃO configurado: o que for salvo aqui some quando o app reiniciar. Defina GITHUB_TOKEN e GITHUB_REPO em Secrets (veja o passo a passo enviado junto com esta versão).")
+
+    with st.expander("Bases de custódia e contas", expanded=False):
+        st.caption("Contas.xlsx é a fonte oficial e somente leitura para grupo, cliente, corretora, conta e perfil.")
+        _b1, _b2, _b3 = st.columns(3)
+        with _b1:
+            metric_card("Contas cadastradas", str(len(df_contas)))
+        with _b2:
+            metric_card("Custódias no Contas", str(df_contas["corretora"].nunique()) if not df_contas.empty and "corretora" in df_contas.columns else "0")
+        with _b3:
+            _native = sum(int(posmod.repo_files().get(k, Path()).exists()) for k in ["SAFRA", "AGORA"])
+            metric_card("Parsers novos ativos", f"{_native}/2")
+
+        st.caption("Safra e Ágora são lidos diretamente dos relatórios nativos. XP US, XP Global e Atívore usam a base complementar abaixo até termos os relatórios/APIs definitivos.")
+        _op = other_custody_path()
+        try:
+            _cur = pd.read_excel(_op) if _op.exists() else pd.DataFrame(columns=posmod.OUTRAS_CUSTODIAS_COLUMNS)
+            _cur.columns = [str(c).strip().upper() for c in _cur.columns]
+        except Exception:
+            _cur = pd.DataFrame(columns=posmod.OUTRAS_CUSTODIAS_COLUMNS)
+        for c in posmod.OUTRAS_CUSTODIAS_COLUMNS:
+            if c not in _cur.columns:
+                _cur[c] = ""
+        _cur = _cur[posmod.OUTRAS_CUSTODIAS_COLUMNS]
+        _strategies = [""] + [b for b in CUSTODY_CLASS_BY_SUBBUCKET]
+        ed = st.data_editor(
+            _cur, num_rows="dynamic", use_container_width=True, hide_index=True, key="editor_outras_custodias",
+            column_config={
+                "CORRETORA": st.column_config.SelectboxColumn("Custódia", options=["XP GLOBAL", "XP US", "ATIVORE", "OUTRA"], required=True),
+                "CONTA": st.column_config.TextColumn("Conta", required=True),
+                "ATIVO": st.column_config.TextColumn("Ativo / nome", required=True),
+                "VALOR": st.column_config.NumberColumn("Valor", format="%.2f", required=True),
+                "MOEDA": st.column_config.SelectboxColumn("Moeda", options=["BRL", "USD"]),
+                "CLASSE": st.column_config.SelectboxColumn("Classe (opcional)", options=["", "RF Brasil", "RV Brasil", "Internacional", "Alternativos"]),
+                "ESTRATEGIA": st.column_config.SelectboxColumn("Estratégia (opcional)", options=_strategies),
+                "LIQUIDEZ_DIAS": st.column_config.NumberColumn("Liquidez (dias)", min_value=0, step=1),
+            },
+        )
+        oc1, oc2 = st.columns(2)
+        if oc1.button("Salvar custódias complementares", type="primary", use_container_width=True, key="btn_save_outras"):
+            ok, msg = save_other_custody(ed)
+            (st.success if ok else st.error)(msg)
+        oc2.download_button("Baixar modelo complementar", data=dataframe_excel_bytes(posmod.outras_custodias_template(), "Outras custódias"), file_name="Posicoes_Outras_Custodias_MODELO.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     section_title("Personalizar cliente")
     with st.container(border=True):

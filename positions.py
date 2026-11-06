@@ -28,10 +28,15 @@ def find_repo_file(filename: str) -> Path:
 
 def repo_files() -> dict[str, Path]:
     return {
+        # Contas.xlsx é a fonte OFICIAL de grupo/cliente/conta/perfil.
         "Contas": find_repo_file("Contas.xlsx"),
         "XP": find_repo_file("XP.xlsx"),
         "BTG": find_repo_file("BTG.xlsx"),
         "CS": find_repo_file("CSProdutos.csv"),
+        "SAFRA": find_repo_file("Posição Safra.xlsx") if find_repo_file("Posição Safra.xlsx").exists() else find_repo_file("Posicao Safra.xlsx"),
+        "AGORA": find_repo_file("Posição Ágora.xlsx") if find_repo_file("Posição Ágora.xlsx").exists() else find_repo_file("Posicao Agora.xlsx"),
+        # Complementar: XP US, XP Global, Atívore e outras fontes sem parser nativo.
+        "OUTRAS": find_repo_file("Posicoes_Outras_Custodias.xlsx"),
     }
 
 
@@ -60,10 +65,21 @@ def missing_repo_files() -> list[str]:
 
 def _normalize_broker(x: Any) -> str:
     s = str(x or "").strip().upper()
+    s_ascii = s.replace("Á", "A").replace("Í", "I").replace("Ó", "O").replace("Ê", "E")
     if "SCHWAB" in s or "CHARLES" in s or s == "CS":
         return "CS"
+    if "XP" in s and "GLOBAL" in s:
+        return "XP GLOBAL"
+    if s in {"XPUS", "XP US"} or ("XP" in s and any(k in s for k in (" US", "US ", "INTERNACIONAL", "INTERNATIONAL"))):
+        return "XP US"
     if "XP" in s:
         return "XP"
+    if "SAFRA" in s:
+        return "SAFRA"
+    if s_ascii in {"AGORA", "AGORA CORRETORA"} or s_ascii.startswith("AGORA"):
+        return "AGORA"
+    if "ATIVORE" in s_ascii:
+        return "ATIVORE"
     if "BTG" in s:
         return "BTG"
     return s
@@ -184,6 +200,203 @@ def load_control_accounts(src: str | Path | None = None) -> pd.DataFrame:
     DATA_DIR.mkdir(exist_ok=True)
     df.to_pickle(CONTROL_PICKLE)
     return df
+
+
+OUTRAS_CUSTODIAS_COLUMNS = [
+    "CORRETORA", "CONTA", "ATIVO", "CNPJ", "TICKER", "VALOR", "MOEDA", "QUANTIDADE",
+    "CLASSE", "ESTRATEGIA", "LIQUIDEZ_DIAS", "INDEXADOR", "VENCIMENTO", "OBSERVACAO",
+]
+
+
+def parse_other_custody(src: str | Path) -> pd.DataFrame:
+    """Posições complementares sem parser nativo (XP US, XP Global, Atívore etc.).
+
+    A planilha tem uma linha por posição. Só CORRETORA, CONTA, ATIVO e VALOR são obrigatórios.
+    CLASSE e ESTRATEGIA são opcionais: sem elas, o motor classifica pelo nome/CNPJ/ticker como faz
+    com as demais fontes. Para XP US/Global, sem estratégia, o valor entra no total internacional."""
+    path = Path(src)
+    if not path.exists():
+        return pd.DataFrame()
+    raw = pd.read_excel(path)
+    raw.columns = [str(c).strip().upper().replace("Ç", "C").replace("Ã", "A").replace("É", "E").replace("Á", "A").replace("Í", "I").replace("Õ", "O") for c in raw.columns]
+    need = {"CORRETORA", "CONTA", "ATIVO", "VALOR"}
+    if not need.issubset(raw.columns):
+        raise ValueError(f"{path.name}: colunas obrigatórias ausentes: {sorted(need - set(raw.columns))}")
+    raw = raw[raw["VALOR"].notna() & raw["CONTA"].notna()].copy()
+    if raw.empty:
+        return pd.DataFrame()
+
+    def col(name, default=""):
+        return raw[name] if name in raw.columns else pd.Series(default, index=raw.index)
+
+    def txt(name, default=""):
+        """Texto limpo: vazio vira "" (funciona com NaN, None e StringDtype do pandas novo)."""
+        s = col(name, default).astype(object).where(col(name, default).notna(), "")
+        return s.astype(str).str.strip().replace({"nan": "", "NaT": "", "None": ""})
+
+    valor = pd.to_numeric(raw["VALOR"], errors="coerce") if pd.api.types.is_numeric_dtype(raw["VALOR"]) else _money_to_float(raw["VALOR"].astype(str))
+    valor = valor.fillna(0.0)
+    moeda = txt("MOEDA", "BRL").str.upper().replace({"": "BRL", "R$": "BRL", "US$": "USD", "$": "USD"})
+    corretora = raw["CORRETORA"].apply(_normalize_broker)
+    moeda = moeda.where(~corretora.isin(["XP US", "XP GLOBAL"]) | moeda.ne("BRL"), "USD")
+    ativo = txt("ATIVO")
+    ticker = txt("TICKER")
+    out = pd.DataFrame({
+        "corretora": corretora,
+        "conta": raw["CONTA"].apply(_normalize_account),
+        "asset_id": ticker.where(ticker.ne(""), ativo),
+        "asset_nome": ativo,
+        "asset_tipo": "Outras custódias",
+        "valor_mercado": valor,
+        "quantidade": pd.to_numeric(col("QUANTIDADE", 0), errors="coerce").fillna(0.0),
+        "moeda": moeda,
+        "mercado": np.where(corretora.isin(["XP US", "XP GLOBAL"]), "Internacional", "Outras custódias"),
+        "sub_mercado": "",
+        "estrategia": "",
+        "indexador": txt("INDEXADOR"),
+        "liquidez": txt("LIQUIDEZ_DIAS"),
+        "vencimento": txt("VENCIMENTO"),
+        "emissor": "",
+        "taxa": "",
+        "cnpj": txt("CNPJ"),
+        "saldo_operacional": False,
+        "custodia_classe": txt("CLASSE"),
+        "custodia_estrategia": txt("ESTRATEGIA"),
+    })
+    return out[out["valor_mercado"].fillna(0) != 0].copy()
+
+
+def outras_custodias_template() -> pd.DataFrame:
+    """Modelo de preenchimento apenas para custódias complementares sem parser nativo."""
+    return pd.DataFrame([
+        ["XP GLOBAL", "3XP50891", "Patrimônio XP Global", "", "", 250000.00, "USD", "", "Internacional", "", "", "", "", "Sem abertura: conta no total internacional"],
+        ["XP US", "QXR347535", "Patrimônio XP US", "", "", 100000.00, "USD", "", "Internacional", "", "", "", "", "Sem abertura: conta no total internacional"],
+        ["ATIVORE", "CONTA_EXEMPLO", "Patrimônio Atívore", "", "", 100000.00, "USD", "", "Internacional", "", "", "", "", "Preencha moeda/classe conforme a posição"],
+    ], columns=OUTRAS_CUSTODIAS_COLUMNS)
+
+
+def _safe_excel_date_text(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.strftime("%Y-%m-%d")
+    return str(value).strip()
+
+
+def parse_safra_positions(src: str | Path) -> pd.DataFrame:
+    """Parser nativo do relatório consolidado Safra."""
+    path = Path(src)
+    if not path.exists():
+        return pd.DataFrame()
+    raw = pd.read_excel(path, header=2)
+    raw.columns = [str(c).strip() for c in raw.columns]
+    required = {"Conta", "Produto", "Categoria", "PL"}
+    if not required.issubset(raw.columns):
+        raise ValueError(f"{path.name}: layout Safra não reconhecido. Faltam: {sorted(required-set(raw.columns))}")
+    raw = raw[raw["Conta"].notna() & raw["PL"].notna()].copy()
+    if raw.empty:
+        return pd.DataFrame()
+
+    def s(name, default=""):
+        col = _safe_col(raw, name, default)
+        return col.astype(object).where(col.notna(), "").astype(str).str.strip()
+
+    produto, categoria, modalidade = s("Produto"), s("Categoria"), s("Modalidade")
+    mercadoria, emissor, ativo, benchmark = s("Mercadoria/Fundo"), s("Emissor/Gestor"), s("Ativo"), s("Benchmark")
+    quantidade = pd.to_numeric(_safe_col(raw, "Quantidade", 0), errors="coerce").fillna(0.0)
+    pl = pd.to_numeric(_safe_col(raw, "PL", 0), errors="coerce").fillna(0.0)
+
+    p_up, c_up, m_up = produto.str.upper(), categoria.str.upper(), modalidade.str.upper()
+    is_fin = p_up.eq("FINANCEIRO") | c_up.eq("SALDO EM CONTA")
+    is_fund = p_up.eq("FUNDOS")
+    is_prev = c_up.isin(["PREVIDÊNCIA", "PREVIDENCIA"])
+    is_coe = m_up.eq("COE") | c_up.eq("ESTRUTURADAS")
+    is_fii = c_up.isin(["FUNDOS IMOBILIÁRIOS", "FUNDOS IMOBILIARIOS"])
+    is_equity = c_up.isin(["AÇÕES", "ACOES", "ALUGUEL DE AÇÕES", "ALUGUEL DE ACOES"])
+    is_rf = p_up.eq("RENDA FIXA")
+
+    asset_id = ativo.copy()
+    asset_id = asset_id.where(~is_fund, mercadoria.where(mercadoria.ne(""), ativo))
+    asset_id = asset_id.where(~is_fin, "Saldo Financeiro")
+    asset_nome = mercadoria.where(mercadoria.ne(""), ativo)
+    asset_nome = asset_nome.where(~is_fin, "Saldo em Conta Safra")
+
+    asset_tipo = pd.Series("Safra", index=raw.index)
+    asset_tipo = asset_tipo.where(~is_fin, "Financeiro")
+    asset_tipo = asset_tipo.where(~is_fund, "Fundos")
+    asset_tipo = asset_tipo.where(~is_prev, "Previdência")
+    asset_tipo = asset_tipo.where(~is_coe, "Coe")
+    asset_tipo = asset_tipo.where(~is_fii, "Fundos Imobiliários")
+    asset_tipo = asset_tipo.where(~is_equity, "Ações")
+    asset_tipo = asset_tipo.where(~is_rf, "Renda Fixa")
+
+    sub_mercado = categoria.copy().replace({
+        "Emissão Bancária": "Bancário", "Emissao Bancaria": "Bancário",
+        "Títulos Públicos": "Tesouro Direto", "Titulos Publicos": "Tesouro Direto",
+    })
+
+    out = pd.DataFrame({
+        "corretora": "SAFRA",
+        "conta": raw["Conta"].apply(_normalize_account),
+        "asset_id": asset_id, "asset_nome": asset_nome, "asset_tipo": asset_tipo,
+        "valor_mercado": pl, "quantidade": quantidade, "moeda": "BRL",
+        "mercado": produto, "sub_mercado": sub_mercado, "estrategia": benchmark,
+        "indexador": benchmark, "liquidez": s("Liquidez"),
+        "cotizacao_resgate": s("Cotização"), "liquidacao_resgate": s("Liquidação"),
+        "vencimento": _safe_col(raw, "Vencimento", "").apply(_safe_excel_date_text),
+        "emissor": emissor, "taxa": "", "cnpj": "",
+        "saldo_operacional": is_fin, "origem_posicao": "Safra",
+        "posicao_alugada": c_up.isin(["ALUGUEL DE AÇÕES", "ALUGUEL DE ACOES"]),
+    })
+    return out[out["valor_mercado"].fillna(0) != 0].copy()
+
+
+AGORA_AGGREGATE_MAP = {
+    "Ações/FIIs/ETFs/BDRs": ("RV Brasil", "RV Brasil (sem estratégia)"),
+    "Títulos privados": ("RF Brasil", "RF Brasil (sem estratégia)"),
+    "Títulos públicos": ("RF Brasil", "RF Brasil (sem estratégia)"),
+    "COE": ("Fora da Estratégia", "COE / Estruturados"),
+    "Fundos e clubes de investimento": ("Fora da Estratégia", "Brasil (sem estratégia)"),
+    "Opções": ("Fora da Estratégia", "Outros / Não Classificado"),
+    "Ouro": ("Alternativos", "Ouro"),
+    "Termo de Ações": ("RV Brasil", "RV Brasil (sem estratégia)"),
+    "Saldo projetado": ("Caixa", "Saldo em Conta"),
+}
+
+
+def parse_agora_positions(src: str | Path) -> pd.DataFrame:
+    """Parser seguro do relatório agregado Ágora (sem inventar composição de ativos)."""
+    path = Path(src)
+    if not path.exists():
+        return pd.DataFrame()
+    raw = pd.read_excel(path)
+    raw.columns = [str(c).strip() for c in raw.columns]
+    if "CBLC" not in raw.columns:
+        raise ValueError(f"{path.name}: layout Ágora não reconhecido (coluna CBLC ausente).")
+    rows = []
+    for _, r in raw.iterrows():
+        conta = _only_digits(r.get("CBLC", ""))
+        if not conta:
+            continue
+        cliente = str(r.get("Nome", "") or "").strip()
+        for col, (classe, bucket) in AGORA_AGGREGATE_MAP.items():
+            if col not in raw.columns:
+                continue
+            value = pd.to_numeric(r.get(col, np.nan), errors="coerce")
+            if pd.isna(value) or abs(float(value)) <= 0.0001:
+                continue
+            rows.append({
+                "corretora": "AGORA", "conta": conta,
+                "asset_id": f"AGORA | {col}", "asset_nome": f"{col} — {cliente}" if cliente else col,
+                "asset_tipo": "Ágora agregado", "valor_mercado": float(value), "quantidade": 0.0,
+                "moeda": "BRL", "mercado": "Ágora agregado", "sub_mercado": col,
+                "estrategia": "", "indexador": "", "liquidez": "",
+                "cotizacao_resgate": "", "liquidacao_resgate": "", "vencimento": "",
+                "emissor": "", "taxa": "", "cnpj": "", "saldo_operacional": bucket == "Saldo em Conta",
+                "custodia_classe": classe, "custodia_estrategia": bucket,
+                "custodia_agregada": True, "origem_posicao": "Ágora agregado",
+            })
+    return pd.DataFrame(rows)
 
 
 def parse_cs_positions(src: str | Path) -> pd.DataFrame:
@@ -384,12 +597,12 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
     control = load_control_accounts(files["Contas"])
     xp = force_numeric(parse_xp_positions(files["XP"]), ["valor_mercado", "quantidade"])
     btg = force_numeric(parse_btg_positions(files["BTG"]), ["valor_mercado", "quantidade"])
-    if files["CS"].exists():
-        cs = force_numeric(parse_cs_positions(files["CS"]), ["valor_mercado", "quantidade"])
-    else:
-        cs = pd.DataFrame(columns=xp.columns)
+    cs = force_numeric(parse_cs_positions(files["CS"]), ["valor_mercado", "quantidade"]) if files["CS"].exists() else pd.DataFrame(columns=xp.columns)
+    safra = force_numeric(parse_safra_positions(files["SAFRA"]), ["valor_mercado", "quantidade"]) if files["SAFRA"].exists() else pd.DataFrame(columns=xp.columns)
+    agora = force_numeric(parse_agora_positions(files["AGORA"]), ["valor_mercado", "quantidade"]) if files["AGORA"].exists() else pd.DataFrame(columns=xp.columns)
+    outras = force_numeric(parse_other_custody(files["OUTRAS"]), ["valor_mercado", "quantidade"]) if files["OUTRAS"].exists() else pd.DataFrame(columns=xp.columns)
 
-    pos = pd.concat([xp, btg, cs], ignore_index=True)
+    pos = pd.concat([xp, btg, cs, safra, agora, outras], ignore_index=True, sort=False)
     if "saldo_operacional" not in pos.columns:
         pos["saldo_operacional"] = False
     pos["saldo_operacional"] = pos["saldo_operacional"].fillna(False).astype(bool)
@@ -406,7 +619,8 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
     merged = pos.merge(control, how="left", on=["corretora", "conta"], suffixes=("", "_ctrl"))
     ptax = get_ptax()
     merged["valor_original"] = pd.to_numeric(merged["valor_mercado"], errors="coerce").fillna(0.0)
-    merged["valor_mercado"] = np.where(merged["corretora"].eq("CS"), merged["valor_original"] * ptax, merged["valor_original"])
+    is_usd = merged["corretora"].isin(["CS", "XP US", "XP GLOBAL"]) | merged.get("moeda", pd.Series("", index=merged.index)).astype(str).str.upper().eq("USD")
+    merged["valor_mercado"] = np.where(is_usd, merged["valor_original"] * ptax, merged["valor_original"])
     merged["dt_posicao"] = dt_posicao or datetime.now().date().isoformat()
 
     DATA_DIR.mkdir(exist_ok=True)
@@ -422,6 +636,9 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
             "xp_rows": int(len(xp)),
             "btg_rows": int(len(btg)),
             "cs_rows": int(len(cs)),
+            "safra_rows": int(len(safra)),
+            "agora_rows": int(len(agora)),
+            "outras_custodias_rows": int(len(outras)),
             "unmatched": diagnose_unmatched(pos, control),
         },
     }
@@ -454,6 +671,9 @@ def latest_is_stale() -> bool:
         new = source_signature()
         for k, v in new.items():
             if v.get("missing"):
+                # CS e OUTRAS são opcionais: ausência não deve forçar rebuild a cada abertura.
+                if k in {"CS", "SAFRA", "AGORA", "OUTRAS"} and old.get(k, {}).get("missing", True):
+                    continue
                 return True
             old_v = old.get(k, {})
             if old_v.get("size") != v.get("size") or abs(float(old_v.get("mtime", 0)) - float(v.get("mtime", 0))) > 0.001:
