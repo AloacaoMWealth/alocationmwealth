@@ -462,6 +462,8 @@ def broker_logo_path(broker: str) -> Path | None:
         "SAFRA": ["logo_safra.png", "Log Safra.png"],
         "AGORA": ["logo_agora.png", "Logo Ágora.png", "Logo Agora.png"],
         "ATIVORE": ["logo_ativore.png", "Logo Ativore.png"],
+        "XP Global": ["logo_xpus.png", "Logo XPUS.png"],
+        "XP US": ["logo_xpus.png", "Logo XPUS.png"],
     }
     candidates = name_map.get(broker, [])
     for name in candidates:
