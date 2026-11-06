@@ -26,6 +26,15 @@ def find_repo_file(filename: str) -> Path:
     return POS_DIR / filename
 
 
+def find_repo_file_any(*filenames: str) -> Path:
+    """Procura o primeiro nome existente; o primeiro é o padrão atual."""
+    for filename in filenames:
+        p = find_repo_file(filename)
+        if p.exists():
+            return p
+    return find_repo_file(filenames[0]) if filenames else POS_DIR
+
+
 def repo_files() -> dict[str, Path]:
     return {
         # Contas.xlsx é a fonte OFICIAL de grupo/cliente/conta/perfil.
@@ -33,10 +42,10 @@ def repo_files() -> dict[str, Path]:
         "XP": find_repo_file("XP.xlsx"),
         "BTG": find_repo_file("BTG.xlsx"),
         "CS": find_repo_file("CSProdutos.csv"),
-        "SAFRA": find_repo_file("Safra.xlsx") if find_repo_file("Safra.xlsx").exists() else find_repo_file("Safra.xlsx"),
-        "AGORA": find_repo_file("Agora.xlsx") if find_repo_file("Agora.xlsx").exists() else find_repo_file("Agora.xlsx"),
-        # Complementar: XP US, XP Global, Atívore e outras fontes sem parser nativo.
-        "OUTRAS": find_repo_file("Outras Custodias.xlsx"),
+        "SAFRA": find_repo_file_any("Safra.xlsx", "Posição Safra.xlsx", "Posicao Safra.xlsx"),
+        "AGORA": find_repo_file_any("Agora.xlsx", "Posição Ágora.xlsx", "Posicao Agora.xlsx"),
+        # Complementar: XP US, XP Global, Atívore e patrimônios externos.
+        "OUTRAS": find_repo_file_any("Outras Custodias.xlsx", "Posicoes_Outras_Custodias.xlsx"),
     }
 
 
@@ -205,24 +214,29 @@ def load_control_accounts(src: str | Path | None = None) -> pd.DataFrame:
 OUTRAS_CUSTODIAS_COLUMNS = [
     "CORRETORA", "CONTA", "ATIVO", "CNPJ", "TICKER", "VALOR", "MOEDA", "QUANTIDADE",
     "CLASSE", "ESTRATEGIA", "LIQUIDEZ_DIAS", "INDEXADOR", "VENCIMENTO", "OBSERVACAO",
+    "GRUPO_GERAL", "CLIENTE",
 ]
 
 
 def parse_other_custody(src: str | Path) -> pd.DataFrame:
     """Posições complementares sem parser nativo (XP US, XP Global, Atívore etc.).
 
-    A planilha tem uma linha por posição. Só CORRETORA, CONTA, ATIVO e VALOR são obrigatórios.
-    CLASSE e ESTRATEGIA são opcionais: sem elas, o motor classifica pelo nome/CNPJ/ticker como faz
-    com as demais fontes. Para XP US/Global, sem estratégia, o valor entra no total internacional."""
+    A planilha tem uma linha por posição. CORRETORA, ATIVO e VALOR são obrigatórios.
+    CONTA é obrigatória para custódias normais; patrimônios externos (ex.: Atívore) podem ficar sem
+    conta desde que GRUPO_GERAL ou CLIENTE seja informado. CLASSE/ESTRATEGIA são opcionais."""
     path = Path(src)
     if not path.exists():
         return pd.DataFrame()
     raw = pd.read_excel(path)
     raw.columns = [str(c).strip().upper().replace("Ç", "C").replace("Ã", "A").replace("É", "E").replace("Á", "A").replace("Í", "I").replace("Õ", "O") for c in raw.columns]
-    need = {"CORRETORA", "CONTA", "ATIVO", "VALOR"}
+    need = {"CORRETORA", "ATIVO", "VALOR"}
     if not need.issubset(raw.columns):
         raise ValueError(f"{path.name}: colunas obrigatórias ausentes: {sorted(need - set(raw.columns))}")
-    raw = raw[raw["VALOR"].notna() & raw["CONTA"].notna()].copy()
+        # Conta pode ficar vazia somente em patrimônio externo vinculado por grupo/cliente.
+    conta_txt = raw["CONTA"].astype(object).where(raw["CONTA"].notna(), "").astype(str).str.strip() if "CONTA" in raw.columns else pd.Series("", index=raw.index)
+    grupo_txt = raw["GRUPO_GERAL"].astype(object).where(raw["GRUPO_GERAL"].notna(), "").astype(str).str.strip() if "GRUPO_GERAL" in raw.columns else pd.Series("", index=raw.index)
+    cliente_txt = raw["CLIENTE"].astype(object).where(raw["CLIENTE"].notna(), "").astype(str).str.strip() if "CLIENTE" in raw.columns else pd.Series("", index=raw.index)
+    raw = raw[raw["VALOR"].notna() & (conta_txt.ne("") | grupo_txt.ne("") | cliente_txt.ne(""))].copy()
     if raw.empty:
         return pd.DataFrame()
 
@@ -262,16 +276,20 @@ def parse_other_custody(src: str | Path) -> pd.DataFrame:
         "saldo_operacional": False,
         "custodia_classe": txt("CLASSE"),
         "custodia_estrategia": txt("ESTRATEGIA"),
+        "grupo_externo": txt("GRUPO_GERAL"),
+        "cliente_externo": txt("CLIENTE"),
+        "patrimonio_externo": txt("CONTA").eq(""),
+        "gera_ordem": ~txt("CONTA").eq(""),
     })
     return out[out["valor_mercado"].fillna(0) != 0].copy()
 
 
 def outras_custodias_template() -> pd.DataFrame:
-    """Modelo de preenchimento apenas para custódias complementares sem parser nativo."""
+    """Modelo de preenchimento para custódias complementares e patrimônio externo."""
     return pd.DataFrame([
-        ["XP GLOBAL", "3XP50891", "Patrimônio XP Global", "", "", 250000.00, "USD", "", "Internacional", "", "", "", "", "Sem abertura: conta no total internacional"],
-        ["XP US", "QXR347535", "Patrimônio XP US", "", "", 100000.00, "USD", "", "Internacional", "", "", "", "", "Sem abertura: conta no total internacional"],
-        ["ATIVORE", "CONTA_EXEMPLO", "Patrimônio Atívore", "", "", 100000.00, "USD", "", "Internacional", "", "", "", "", "Preencha moeda/classe conforme a posição"],
+        ["XP GLOBAL", "3XP50891", "Patrimônio XP Global", "", "", 250000.00, "USD", "", "Internacional", "", "", "", "", "Sem abertura: conta no total internacional", "", ""],
+        ["XP US", "QXR347535", "Patrimônio XP US", "", "", 100000.00, "USD", "", "Internacional", "", "", "", "", "Sem abertura: conta no total internacional", "", ""],
+        ["ATIVORE", "", "Atívore Real Estate Fund", "", "", 100000.00, "USD", "", "Internacional", "", "", "", "", "Patrimônio externo: não gera ordem", "FAMÍLIA EXEMPLO", ""],
     ], columns=OUTRAS_CUSTODIAS_COLUMNS)
 
 
@@ -579,7 +597,10 @@ def diagnose_unmatched(pos: pd.DataFrame, control: pd.DataFrame) -> dict[str, An
     if pos.empty or control.empty:
         return {}
     keys = control[["corretora", "conta"]].drop_duplicates()
-    check = pos.merge(keys, on=["corretora", "conta"], how="left", indicator=True)
+    base = pos.copy()
+    if "patrimonio_externo" in base.columns:
+        base = base[~base["patrimonio_externo"].fillna(False).astype(bool)].copy()
+    check = base.merge(keys, on=["corretora", "conta"], how="left", indicator=True)
     missing = check[check["_merge"].eq("left_only")]
     return {
         "unmatched_rows": int(len(missing)),
@@ -617,6 +638,33 @@ def build_latest_from_repo(dt_posicao: str | None = None) -> pd.DataFrame:
     control.loc[m, "conta"] = control.loc[m, "conta"].apply(_normalize_btg_account)
 
     merged = pos.merge(control, how="left", on=["corretora", "conta"], suffixes=("", "_ctrl"))
+
+    # Patrimônio externo (ex.: Atívore) não precisa existir no Contas.xlsx nem ter conta fictícia.
+    # O vínculo é feito explicitamente por GRUPO_GERAL ou CLIENTE na planilha Outras Custodias.xlsx.
+    ext = merged.get("patrimonio_externo", pd.Series(False, index=merged.index)).fillna(False).astype(bool)
+    if ext.any():
+        grupo_ext = merged.get("grupo_externo", pd.Series("", index=merged.index)).fillna("").astype(str).str.strip()
+        cliente_ext = merged.get("cliente_externo", pd.Series("", index=merged.index)).fillna("").astype(str).str.strip()
+        if "GRUPO GERAL" not in merged.columns:
+            merged["GRUPO GERAL"] = np.nan
+        if "CLIENTE" not in merged.columns:
+            merged["CLIENTE"] = np.nan
+        merged.loc[ext & grupo_ext.ne(""), "GRUPO GERAL"] = grupo_ext[ext & grupo_ext.ne("")]
+        merged.loc[ext & cliente_ext.ne(""), "CLIENTE"] = cliente_ext[ext & cliente_ext.ne("")]
+
+        # Se só o cliente foi informado, deriva o grupo quando o nome é inequívoco no Contas.xlsx.
+        if "CLIENTE" in control.columns and "GRUPO GERAL" in control.columns:
+            cmap = control[["CLIENTE", "GRUPO GERAL"]].dropna().copy()
+            cmap["_cliente_key"] = cmap["CLIENTE"].astype(str).str.strip().str.upper()
+            counts = cmap.groupby("_cliente_key")["GRUPO GERAL"].nunique()
+            unique_keys = set(counts[counts.eq(1)].index)
+            group_by_client = cmap[cmap["_cliente_key"].isin(unique_keys)].drop_duplicates("_cliente_key").set_index("_cliente_key")["GRUPO GERAL"].to_dict()
+            need_group = ext & merged["GRUPO GERAL"].fillna("").astype(str).str.strip().eq("") & cliente_ext.ne("")
+            merged.loc[need_group, "GRUPO GERAL"] = cliente_ext[need_group].str.upper().map(group_by_client)
+
+        # Segurança: patrimônio externo sem vínculo não entra no consolidado de nenhum cliente.
+        linked = merged["GRUPO GERAL"].fillna("").astype(str).str.strip().ne("") | merged["CLIENTE"].fillna("").astype(str).str.strip().ne("")
+        merged = merged[~ext | linked].copy()
     ptax = get_ptax()
     merged["valor_original"] = pd.to_numeric(merged["valor_mercado"], errors="coerce").fillna(0.0)
     is_usd = merged["corretora"].isin(["CS", "XP US", "XP GLOBAL"]) | merged.get("moeda", pd.Series("", index=merged.index)).astype(str).str.upper().eq("USD")

@@ -72,7 +72,7 @@ st.set_page_config(page_title="Wealth | Balanceamento", layout="wide", page_icon
 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 POS_DIR = BASE_DIR / "posicoes"
-APP_VERSION = "6.10"
+APP_VERSION = "6.10.2"
 DATA_DIR = BASE_DIR / "data"
 PUBLISHED_MODELS_PATH = DATA_DIR / "modelos_publicados.json"
 MODEL_HISTORY_PATH = DATA_DIR / "historico_modelos.jsonl"
@@ -232,8 +232,9 @@ st.markdown(
     .mw-card-value { color:#FFFFFF; font-size:1.04rem; font-weight:800; letter-spacing:-.01em; line-height:1.12; }
     .mw-card-icon { height:18px; max-width:48px; width:auto; object-fit:contain; display:block; }
     .mw-cust-row { display:flex; gap:1.1rem; align-items:flex-end; flex-wrap:wrap; }
-    .mw-cust { display:flex; flex-direction:column; gap:.28rem; min-width:78px; }
+    .mw-cust { display:flex; flex-direction:column; gap:.28rem; min-width:96px; }
     .mw-cust-name { color:rgba(255,255,255,.62); font-size:.72rem; font-weight:700; letter-spacing:.02em; line-height:18px; }
+    .mw-cust .mw-card-icon { height:24px; max-width:88px; }
     .mw-cust-val { color:#FFFFFF; font-size:.98rem; font-weight:800; line-height:1.1; }
     .mw-cust-pct { color:rgba(255,255,255,.5); font-size:.68rem; font-weight:600; }
     .mw-version-row { margin-top:.12rem; margin-bottom:.12rem; color:rgba(255,255,255,.44); font-size:.74rem; }
@@ -455,9 +456,12 @@ def parse_brl_input(value, default: float = 0.0) -> float:
 def broker_logo_path(broker: str) -> Path | None:
     broker = norm(broker)
     name_map = {
-        "XP": ["logo_xp.webp", "logo_xp.png"],
-        "BTG": ["logo_btg.png", "logo_btg.webp"],
-        "CS": ["logo_cs.webp", "logo_cs.png", "logo_schwab.webp"],
+        "XP": ["logo_xp.webp", "logo_xp.png", "Logo XP.webp"],
+        "BTG": ["logo_btg.png", "logo_btg.webp", "Logo BTG.png"],
+        "CS": ["logo_cs.webp", "logo_cs.png", "logo_schwab.webp", "CS Logo.webp"],
+        "SAFRA": ["logo_safra.png", "Log Safra.png"],
+        "AGORA": ["logo_agora.png", "Logo Ágora.png", "Logo Agora.png"],
+        "ATIVORE": ["logo_ativore.png", "Logo Ativore.png"],
     }
     candidates = name_map.get(broker, [])
     for name in candidates:
@@ -502,10 +506,15 @@ def metric_card(label: str, value: str, icon_path: Path | None = None) -> None:
 
 
 def custody_summary(pos: pd.DataFrame, pl: float) -> pd.DataFrame:
-    """Valor por custodiante, do maior para o menor."""
+    """Valor por custodiante, do maior para o menor. Patrimônio externo pode ter zero contas."""
     if pos.empty:
         return pd.DataFrame(columns=["Custódia", "Valor", "% do PL", "Contas"])
-    g = pos.groupby("corretora", dropna=False).agg(Valor=("valor_mercado", "sum"), Contas=("conta", "nunique")).reset_index()
+    tmp = pos.copy()
+    tmp["_conta_real"] = tmp.get("conta", pd.Series("", index=tmp.index)).fillna("").astype(str).str.strip()
+    val = tmp.groupby("corretora", dropna=False)["valor_mercado"].sum().rename("Valor")
+    cnt = tmp[tmp["_conta_real"].ne("")].groupby("corretora")["_conta_real"].nunique().rename("Contas")
+    g = val.to_frame().join(cnt, how="left").fillna({"Contas": 0}).reset_index()
+    g["Contas"] = g["Contas"].astype(int)
     g = g.rename(columns={"corretora": "Custódia"}).sort_values("Valor", ascending=False)
     g["% do PL"] = np.where(pl > 0, g["Valor"] / pl, 0.0)
     return g[["Custódia", "Valor", "% do PL", "Contas"]].reset_index(drop=True)
@@ -3165,7 +3174,7 @@ def save_master_sheet_from_app(sheet_name: str, df: pd.DataFrame, columns: list[
 
 
 def other_custody_path() -> Path:
-    return posmod.find_repo_file("Posicoes_Outras_Custodias.xlsx")
+    return posmod.find_repo_file_any("Outras Custodias.xlsx", "Posicoes_Outras_Custodias.xlsx")
 
 
 def save_other_custody(df: pd.DataFrame) -> tuple[bool, str]:
@@ -3176,7 +3185,12 @@ def save_other_custody(df: pd.DataFrame) -> tuple[bool, str]:
             if c not in clean.columns:
                 clean[c] = ""
         clean = clean[posmod.OUTRAS_CUSTODIAS_COLUMNS]
-        clean = clean[clean["CONTA"].fillna("").astype(str).str.strip().ne("") & clean["VALOR"].notna()].reset_index(drop=True)
+        _has_link = (
+            clean["CONTA"].fillna("").astype(str).str.strip().ne("")
+            | clean["GRUPO_GERAL"].fillna("").astype(str).str.strip().ne("")
+            | clean["CLIENTE"].fillna("").astype(str).str.strip().ne("")
+        )
+        clean = clean[_has_link & clean["VALOR"].notna()].reset_index(drop=True)
         path = other_custody_path()
         if not path.parent.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -4540,49 +4554,30 @@ if page == "Asset Allocation":
     pos_cliente = mark_exchange_positions_to_market(pos_cliente, price_ref)
 
     pl_patrimonial = float(pos_cliente["valor_mercado"].sum())
-    investible_mask = ~pos_cliente["classe_macro"].isin(["Caixa", "Fora da Estratégia"])
-    pl_investivel = float(pos_cliente.loc[investible_mask, "valor_mercado"].sum())
-
-    pl_xp = float(pos_cliente.loc[pos_cliente["corretora"].eq("XP"), "valor_mercado"].sum())
-    pl_btg = float(pos_cliente.loc[pos_cliente["corretora"].eq("BTG"), "valor_mercado"].sum())
-    pl_cs = float(pos_cliente.loc[pos_cliente["corretora"].eq("CS"), "valor_mercado"].sum())
     saldo = float(pos_cliente.loc[pos_cliente.get("saldo_operacional", False).fillna(False).astype(bool), "valor_mercado"].sum()) if "saldo_operacional" in pos_cliente.columns else float(pos_cliente.loc[pos_cliente["subbucket"].eq("Saldo em Conta"), "valor_mercado"].sum())
     manual_matches = int(pos_cliente.get("manual_match", pd.Series([False] * len(pos_cliente), index=pos_cliente.index)).fillna(False).astype(bool).sum())
     nao_class = float(pos_cliente.loc[pos_cliente["subbucket"].eq("Outros / Não Classificado"), "valor_mercado"].sum())
 
-    k0, k1, k2, k3, k6 = st.columns([.78, 1.0, 1.0, 2.7, .98], vertical_alignment="bottom", gap="small")
-    with k0:
-        st.markdown('<div class="mw-base-label">Base de cálculo</div>', unsafe_allow_html=True)
-        _base_opts = ["PL total", "PL investível"]
-        _base_default = st.session_state.get("asset_base_mode_inline", "PL total")
-        _base_idx = _base_opts.index(_base_default) if _base_default in _base_opts else 0
-        base_choice = st.selectbox(
-            "Base", _base_opts, index=_base_idx,
-            label_visibility="collapsed", key="asset_base_mode_select",
-            help="PL investível exclui caixa, proventos e ativos fora da estratégia do denominador dos alvos.",
-        )
-        st.session_state["asset_base_mode_inline"] = base_choice
-    base_mode = "PL patrimonial total" if base_choice == "PL total" else "PL investível"
-    pl = pl_patrimonial if base_mode == "PL patrimonial total" else pl_investivel
-    pos_calculo = pos_cliente if base_mode == "PL patrimonial total" else pos_cliente.loc[investible_mask].copy()
+    # Asset Allocation usa sempre o patrimônio consolidado do grupo/conta como base.
+    # A antiga alternância PL total x investível e o card Base de Alocação foram removidos
+    # para reduzir ruído e evitar bases divergentes na leitura operacional.
+    base_mode = "PL patrimonial total"
+    pl = pl_patrimonial
+    pos_calculo = pos_cliente.copy()
     macro_df, sub_df = portfolio_tables(pos_calculo, p, pl)
     corretoras_cliente = set(pos_cliente.get("corretora", pd.Series(dtype=str)).dropna().astype(str).unique())
-    # A rodada simulada é lida cedo para que as tabelas de enquadramento possam refleti-la.
     sim_key = f"exec_round::{grupo_sel}::{conta_real or 'TODAS'}::{modelo}::{base_mode}"
     if sim_key not in st.session_state:
         st.session_state[sim_key] = []
 
-    with k1:
-        metric_card("PL Patrimonial", format_brl(pl_patrimonial))
-    with k2:
-        metric_card("Base de Alocação", format_brl(pl))
-    with k3:
+    k_cust, k_saldo = st.columns([4.7, 1.0], vertical_alignment="bottom", gap="small")
+    with k_cust:
         _cust_df = custody_summary(pos_cliente, pl_patrimonial)
-        custody_card(_cust_df)
-        if len(_cust_df) > 3:
+        custody_card(_cust_df, top=5)
+        if len(_cust_df) > 5:
             with st.popover("Ver todas as custódias", use_container_width=True):
                 st.dataframe(prepare_display(_cust_df, money_cols=["Valor"], pct_cols=["% do PL"]), use_container_width=True, hide_index=True)
-    with k6:
+    with k_saldo:
         metric_card("Saldo", format_brl(saldo))
 
     if nao_class > 0.01:
@@ -4651,7 +4646,7 @@ if page == "Asset Allocation":
             )
 
 
-    section_title("Execução por estratégia", "Escolha o desvio que deseja tratar. O diagnóstico continua mostrando a necessidade total; a execução considera saldo e operações simuladas.")
+    section_title("Execução por estratégia", "Escolha a estratégia e trate uma recomendação por vez. A rodada simulada atualiza o enquadramento sem abrir tabelas extensas.")
     sim_key = f"exec_round::{grupo_sel}::{conta_real or 'TODAS'}::{modelo}::{base_mode}"
     if sim_key not in st.session_state:
         st.session_state[sim_key] = []
@@ -4669,67 +4664,58 @@ if page == "Asset Allocation":
     _unallocated = unallocated_classes(pos_cliente)
     if _unallocated:
         _txt = " • ".join(f"{friendly_class_name(k)}: {format_brl(v)}" for k, v in _unallocated.items())
-        st.warning("Há custódia sem abertura detalhada. Ela conta para o enquadramento macro, mas a execução automática da respectiva classe fica bloqueada para evitar ordens incorretas. " + _txt)
+        st.warning("Há patrimônio sem abertura detalhada. Ele conta no enquadramento, mas não gera ordem automática: " + _txt)
     _blocked_classes = set(_unallocated)
     selectable = exec_sub_df[
         ~exec_sub_df["Classe"].isin(["Caixa","Fora da Estratégia"])
         & ~exec_sub_df["Subbucket"].isin(list(UNALLOCATED_CUSTODY_BUCKETS.values()))
         & ~exec_sub_df["Classe"].isin(_blocked_classes)
     ].copy()
-    # Inclui buckets no alvo macro quando o pool ainda está internamente desequilibrado.
-    # A opção é identificada pelo subbucket (estável). O valor do desvio vai só no rótulo: antes ele
-    # fazia parte da própria opção e, ao simular, a opção "mudava" e o seletor voltava para a primeira.
-    option_labels={str(r['Subbucket']): f"{friendly_strategy_name(str(r['Subbucket']))} • {format_brl_label(float(r['Diferença']))}" for _,r in selectable.iterrows()}
-    options=list(option_labels.keys())
+
+    option_labels = {
+        str(r["Subbucket"]): f"{friendly_strategy_name(str(r['Subbucket']))} • {format_brl_label(float(r['Diferença']))}"
+        for _, r in selectable.iterrows()
+    }
+    options = list(option_labels.keys())
     if options:
-        strategy_sel=st.selectbox("Estratégia para executar",options,format_func=lambda k: option_labels.get(k,k),key=f"strategy_exec_{sim_key}")
-        need_row=exec_sub_df[exec_sub_df["Subbucket"].astype(str).eq(strategy_sel)].iloc[0]
-        with st.expander("Produtos desta estratégia: o que vender e comprar primeiro", expanded=True):
-            st.caption("Fora do cadastro mestre sai primeiro. Dentro do cadastro, vende da prioridade mais baixa para a mais alta e compra da prioridade 1 em diante.")
-            pmap = strategy_product_map(need_row, pos_cliente, pool_produtos, restricoes_cliente, corretoras_cliente, sim_adjust)
-            if pmap.empty:
-                st.info("Nenhuma posição ou produto cadastrado para esta estratégia.")
-            else:
-                st.dataframe(
-                    money_color_styler(pmap, money_cols=["Valor atual","Após simulação"], qty_cols=["Ordem venda","Ordem compra","Prioridade"]),
-                    use_container_width=True, hide_index=True,
-                )
+        strategy_sel = st.selectbox(
+            "Estratégia para executar", options,
+            format_func=lambda k: option_labels.get(k, k),
+            key=f"strategy_exec_{sim_key}",
+        )
+        need_row = exec_sub_df[exec_sub_df["Subbucket"].astype(str).eq(strategy_sel)].iloc[0]
         rec = recommend_exact_products(
             exec_sub_df, pos_cliente, pool_produtos, restricoes_cliente, pl, corretoras_cliente,
-            sim_adjustments=sim_adjust, strategy_filter=strategy_sel, execution_budget=max(0.0,saldo_virtual),
+            sim_adjustments=sim_adjust, strategy_filter=strategy_sel, execution_budget=max(0.0, saldo_virtual),
         )
-        # Se o bucket está praticamente no alvo, procura desalinhamento interno do pool.
-        if rec.empty and abs(float(need_row.get("Diferença",0))) <= 300:
-            rec = internal_pool_recommendation(need_row,pos_cliente,pool_produtos,restricoes_cliente,pl,corretoras_cliente,sim_adjust)
+        if rec.empty and abs(float(need_row.get("Diferença", 0))) <= 300:
+            rec = internal_pool_recommendation(need_row, pos_cliente, pool_produtos, restricoes_cliente, pl, corretoras_cliente, sim_adjust)
         if rec.empty:
-            st.info("Nenhuma ação de pool encontrada para esta estratégia. Ela pode estar enquadrada, sem pool cadastrado ou bloqueada por alguma restrição.")
+            st.info("Nenhuma ação encontrada para esta estratégia. Ela pode estar enquadrada, sem pool elegível ou bloqueada por alguma restrição.")
         else:
-            row=rec.iloc[0]
-            d1,d2,d3,d4=st.columns(4)
-            with d1: metric_card("Atual na estratégia",format_brl(float(need_row.get("Valor Atual",0))))
-            with d2: metric_card("Ideal da estratégia",format_brl(float(need_row.get("Valor Ideal",0))))
-            with d3: metric_card("Desvio",format_brl(float(need_row.get("Diferença",0))))
-            with d4: metric_card("Executável agora",format_brl(abs(float(row.get("Valor recomendado",0)))))
+            row = rec.iloc[0]
+            d1,d2,d3,d4 = st.columns(4)
+            with d1: metric_card("Atual na estratégia", format_brl(float(need_row.get("Valor Atual",0))))
+            with d2: metric_card("Ideal da estratégia", format_brl(float(need_row.get("Valor Ideal",0))))
+            with d3: metric_card("Desvio", format_brl(float(need_row.get("Diferença",0))))
+            with d4: metric_card("Executável agora", format_brl(abs(float(row.get("Valor recomendado",0)))))
+
+            # Mantém apenas a recomendação efetivamente executável visível; diagnóstico completo
+            # continua no detalhamento/Pool, evitando transformar esta seção numa tabela gigante.
+            cols_exec = [c for c in ["Ação","Produto recomendado","Identificador","Valor atual no produto","Alvo do produto","Valor recomendado","Prioridade","Motivo"] if c in rec.columns]
             st.dataframe(
-                money_color_styler(rec,money_cols=["Valor atual no produto","Alvo do produto","Valor recomendado"],pct_cols=["Peso no pool","Limite"],diff_cols=["Valor recomendado"]),
-                use_container_width=True,hide_index=True,
+                money_color_styler(rec[cols_exec].head(1), money_cols=["Valor atual no produto","Alvo do produto","Valor recomendado"], diff_cols=["Valor recomendado"]),
+                use_container_width=True, hide_index=True,
             )
-            action=str(row["Ação"]); signed=float(row["Valor recomendado"])
-            amount=abs(signed)
-            product_key=""
-            match_pool=pool_produtos[
-                pool_produtos["IDENTIFICADOR"].fillna("").astype(str).map(norm).eq(norm(row["Identificador"]))
-            ]
-            if not match_pool.empty:
-                product_key=_pool_product_key(match_pool.iloc[0])
-            else:
-                # Fundo/ativo fora do cadastro mestre: a venda simulada precisa abater a posição dele.
-                product_key=sim_key_for_identifier(row["Identificador"], row["Produto recomendado"])
-            if st.button("Adicionar à rodada / simular execução",type="primary",use_container_width=True,key=f"add_exec_{sim_key}_{strategy_sel}"):
-                op={
-                    "Estratégia":friendly_strategy_name(strategy_sel),"Ação":action,"Produto":str(row["Produto recomendado"]),
-                    "Identificador":str(row["Identificador"]),"Valor":amount,"subbucket":strategy_sel,
-                    "product_key":product_key,"signed_amount": amount if norm(action)=="COMPRAR" else -amount,
+
+            action = str(row["Ação"]); signed = float(row["Valor recomendado"]); amount = abs(signed)
+            match_pool = pool_produtos[pool_produtos["IDENTIFICADOR"].fillna("").astype(str).map(norm).eq(norm(row["Identificador"]))]
+            product_key = _pool_product_key(match_pool.iloc[0]) if not match_pool.empty else sim_key_for_identifier(row["Identificador"], row["Produto recomendado"])
+            if st.button("Adicionar à rodada / simular execução", type="primary", use_container_width=True, key=f"add_exec_{sim_key}_{strategy_sel}"):
+                op = {
+                    "Estratégia": friendly_strategy_name(strategy_sel), "Ação": action, "Produto": str(row["Produto recomendado"]),
+                    "Identificador": str(row["Identificador"]), "Valor": amount, "subbucket": strategy_sel,
+                    "product_key": product_key, "signed_amount": amount if norm(action)=="COMPRAR" else -amount,
                     "cash_effect": -amount if norm(action)=="COMPRAR" else amount,
                 }
                 st.session_state[sim_key].append(op)
@@ -4738,13 +4724,13 @@ if page == "Asset Allocation":
         st.info("Nenhuma estratégia disponível para execução.")
 
     if simulated_ops:
-        with st.expander("Rodada de execução simulada",expanded=True):
-            sim_df=pd.DataFrame(simulated_ops)
-            st.dataframe(prepare_display(sim_df[["Estratégia","Ação","Produto","Identificador","Valor"]],money_cols=["Valor"]),use_container_width=True,hide_index=True)
-            cclear,cdown=st.columns(2)
-            if cclear.button("Limpar simulação",use_container_width=True,key=f"clear_{sim_key}"):
-                st.session_state[sim_key]=[]; st.rerun()
-            cdown.download_button("Baixar rodada",data=dataframe_excel_bytes(sim_df,"Rodada"),file_name=f"rodada_{str(grupo_sel).replace(' ','_').lower()}.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",use_container_width=True)
+        with st.expander(f"Rodada simulada • {len(simulated_ops)} operação(ões)", expanded=False):
+            sim_df = pd.DataFrame(simulated_ops)
+            st.dataframe(prepare_display(sim_df[["Estratégia","Ação","Produto","Identificador","Valor"]], money_cols=["Valor"]), use_container_width=True, hide_index=True)
+            cclear,cdown = st.columns(2)
+            if cclear.button("Limpar simulação", use_container_width=True, key=f"clear_{sim_key}"):
+                st.session_state[sim_key] = []; st.rerun()
+            cdown.download_button("Baixar rodada", data=dataframe_excel_bytes(sim_df,"Rodada"), file_name=f"rodada_{str(grupo_sel).replace(' ','_').lower()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     section_title("Produtos de bolsa e infraestrutura", "Ativos listados utilizam preço de mercado quando permitido pelo cadastro mestre.")
     if not HAS_YFINANCE:
@@ -5032,7 +5018,9 @@ if page == "Gestão":
             _cur, num_rows="dynamic", use_container_width=True, hide_index=True, key="editor_outras_custodias",
             column_config={
                 "CORRETORA": st.column_config.SelectboxColumn("Custódia", options=["XP GLOBAL", "XP US", "ATIVORE", "OUTRA"], required=True),
-                "CONTA": st.column_config.TextColumn("Conta", required=True),
+                "CONTA": st.column_config.TextColumn("Conta (opcional para patrimônio externo)", required=False),
+                "GRUPO_GERAL": st.column_config.SelectboxColumn("Grupo (patrimônio externo)", options=[""] + sorted(df_contas.get("GRUPO GERAL", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())),
+                "CLIENTE": st.column_config.TextColumn("Cliente (opcional)"),
                 "ATIVO": st.column_config.TextColumn("Ativo / nome", required=True),
                 "VALOR": st.column_config.NumberColumn("Valor", format="%.2f", required=True),
                 "MOEDA": st.column_config.SelectboxColumn("Moeda", options=["BRL", "USD"]),
@@ -5045,7 +5033,7 @@ if page == "Gestão":
         if oc1.button("Salvar custódias complementares", type="primary", use_container_width=True, key="btn_save_outras"):
             ok, msg = save_other_custody(ed)
             (st.success if ok else st.error)(msg)
-        oc2.download_button("Baixar modelo complementar", data=dataframe_excel_bytes(posmod.outras_custodias_template(), "Outras custódias"), file_name="Posicoes_Outras_Custodias_MODELO.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        oc2.download_button("Baixar modelo complementar", data=dataframe_excel_bytes(posmod.outras_custodias_template(), "Outras custódias"), file_name="Outras Custodias MODELO.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     section_title("Personalizar cliente")
     with st.container(border=True):
